@@ -22,6 +22,8 @@ import {
   evaluateInjectionGuards,
   buildSendKeysArgv,
   buildPaneInModeArgv,
+  buildPaneCurrentCommandArgv,
+  isPaneRunningShell,
 } from '../tmux-hook-engine.js';
 
 export async function resolveSessionToPane(sessionName) {
@@ -354,6 +356,30 @@ export async function handleTmuxInjection({
     } catch {
       // Non-fatal: if querying copy-mode state fails, proceed with injection.
     }
+  }
+
+  // Shell-detection guard: skip injection when the agent process has exited
+  // and the pane has returned to an interactive shell (zsh, bash, etc.).
+  // Sending the inject marker to a shell causes glob errors like
+  // "zsh: no matches found: [OMX_TMUX_INJECT]".  See #441.
+  try {
+    const cmdResult = await runProcess('tmux', buildPaneCurrentCommandArgv(paneTarget), 1000);
+    const currentCmd = safeString(cmdResult.stdout).trim();
+    if (isPaneRunningShell(currentCmd)) {
+      state.last_reason = 'agent_not_running';
+      state.last_event_at = nowIso;
+      await writeFile(hookStatePath, JSON.stringify(state, null, 2)).catch(() => {});
+      await logTmuxHookEvent(logsDir, {
+        ...baseLog,
+        event: 'injection_skipped',
+        reason: 'agent_not_running',
+        pane_target: paneTarget,
+        pane_current_command: currentCmd,
+      });
+      return;
+    }
+  } catch {
+    // Non-fatal: if querying pane command fails, proceed with injection.
   }
 
   if (config.dry_run) {
