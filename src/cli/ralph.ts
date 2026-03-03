@@ -1,16 +1,28 @@
 import { startMode, updateModeState } from '../modes/base.js';
 import { ensureCanonicalRalphArtifacts } from '../ralph/persistence.js';
 
-const RALPH_HELP = `omx ralph - Launch Codex with ralph persistence mode active
+export const RALPH_HELP = `omx ralph - Launch Codex with ralph persistence mode active
 
 Usage:
-  omx ralph [codex-args...]   Initialize ralph state and launch Codex
+  omx ralph [task text...]
+  omx ralph --prd "<task text>"
+  omx ralph [ralph-options] [codex-args...] [task text...]
 
 Options:
-  --help, -h    Show this help message
+  --help, -h           Show this help message
+  --prd <task text>    PRD mode shortcut: mark the task text explicitly
+  --prd=<task text>    Same as --prd "<task text>"
 
-Ralph persistence mode initializes state tracking so the OMC ralph loop
-can maintain context across Codex sessions.
+PRD mode:
+  Ralph initializes persistence artifacts in .omx/ so PRD and progress
+  state can survive across Codex sessions. Provide task text either as
+  positional words or with --prd.
+
+Common patterns:
+  omx ralph "Fix flaky notify-hook tests"
+  omx ralph --prd "Ship release checklist automation"
+  omx ralph --model gpt-5 "Refactor state hydration"
+  omx ralph -- --task-with-leading-dash
 `;
 
 /**
@@ -79,10 +91,45 @@ export function extractRalphTaskDescription(args: readonly string[]): string {
   return words.join(' ') || 'ralph-cli-launch';
 }
 
+export function normalizeRalphCliArgs(args: readonly string[]): string[] {
+  const normalized: string[] = [];
+  let i = 0;
+
+  while (i < args.length) {
+    const token = args[i];
+
+    if (token === '--prd') {
+      const next = args[i + 1];
+      if (next && next !== '--' && !next.startsWith('-')) {
+        normalized.push(next);
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+
+    if (token.startsWith('--prd=')) {
+      const value = token.slice('--prd='.length);
+      if (value.length > 0) {
+        normalized.push(value);
+      }
+      i++;
+      continue;
+    }
+
+    normalized.push(token);
+    i++;
+  }
+
+  return normalized;
+}
+
 export async function ralphCommand(args: string[]): Promise<void> {
+  const normalizedArgs = normalizeRalphCliArgs(args);
   const cwd = process.cwd();
 
-  if (args[0] === '--help' || args[0] === '-h') {
+  if (normalizedArgs[0] === '--help' || normalizedArgs[0] === '-h') {
     console.log(RALPH_HELP);
     return;
   }
@@ -91,7 +138,7 @@ export async function ralphCommand(args: string[]): Promise<void> {
   const artifacts = await ensureCanonicalRalphArtifacts(cwd);
 
   // Write initial ralph mode state
-  const task = extractRalphTaskDescription(args);
+  const task = extractRalphTaskDescription(normalizedArgs);
   await startMode('ralph', task, 50);
   await updateModeState('ralph', {
     current_phase: 'starting',
@@ -110,5 +157,5 @@ export async function ralphCommand(args: string[]): Promise<void> {
 
   // Dynamic import avoids a circular dependency with index.ts
   const { launchWithHud } = await import('./index.js');
-  await launchWithHud(args);
+  await launchWithHud(normalizedArgs);
 }

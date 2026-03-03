@@ -348,6 +348,7 @@ export async function main(args: string[]): Promise<void> {
   const firstArg = args[0];
   const { command, launchArgs } = resolveCliInvocation(args);
   const flags = new Set(args.filter(a => a.startsWith('--')));
+  const ralphHelpRequested = firstArg === 'ralph' && (args[1] === '--help' || args[1] === '-h');
   const options = {
     force: flags.has('--force'),
     dryRun: flags.has('--dry-run'),
@@ -355,7 +356,7 @@ export async function main(args: string[]): Promise<void> {
     team: flags.has('--team'),
   };
 
-  if (flags.has('--help') || flags.has('-h')) {
+  if (flags.has('--help') && !ralphHelpRequested) {
     console.log(HELP);
     return;
   }

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractRalphTaskDescription } from '../ralph.js';
+import { extractRalphTaskDescription, normalizeRalphCliArgs, ralphCommand } from '../ralph.js';
+import { main } from '../index.js';
 
 describe('extractRalphTaskDescription', () => {
   it('returns plain task text from positional args', () => {
@@ -131,5 +132,71 @@ describe('extractRalphTaskDescription', () => {
       extractRalphTaskDescription(['-c=model_reasoning_effort="high"', 'fix', 'bug']),
       'fix bug'
     );
+  });
+});
+
+describe('normalizeRalphCliArgs', () => {
+  it('converts --prd value into positional task text', () => {
+    assert.deepEqual(
+      normalizeRalphCliArgs(['--prd', 'ship release checklist']),
+      ['ship release checklist']
+    );
+  });
+
+  it('converts --prd=value into positional task text', () => {
+    assert.deepEqual(
+      normalizeRalphCliArgs(['--prd=ship release checklist']),
+      ['ship release checklist']
+    );
+  });
+
+  it('preserves non-prd codex args', () => {
+    assert.deepEqual(
+      normalizeRalphCliArgs(['--model', 'gpt-5', '--prd', 'fix tests']),
+      ['--model', 'gpt-5', 'fix tests']
+    );
+  });
+});
+
+describe('ralph --help contract', () => {
+  it('prints PRD mode usage, options, and examples', async () => {
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    };
+
+    try {
+      await ralphCommand(['--help']);
+    } finally {
+      console.log = originalLog;
+    }
+
+    const output = lines.join('\n');
+    assert.match(output, /Usage:/);
+    assert.match(output, /omx ralph --prd "<task text>"/);
+    assert.match(output, /--help, -h/);
+    assert.match(output, /--prd <task text>/);
+    assert.match(output, /PRD mode:/);
+    assert.match(output, /Common patterns:/);
+    assert.match(output, /omx ralph --model gpt-5 "Refactor state hydration"/);
+  });
+
+  it('routes omx ralph --help to Ralph help (not global help)', async () => {
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    };
+
+    try {
+      await main(['ralph', '--help']);
+    } finally {
+      console.log = originalLog;
+    }
+
+    const output = lines.join('\n');
+    assert.match(output, /PRD mode:/);
+    assert.doesNotMatch(output, /oh-my-codex \(omx\) - Multi-agent orchestration for Codex CLI/);
   });
 });
