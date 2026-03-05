@@ -23,12 +23,24 @@ async function writeJsonAtomic(path, value) {
 const DISPATCH_LOCK_STALE_MS = 5 * 60 * 1000;
 const DEFAULT_ISSUE_DISPATCH_COOLDOWN_MS = 15 * 60 * 1000;
 const ISSUE_DISPATCH_COOLDOWN_ENV = 'OMX_TEAM_DISPATCH_ISSUE_COOLDOWN_MS';
+const DEFAULT_DISPATCH_TRIGGER_COOLDOWN_MS = 30 * 1000;
+const DISPATCH_TRIGGER_COOLDOWN_ENV = 'OMX_TEAM_DISPATCH_TRIGGER_COOLDOWN_MS';
+const LEADER_PANE_MISSING_DEFERRED_REASON = 'leader_pane_missing_deferred';
+const LEADER_NOTIFICATION_DEFERRED_TYPE = 'leader_notification_deferred';
 
 function resolveIssueDispatchCooldownMs(env = process.env) {
   const raw = safeString(env[ISSUE_DISPATCH_COOLDOWN_ENV]).trim();
   if (raw === '') return DEFAULT_ISSUE_DISPATCH_COOLDOWN_MS;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_ISSUE_DISPATCH_COOLDOWN_MS;
+  return parsed;
+}
+
+function resolveDispatchTriggerCooldownMs(env = process.env) {
+  const raw = safeString(env[DISPATCH_TRIGGER_COOLDOWN_ENV]).trim();
+  if (raw === '') return DEFAULT_DISPATCH_TRIGGER_COOLDOWN_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_DISPATCH_TRIGGER_COOLDOWN_MS;
   return parsed;
 }
 
@@ -41,6 +53,10 @@ function issueCooldownStatePath(teamDirPath) {
   return join(teamDirPath, 'dispatch', 'issue-cooldown.json');
 }
 
+function triggerCooldownStatePath(teamDirPath) {
+  return join(teamDirPath, 'dispatch', 'trigger-cooldown.json');
+}
+
 async function readIssueCooldownState(teamDirPath) {
   const fallback = { by_issue: {} };
   const parsed = await readJson(issueCooldownStatePath(teamDirPath), fallback);
@@ -48,6 +64,32 @@ async function readIssueCooldownState(teamDirPath) {
     return fallback;
   }
   return parsed;
+}
+
+async function readTriggerCooldownState(teamDirPath) {
+  const fallback = { by_trigger: {} };
+  const parsed = await readJson(triggerCooldownStatePath(teamDirPath), fallback);
+  if (!parsed || typeof parsed !== 'object' || typeof parsed.by_trigger !== 'object' || parsed.by_trigger === null) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function normalizeTriggerKey(value) {
+  return safeString(value).replace(/\s+/g, ' ').trim();
+}
+
+function parseTriggerCooldownEntry(entry) {
+  if (typeof entry === 'number') {
+    return { at: entry, lastRequestId: '' };
+  }
+  if (!entry || typeof entry !== 'object') {
+    return { at: NaN, lastRequestId: '' };
+  }
+  return {
+    at: Number(entry.at),
+    lastRequestId: safeString(entry.last_request_id).trim(),
+  };
 }
 
 async function withDispatchLock(teamDirPath, fn) {
@@ -145,23 +187,44 @@ async function withMailboxLock(teamDirPath, workerName, fn) {
 }
 
 function defaultInjectTarget(request, config) {
+  if (request.to_worker === 'leader-fixed') {
+    if (config.leader_pane_id) return { type: 'pane', value: config.leader_pane_id };
+    return null;
+  }
   if (request.pane_id) return { type: 'pane', value: request.pane_id };
   if (typeof request.worker_index === 'number' && Array.isArray(config?.workers)) {
     const worker = config.workers.find((candidate) => Number(candidate?.index) === request.worker_index);
     if (worker?.pane_id) return { type: 'pane', value: worker.pane_id };
-  }
-  // Leader-fixed fallback: use config.leader_pane_id when request has no
-  // pane_id or worker_index (leader is not a worker). Without this, leader
-  // dispatch falls through to the session target which hits the active pane
-  // (likely a worker). Fixes #433.
-  if (request.to_worker === 'leader-fixed' && config.leader_pane_id) {
-    return { type: 'pane', value: config.leader_pane_id };
   }
   if (typeof request.worker_index === 'number' && config.tmux_session) {
     return { type: 'pane', value: `${config.tmux_session}.${request.worker_index}` };
   }
   if (config.tmux_session) return { type: 'session', value: config.tmux_session };
   return null;
+}
+
+async function appendLeaderNotificationDeferredEvent({
+  stateDir,
+  teamName,
+  request,
+  reason,
+  nowIso,
+}) {
+  const eventsDir = join(stateDir, 'team', teamName, 'events');
+  const eventsPath = join(eventsDir, 'events.ndjson');
+  const event = {
+    event_id: `leader-deferred-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    team: teamName,
+    type: LEADER_NOTIFICATION_DEFERRED_TYPE,
+    worker: request.to_worker,
+    to_worker: request.to_worker,
+    reason,
+    created_at: nowIso,
+    request_id: request.request_id,
+    ...(request.message_id ? { message_id: request.message_id } : {}),
+  };
+  await mkdir(eventsDir, { recursive: true }).catch(() => {});
+  await appendFile(eventsPath, JSON.stringify(event) + '\n').catch(() => {});
 }
 
 function resolveWorkerCliForRequest(request, config) {
@@ -184,6 +247,19 @@ function capturedPaneContainsTrigger(captured, trigger) {
   return normalizeCaptureText(captured).includes(normalizeCaptureText(trigger));
 }
 
+function capturedPaneContainsTriggerNearTail(captured, trigger, nonEmptyTailLines = 24) {
+  if (!captured || !trigger) return false;
+  const normalizedTrigger = normalizeCaptureText(trigger);
+  if (!normalizedTrigger) return false;
+  const lines = safeString(captured)
+    .split('\n')
+    .map((line) => line.replace(/\r/g, '').trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return false;
+  const tail = lines.slice(-Math.max(1, nonEmptyTailLines)).join(' ');
+  return normalizeCaptureText(tail).includes(normalizedTrigger);
+}
+
 // Ported from src/team/tmux-session.ts:949-963 — detects active CLI task indicators.
 function paneHasActiveTask(captured) {
   const lines = safeString(captured)
@@ -197,6 +273,40 @@ function paneHasActiveTask(captured) {
   if (tail.some((line) => /^•\s.+\(.+•\s*esc to interrupt\)$/i.test(line))) return true;
   // Claude active generation lines
   if (tail.some((line) => /^[·✻]\s+[A-Za-z][A-Za-z0-9''-]*(?:\s+[A-Za-z][A-Za-z0-9''-]*){0,3}(?:…|\.{3})$/u.test(line))) return true;
+  return false;
+}
+
+function paneIsBootstrapping(captured) {
+  const lines = safeString(captured)
+    .split('\n')
+    .map((line) => line.replace(/\r/g, '').trim())
+    .filter((line) => line.length > 0);
+  return lines.some((line) =>
+    /\b(loading|initializing|starting up)\b/i.test(line)
+    || /\bmodel:\s*loading\b/i.test(line)
+    || /\bconnecting\s+to\b/i.test(line),
+  );
+}
+
+function paneLooksReady(captured) {
+  const content = safeString(captured).trimEnd();
+  if (content === '') return false;
+
+  const lines = content
+    .split('\n')
+    .map((line) => line.replace(/\r/g, ''))
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim() !== '');
+
+  if (paneIsBootstrapping(content)) return false;
+
+  const lastLine = lines.length > 0 ? lines[lines.length - 1] : '';
+  if (/^\s*[›>❯]\s*/u.test(lastLine)) return true;
+
+  const hasCodexPromptLine = lines.some((line) => /^\s*›\s*/u.test(line));
+  const hasClaudePromptLine = lines.some((line) => /^\s*❯\s*/u.test(line));
+  if (hasCodexPromptLine || hasClaudePromptLine) return true;
+
   return false;
 }
 
@@ -266,15 +376,28 @@ async function injectDispatchRequest(request, config, cwd) {
   for (let round = 0; round < INJECT_VERIFY_ROUNDS; round++) {
     await new Promise((r) => setTimeout(r, INJECT_VERIFY_DELAY_MS));
     try {
-      // Primary: trigger text no longer in narrow input area
+      // Primary: trigger text no longer in narrow input area.
+      // Secondary guard: also inspect the recent non-empty tail of wide capture.
+      // This avoids false confirmations when Codex leaves the unsent draft just
+      // above a large blank area (narrow capture misses it) while still avoiding
+      // full-scrollback false positives.
       const narrowCap = await runProcess('tmux', verifyNarrowArgv, 2000);
-      if (!capturedPaneContainsTrigger(narrowCap.stdout, request.trigger_message)) {
-        return { ok: true, reason: 'tmux_send_keys_confirmed', pane: resolution.paneTarget };
-      }
-      // Secondary: worker is actively processing (mirrors sync path tmux-session.ts:1292-1294)
       const wideCap = await runProcess('tmux', verifyWideArgv, 2000);
+      // Worker is actively processing (mirrors sync path tmux-session.ts:1292-1294)
       if (paneHasActiveTask(wideCap.stdout)) {
         return { ok: true, reason: 'tmux_send_keys_confirmed_active_task', pane: resolution.paneTarget };
+      }
+      // Do not declare success while a *worker* pane is still bootstrapping / not
+      // input-ready. Otherwise a pre-ready send can be marked "confirmed" and later
+      // appear as a stuck unsent draft once the UI finishes loading.
+      // Keep leader-fixed behavior unchanged to avoid regressing leader notification flow.
+      if (request.to_worker !== 'leader-fixed' && !paneLooksReady(wideCap.stdout)) {
+        continue;
+      }
+      const triggerInNarrow = capturedPaneContainsTrigger(narrowCap.stdout, request.trigger_message);
+      const triggerNearTail = capturedPaneContainsTriggerNearTail(wideCap.stdout, request.trigger_message);
+      if (!triggerInNarrow && !triggerNearTail) {
+        return { ok: true, reason: 'tmux_send_keys_confirmed', pane: resolution.paneTarget };
       }
     } catch {
       // capture failed; fall through to retry C-m
@@ -332,6 +455,7 @@ export async function drainPendingTeamDispatch({
   let skipped = 0;
   let failed = 0;
   const issueCooldownMs = resolveIssueDispatchCooldownMs();
+  const triggerCooldownMs = resolveDispatchTriggerCooldownMs();
 
   for (const teamName of teams) {
     if (processed >= maxPerTick) break;
@@ -346,7 +470,9 @@ export async function drainPendingTeamDispatch({
       const requests = await readJson(requestsPath, []);
       if (!Array.isArray(requests)) return;
       const issueCooldownState = await readIssueCooldownState(teamDirPath);
+      const triggerCooldownState = await readTriggerCooldownState(teamDirPath);
       const issueCooldownByIssue = issueCooldownState.by_issue || {};
+      const triggerCooldownByKey = triggerCooldownState.by_trigger || {};
       const nowMs = Date.now();
 
       let mutated = false;
@@ -355,6 +481,34 @@ export async function drainPendingTeamDispatch({
         if (!request || typeof request !== 'object') continue;
         if (shouldSkipRequest(request)) {
           skipped += 1;
+          continue;
+        }
+
+        if (request.to_worker === 'leader-fixed' && !safeString(config?.leader_pane_id).trim()) {
+          const nowIso = new Date().toISOString();
+          request.updated_at = nowIso;
+          request.last_reason = LEADER_PANE_MISSING_DEFERRED_REASON;
+          request.status = 'pending';
+          skipped += 1;
+          mutated = true;
+          await appendDispatchLog(logsDir, {
+            type: 'dispatch_deferred',
+            team: teamName,
+            request_id: request.request_id,
+            worker: request.to_worker,
+            to_worker: request.to_worker,
+            message_id: request.message_id || null,
+            reason: LEADER_PANE_MISSING_DEFERRED_REASON,
+            status: 'pending',
+            tmux_injection_attempted: false,
+          });
+          await appendLeaderNotificationDeferredEvent({
+            stateDir,
+            teamName,
+            request,
+            reason: LEADER_PANE_MISSING_DEFERRED_REASON,
+            nowIso,
+          });
           continue;
         }
 
@@ -367,9 +521,27 @@ export async function drainPendingTeamDispatch({
           }
         }
 
+        const triggerKey = normalizeTriggerKey(request.trigger_message);
+        if (triggerCooldownMs > 0 && triggerKey) {
+          const parsed = parseTriggerCooldownEntry(triggerCooldownByKey[triggerKey]);
+          const withinCooldown = Number.isFinite(parsed.at) && parsed.at > 0 && nowMs - parsed.at < triggerCooldownMs;
+          const sameRequestRetry = parsed.lastRequestId !== '' && parsed.lastRequestId === safeString(request.request_id).trim();
+          if (withinCooldown && !sameRequestRetry) {
+            skipped += 1;
+            continue;
+          }
+        }
+
         const result = await injector(request, config, resolve(cwd));
         if (issueKey && issueCooldownMs > 0) {
           issueCooldownByIssue[issueKey] = Date.now();
+          mutated = true;
+        }
+        if (triggerKey && triggerCooldownMs > 0) {
+          triggerCooldownByKey[triggerKey] = {
+            at: Date.now(),
+            last_request_id: safeString(request.request_id).trim(),
+          };
           mutated = true;
         }
         const nowIso = new Date().toISOString();
@@ -449,6 +621,8 @@ export async function drainPendingTeamDispatch({
       if (mutated) {
         issueCooldownState.by_issue = issueCooldownByIssue;
         await writeJsonAtomic(issueCooldownStatePath(teamDirPath), issueCooldownState);
+        triggerCooldownState.by_trigger = triggerCooldownByKey;
+        await writeJsonAtomic(triggerCooldownStatePath(teamDirPath), triggerCooldownState);
         await writeJsonAtomic(requestsPath, requests);
       }
     });

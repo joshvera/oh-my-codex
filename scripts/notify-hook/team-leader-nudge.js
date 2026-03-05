@@ -10,6 +10,8 @@ import { readJsonIfExists, getScopedStateDirsForCurrentSession } from './state-i
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
 import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
+const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injection';
+const LEADER_NOTIFICATION_DEFERRED_TYPE = 'leader_notification_deferred';
 
 export function resolveLeaderNudgeIntervalMs() {
   const raw = safeString(process.env.OMX_TEAM_LEADER_NUDGE_MS || '');
@@ -109,6 +111,26 @@ export async function emitTeamNudgeEvent(cwd, teamName, reason, nowIso) {
   }
 }
 
+async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso) {
+  const eventsDir = join(cwd, '.omx', 'state', 'team', teamName, 'events');
+  const eventsPath = join(eventsDir, 'events.ndjson');
+  try {
+    await mkdir(eventsDir, { recursive: true });
+    const event = {
+      event_id: `leader-deferred-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      team: teamName,
+      type: LEADER_NOTIFICATION_DEFERRED_TYPE,
+      worker: 'leader-fixed',
+      to_worker: 'leader-fixed',
+      reason,
+      created_at: nowIso,
+    };
+    await appendFile(eventsPath, JSON.stringify(event) + '\n');
+  } catch {
+    // Best effort
+  }
+}
+
 export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderStale }) {
   const intervalMs = resolveLeaderNudgeIntervalMs();
   const idleCooldownMs = resolveLeaderAllIdleNudgeCooldownMs();
@@ -163,8 +185,8 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     } catch {
       // ignore
     }
-    const tmuxTarget = leaderPaneId || tmuxSession;
-    if (!tmuxTarget) continue;
+    if (!tmuxSession && !leaderPaneId) continue;
+    const tmuxTarget = leaderPaneId;
 
     const paneStatus = tmuxSession
       ? await checkWorkerPanesAlive(tmuxSession)
@@ -233,6 +255,24 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     }
     const capped = text.length > 180 ? `${text.slice(0, 177)}...` : text;
     const markedText = `${capped} ${DEFAULT_MARKER}`;
+
+    if (!tmuxTarget) {
+      await emitLeaderNudgeDeferredEvent(cwd, teamName, LEADER_PANE_MISSING_NO_INJECTION_REASON, nowIso);
+      try {
+        await logTmuxHookEvent(logsDir, {
+          timestamp: nowIso,
+          type: LEADER_NOTIFICATION_DEFERRED_TYPE,
+          team: teamName,
+          worker: 'leader-fixed',
+          to_worker: 'leader-fixed',
+          reason: LEADER_PANE_MISSING_NO_INJECTION_REASON,
+          leader_pane_id: null,
+          tmux_session: tmuxSession || null,
+          tmux_injection_attempted: false,
+        });
+      } catch { /* ignore */ }
+      continue;
+    }
 
     try {
       await runProcess('tmux', ['send-keys', '-t', tmuxTarget, '-l', markedText], 3000);

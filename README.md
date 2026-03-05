@@ -135,13 +135,15 @@ omx doctor         # Installation/runtime diagnostics
 omx doctor --team  # Team/swarm diagnostics
 omx ask ...        # Ask local provider advisor (claude|gemini), writes .omx/artifacts/*
 omx team ...       # Start/status/resume/shutdown team workers (interactive tmux by default)
+omx ralph          # Launch Codex with ralph persistence mode active
 omx status         # Show active modes
 omx cancel         # Cancel active execution modes
 omx reasoning <mode> # low|medium|high|xhigh
 omx tmux-hook ...  # init|status|validate|test
 omx hooks ...      # init|status|validate|test (plugin extension workflow)
 omx hud ...        # --watch|--json|--preset
-omx help
+omx version        # Show version information
+omx help           # Show help message
 ```
 
 Ask command examples:
@@ -176,13 +178,18 @@ See `docs/hooks-extension.md` for the full extension workflow and event model.
 ## Launch Flags
 
 ```bash
---yolo
---high
---xhigh
---madmax
---force
---dry-run
---verbose
+--yolo              # Launch Codex in yolo mode
+--high              # High reasoning effort (shorthand for -c model_reasoning_effort="high")
+--xhigh             # xhigh reasoning effort (shorthand for -c model_reasoning_effort="xhigh")
+--madmax            # DANGEROUS: bypass Codex approvals and sandbox
+--spark             # Use Codex spark model for team workers only (~1.3x faster)
+--madmax-spark      # spark model for workers + bypass approvals for leader and workers
+-w, --worktree[=<name>]  # Launch Codex in a git worktree (detached when no name given)
+--force             # Force reinstall (overwrite existing files)
+--dry-run           # Show what would be done without doing it
+--keep-config       # Skip config.toml cleanup during uninstall
+--purge             # Remove .omx/ cache directory during uninstall
+--verbose           # Show detailed output
 --scope <user|project>  # setup only
 ```
 
@@ -232,6 +239,8 @@ Operational commands:
 
 ```bash
 omx team <args>
+omx team --help
+omx team api --help
 omx team status <team-name>
 omx team resume <team-name>
 omx team shutdown <team-name>
@@ -296,6 +305,41 @@ Examples:
 - Agents: `architect`, `planner`, `executor`, `debugger`, `verifier`, `security-reviewer`
 - Skills: `autopilot`, `plan`, `team`, `ralph`, `ultrawork`, `cancel`
 
+### Notification Setup Skill (`$configure-notifications`)
+
+Use `$configure-notifications` as the unified entry point for notification setup:
+
+- Discord (webhook/bot)
+- Telegram (bot)
+- Slack (webhook)
+- OpenClaw / custom webhook / custom CLI command
+
+Examples:
+
+```text
+$configure-notifications "configure discord notifications"
+$configure-notifications "configure slack notifications"
+$configure-notifications "configure openclaw notifications"
+```
+
+For OpenClaw with **clawdbot agent turns** (instead of direct message forwarding),
+configure a command gateway using `clawdbot agent --deliver --reply-channel ... --reply-to ...`
+and map hook events (`session-start`, `session-idle`, `ask-user-question`, `session-stop`, `session-end`).
+
+For dev teams using `#omc-dev`, the OpenClaw guide includes a dedicated runbook for:
+- Korean-only hook responses
+- `sessionId` + `tmuxSession` tracing
+- `SOUL.md`-based follow-up workflow
+
+See: `docs/openclaw-integration.md` (Dev Guide section).
+
+Required env gates for OpenClaw command mode:
+
+```bash
+export OMX_OPENCLAW=1
+export OMX_OPENCLAW_COMMAND=1
+```
+
 ### Visual QA Loop (`$visual-verdict`)
 
 Use `$visual-verdict` when a task depends on visual fidelity (reference image(s) + generated screenshot).
@@ -341,7 +385,7 @@ npm test
 
 - **[Full Documentation](https://yeachan-heo.github.io/oh-my-codex-website/docs.html)** - Complete guide
 - **[CLI Reference](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#cli-reference)** - All `omx` commands, flags, and tools
-- **[Notifications Guide](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#notifications)** - Discord, Telegram, Slack, and webhook setup
+- **[Notifications Guide](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#notifications)** - Discord, Telegram, Slack, OpenClaw, and custom command/webhook setup
 - **[Recommended Workflows](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#workflows)** - Battle-tested skill chains for common tasks
 - **[Release Notes](https://yeachan-heo.github.io/oh-my-codex-website/docs.html#release-notes)** - What's new in each version
 
@@ -351,6 +395,7 @@ npm test
 - Migration guide (post-v0.4.4 mainline): `docs/migration-mainline-post-v0.4.4.md`
 - Coverage and parity notes: `COVERAGE.md`
 - Hook extension workflow: `docs/hooks-extension.md`
+- OpenClaw integration examples: `docs/openclaw-integration.md`
 - Setup and contribution details: `CONTRIBUTING.md`
 
 ## Acknowledgments

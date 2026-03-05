@@ -1631,6 +1631,42 @@ function resolveDispatchPolicy(
   });
 }
 
+function isLeaderPaneMissingMailboxPersistedOutcome(params: {
+  workerName: string;
+  paneId?: string;
+  outcome: DispatchOutcome;
+}): boolean {
+  const { workerName, paneId, outcome } = params;
+  return workerName === 'leader-fixed'
+    && !paneId
+    && outcome.ok
+    && outcome.reason === 'leader_pane_missing_mailbox_persisted';
+}
+
+async function markDispatchRequestLeaderPaneMissingDeferred(params: {
+  teamName: string;
+  requestId: string;
+  messageId?: string;
+  cwd: string;
+}): Promise<void> {
+  const { teamName, requestId, messageId, cwd } = params;
+  const current = await readDispatchRequest(teamName, requestId, cwd);
+  if (!current) return;
+  if (current.status !== 'pending') return;
+
+  await transitionDispatchRequest(
+    teamName,
+    requestId,
+    current.status,
+    current.status,
+    {
+      message_id: messageId ?? current.message_id,
+      last_reason: 'leader_pane_missing_deferred',
+    },
+    cwd,
+  ).catch(() => {});
+}
+
 async function dispatchCriticalInboxInstruction(params: {
   teamName: string;
   config: TeamConfig;
@@ -1856,6 +1892,22 @@ async function finalizeHookPreferredMailboxDispatch(params: {
   }
 
   if (fallback.ok) {
+    if (isLeaderPaneMissingMailboxPersistedOutcome({ workerName, paneId, outcome: fallback })) {
+      await markDispatchRequestLeaderPaneMissingDeferred({
+        teamName,
+        requestId,
+        messageId,
+        cwd,
+      });
+      return {
+        ok: true,
+        transport: fallback.transport,
+        reason: 'leader_pane_missing_mailbox_persisted',
+        request_id: requestId,
+        message_id: messageId,
+      };
+    }
+
     await markMessageNotified(teamName, workerName, messageId, cwd).catch(() => false);
     const marked = await markDispatchRequestNotified(
       teamName,
@@ -1902,23 +1954,29 @@ async function finalizeHookPreferredMailboxDispatch(params: {
   };
 }
 
-async function notifyLeaderAsync(config: TeamConfig, message: string, cwd: string): Promise<boolean> {
+async function notifyLeaderAsync(config: TeamConfig, message: string, cwd: string): Promise<DispatchOutcome> {
   // Primary: inject directly into the leader pane via tmux send-keys.
   // This is the fallback path when hook-based dispatch timed out, so the
   // leader needs a direct tmux notification to wake up. Fixes #437.
   if (config.leader_pane_id && isTmuxAvailable()) {
     try {
       await sendToLeaderPane(config.leader_pane_id, message);
-      return true;
+      return { ok: true, transport: 'tmux_send_keys', reason: 'leader_pane_notified' };
     } catch (err) {
       process.stderr.write(`[team/runtime] operation failed: ${err}\n`);
       // Fall through to mailbox
     }
   }
   // Fallback: write to leader mailbox (leader picks up on next hook cycle)
-  if (!config.tmux_session) return false;
   const { notifyLeaderMailboxAsync } = await import('./tmux-session.js');
-  return notifyLeaderMailboxAsync(config.name, 'system', message, cwd);
+  const persisted = await notifyLeaderMailboxAsync(config.name, 'system', message, cwd);
+  if (!persisted) {
+    return { ok: false, transport: 'mailbox', reason: 'leader_mailbox_notify_failed' };
+  }
+  if (!config.leader_pane_id) {
+    return { ok: true, transport: 'mailbox', reason: 'leader_pane_missing_mailbox_persisted' };
+  }
+  return { ok: true, transport: 'mailbox', reason: 'leader_mailbox_notified' };
 }
 
 async function deliverPendingMailboxMessages(
@@ -2051,10 +2109,26 @@ export async function sendWorkerMessage(
       notify: async (_target, message) => (
         leaderTransportPreference === 'hook_preferred_with_fallback'
           ? { ok: true, transport: 'hook', reason: 'queued_for_hook_dispatch' }
-          : { ok: await notifyLeaderAsync(config, message, cwd), transport: 'mailbox', reason: 'leader_mailbox_notified' }
+          : await notifyLeaderAsync(config, message, cwd)
       ),
     });
     let finalOutcome = outcome;
+    if (leaderTransportPreference === 'hook_preferred_with_fallback' && !config.leader_pane_id) {
+      if (outcome.request_id) {
+        await markDispatchRequestLeaderPaneMissingDeferred({
+          teamName: sanitized,
+          requestId: outcome.request_id,
+          messageId: outcome.message_id,
+          cwd,
+        });
+      }
+      finalOutcome = {
+        ...outcome,
+        ok: true,
+        transport: 'mailbox',
+        reason: 'leader_pane_missing_mailbox_persisted',
+      };
+    }
     const canLeaderFallbackDirectly = Boolean(config.leader_pane_id) && isTmuxAvailable();
     if (leaderTransportPreference === 'hook_preferred_with_fallback' && canLeaderFallbackDirectly) {
       if (!outcome.request_id || !outcome.message_id) {
@@ -2070,11 +2144,7 @@ export async function sendWorkerMessage(
         config,
         dispatchPolicy,
         cwd,
-        fallbackNotify: async () => ({
-          ok: await notifyLeaderAsync(config, leaderTriggerMessage, cwd),
-          transport: 'mailbox' as const,
-          reason: 'leader_mailbox_notified',
-        }),
+        fallbackNotify: async () => await notifyLeaderAsync(config, leaderTriggerMessage, cwd),
       });
     }
     if (!finalOutcome.ok) throw new Error(`mailbox_notify_failed:${finalOutcome.reason}`);

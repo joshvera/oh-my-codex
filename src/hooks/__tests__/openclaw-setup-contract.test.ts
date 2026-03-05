@@ -6,10 +6,6 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const configureOpenClawSkill = readFileSync(
-  join(__dirname, "../../../skills/configure-openclaw/SKILL.md"),
-  "utf-8",
-);
 const openclawIntegrationDoc = readFileSync(
   join(__dirname, "../../../docs/openclaw-integration.md"),
   "utf-8",
@@ -29,23 +25,19 @@ function extractJsonFenceContaining(content: string, needle: string): string {
 describe("OpenClaw setup workflow contracts", () => {
   it("documents explicit /hooks/agent delivery verification path", () => {
     assert.ok(
-      configureOpenClawSkill.includes("/hooks/agent"),
-      "configure-openclaw skill should include /hooks/agent",
+      configureNotificationsSkill.includes("/hooks/agent"),
+      "configure-notifications skill should include /hooks/agent guidance",
     );
     assert.ok(
       openclawIntegrationDoc.includes("/hooks/agent"),
       "openclaw integration doc should include /hooks/agent",
     );
-    assert.ok(
-      /Delivery verification \(`\/hooks\/agent`\)/.test(configureOpenClawSkill),
-      "configure-openclaw skill should include a delivery verification section",
-    );
   });
 
   it("keeps wake smoke test guidance alongside delivery verification", () => {
     assert.ok(
-      configureOpenClawSkill.includes("Wake smoke test (`/hooks/wake`)"),
-      "configure-openclaw skill should include /hooks/wake smoke test",
+      configureNotificationsSkill.includes("/hooks/wake"),
+      "configure-notifications skill should include /hooks/wake smoke test guidance",
     );
     assert.ok(
       openclawIntegrationDoc.includes("Wake smoke test (`/hooks/wake`)"),
@@ -55,29 +47,16 @@ describe("OpenClaw setup workflow contracts", () => {
 
   it("includes pass/fail diagnostics guidance", () => {
     assert.ok(
-      /Pass\/Fail Diagnostics Guidance/.test(configureOpenClawSkill),
-      "configure-openclaw skill should include pass/fail diagnostics",
-    );
-    assert.ok(
       /Pass\/Fail Diagnostics/.test(openclawIntegrationDoc),
       "openclaw integration doc should include pass/fail diagnostics",
+    );
+    assert.ok(
+      /Compatibility \+ precedence contract/.test(configureNotificationsSkill),
+      "configure-notifications should include compatibility + precedence contract",
     );
   });
 
   it("includes token check, URL reachability check, and command dual env gate guidance", () => {
-    assert.ok(
-      configureOpenClawSkill.includes("Hook token present"),
-      "configure-openclaw skill should require hook token validation",
-    );
-    assert.ok(
-      configureOpenClawSkill.includes("Gateway URL format and reachability"),
-      "configure-openclaw skill should require URL reachability validation",
-    );
-    assert.ok(
-      configureOpenClawSkill.includes("OMX_OPENCLAW_COMMAND=1"),
-      "configure-openclaw skill should mention command dual gate",
-    );
-
     assert.ok(
       openclawIntegrationDoc.includes("OMX_OPENCLAW_COMMAND=1"),
       "openclaw integration doc should mention command dual gate",
@@ -92,14 +71,14 @@ describe("OpenClaw setup workflow contracts", () => {
     );
   });
 
-  it("uses runtime schema examples with notifications.openclaw.gateways + hooks", () => {
+  it("uses runtime schema examples with notifications.openclaw and generic alias keys", () => {
     assert.ok(
-      configureOpenClawSkill.includes("notifications.openclaw.gateways"),
-      "configure-openclaw skill should reference notifications.openclaw.gateways",
+      configureNotificationsSkill.includes("custom_webhook_command"),
+      "configure-notifications skill should reference custom_webhook_command",
     );
     assert.ok(
-      configureOpenClawSkill.includes("notifications.openclaw.hooks"),
-      "configure-openclaw skill should reference notifications.openclaw.hooks",
+      configureNotificationsSkill.includes("custom_cli_command"),
+      "configure-notifications skill should reference custom_cli_command",
     );
 
     const configJson = extractJsonFenceContaining(openclawIntegrationDoc, "\"notifications\"");
@@ -109,18 +88,69 @@ describe("OpenClaw setup workflow contracts", () => {
           gateways?: Record<string, unknown>;
           hooks?: Record<string, unknown>;
         };
+        custom_webhook_command?: Record<string, unknown>;
       };
     };
 
-    assert.ok(parsed.notifications?.openclaw, "Doc example should include notifications.openclaw");
-    assert.ok(parsed.notifications?.openclaw?.gateways, "Doc example should include openclaw.gateways");
-    assert.ok(parsed.notifications?.openclaw?.hooks, "Doc example should include openclaw.hooks");
+    assert.ok(parsed.notifications, "Doc example should include notifications block");
+    assert.ok(
+      parsed.notifications?.openclaw || parsed.notifications?.custom_webhook_command,
+      "Doc example should include explicit openclaw schema or generic alias schema",
+    );
   });
 
-  it("keeps configure-notifications handoff aligned to gateways + hooks language", () => {
+  it("documents deterministic precedence: explicit notifications.openclaw wins", () => {
     assert.ok(
-      configureNotificationsSkill.includes("notifications.openclaw.gateways + hooks"),
-      "configure-notifications skill should describe schema-aligned OpenClaw setup",
+      configureNotificationsSkill.includes("notifications.openclaw") &&
+        configureNotificationsSkill.includes("wins"),
+      "configure-notifications should document explicit openclaw precedence",
+    );
+    assert.ok(
+      openclawIntegrationDoc.includes("notifications.openclaw") &&
+        openclawIntegrationDoc.includes("wins"),
+      "openclaw integration doc should document explicit openclaw precedence",
+    );
+  });
+
+  it("documents clawdbot agent command workflow for OpenClaw command gateways", () => {
+    assert.ok(
+      configureNotificationsSkill.includes("clawdbot agent"),
+      "configure-notifications should document clawdbot agent workflow",
+    );
+    assert.ok(
+      openclawIntegrationDoc.includes("clawdbot agent"),
+      "openclaw integration doc should document clawdbot agent workflow",
+    );
+    assert.ok(
+      openclawIntegrationDoc.includes("#omc-dev"),
+      "openclaw integration doc should include #omc-dev target example",
+    );
+  });
+
+  it("documents dev runbook requirements: Korean output, tmux session tracing, and SOUL.md follow-up", () => {
+    assert.ok(
+      configureNotificationsSkill.includes("한국어"),
+      "configure-notifications should include Korean output guidance for clawdbot agent workflow",
+    );
+    assert.ok(
+      configureNotificationsSkill.includes("{{tmuxSession}}"),
+      "configure-notifications should include tmuxSession template guidance",
+    );
+    assert.ok(
+      configureNotificationsSkill.includes("SOUL.md"),
+      "configure-notifications should include SOUL.md follow-up guidance",
+    );
+    assert.ok(
+      openclawIntegrationDoc.includes("Dev Guide: OpenClaw + Clawdbot Agent"),
+      "openclaw integration doc should include dedicated dev guide section",
+    );
+    assert.ok(
+      openclawIntegrationDoc.includes("{{tmuxSession}}"),
+      "openclaw integration doc should include tmuxSession tracing guidance",
+    );
+    assert.ok(
+      openclawIntegrationDoc.includes("SOUL.md"),
+      "openclaw integration doc should include SOUL.md follow-up guidance",
     );
   });
 });

@@ -89,6 +89,22 @@ export interface WebhookNotificationConfig {
   method?: "POST" | "PUT";
 }
 
+/** Generic custom webhook command config (normalized to OpenClaw gateway at runtime) */
+export interface CustomWebhookCommandConfig {
+  enabled?: boolean;
+  url: string;
+  headers?: Record<string, string>;
+  method?: "POST" | "PUT";
+  timeout?: number;
+}
+
+/** Generic custom CLI command config (normalized to OpenClaw gateway at runtime) */
+export interface CustomCliCommandConfig {
+  enabled?: boolean;
+  command: string;
+  timeout?: number;
+}
+
 /** Platform config union */
 export type PlatformConfig =
   | DiscordNotificationConfig
@@ -128,6 +144,10 @@ export interface FullNotificationConfig {
 
   /** OpenClaw gateway (enabled flag only — full config lives in openclaw subsystem) */
   openclaw?: { enabled: boolean };
+  /** Generic custom webhook transport alias (OpenClaw-compatible bridge) */
+  custom_webhook_command?: CustomWebhookCommandConfig;
+  /** Generic custom CLI transport alias (OpenClaw-compatible bridge) */
+  custom_cli_command?: CustomCliCommandConfig;
 
   /** Per-event configuration */
   events?: {

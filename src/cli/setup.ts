@@ -63,11 +63,10 @@ interface ResolvedSetupScope {
   source: 'cli' | 'persisted' | 'prompt' | 'default';
 }
 
-const REQUIRED_TEAM_COMM_MCP_TOOLS = [
-  'team_send_message',
-  'team_broadcast',
-  'team_mailbox_list',
-  'team_mailbox_mark_delivered',
+const REQUIRED_TEAM_CLI_API_MARKERS = [
+  'if (subcommand === \'api\')',
+  'executeTeamApiOperation',
+  'TEAM_API_OPERATIONS',
 ] as const;
 
 const DEFAULT_SETUP_SCOPE: SetupScope = 'user';
@@ -292,11 +291,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
   }
   console.log(`  Done (${scopeDirs.codexConfigFile}).\n`);
 
-  // Step 5.5: Verify team comm MCP tools are available via omx_state server.
-  console.log('[5.5/8] Verifying Team MCP comm tools...');
-  const teamToolsCheck = await verifyTeamCommMcpTools(pkgRoot);
+  // Step 5.5: Verify team CLI interop surface is available.
+  console.log('[5.5/8] Verifying Team CLI API interop...');
+  const teamToolsCheck = await verifyTeamCliApiInterop(pkgRoot);
   if (teamToolsCheck.ok) {
-    console.log(`  omx_state exports: ${REQUIRED_TEAM_COMM_MCP_TOOLS.join(', ')}`);
+    console.log('  omx team api command detected (CLI-first interop ready)');
   } else {
     console.log(`  WARNING: ${teamToolsCheck.message}`);
     console.log('  Run `npm run build` and then re-run `omx setup`.');
@@ -523,20 +522,20 @@ async function setupNotifyHook(
   if (options.verbose) console.log(`  Notify hook: ${hookScript}`);
 }
 
-async function verifyTeamCommMcpTools(pkgRoot: string): Promise<{ ok: true } | { ok: false; message: string }> {
-  const stateServerPath = join(pkgRoot, 'dist', 'mcp', 'state-server.js');
-  if (!existsSync(stateServerPath)) {
-    return { ok: false, message: `missing ${stateServerPath}` };
+async function verifyTeamCliApiInterop(pkgRoot: string): Promise<{ ok: true } | { ok: false; message: string }> {
+  const teamCliPath = join(pkgRoot, 'dist', 'cli', 'team.js');
+  if (!existsSync(teamCliPath)) {
+    return { ok: false, message: `missing ${teamCliPath}` };
   }
 
   try {
-    const content = await readFile(stateServerPath, 'utf-8');
-    const missing = REQUIRED_TEAM_COMM_MCP_TOOLS.filter((toolName) => !content.includes(toolName));
+    const content = await readFile(teamCliPath, 'utf-8');
+    const missing = REQUIRED_TEAM_CLI_API_MARKERS.filter((marker) => !content.includes(marker));
     if (missing.length > 0) {
-      return { ok: false, message: `state-server missing tool(s): ${missing.join(', ')}` };
+      return { ok: false, message: `team CLI interop markers missing: ${missing.join(', ')}` };
     }
     return { ok: true };
   } catch {
-    return { ok: false, message: `cannot read ${stateServerPath}` };
+    return { ok: false, message: `cannot read ${teamCliPath}` };
   }
 }

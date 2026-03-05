@@ -77,6 +77,40 @@ describe('mcp-comm', () => {
     }
   });
 
+  it('queueDirectMailboxMessage keeps leader-fixed missing-pane request pending/deferred', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-mcp-comm-'));
+    try {
+      await initTeamState('alpha', 't', 'executor', 1, cwd);
+
+      const outcome = await queueDirectMailboxMessage({
+        teamName: 'alpha',
+        fromWorker: 'worker-1',
+        toWorker: 'leader-fixed',
+        body: 'hello leader',
+        triggerMessage: 'check leader mailbox',
+        cwd,
+        transportPreference: 'transport_direct',
+        fallbackAllowed: false,
+        notify: async () => ({ ok: true, transport: 'mailbox', reason: 'leader_pane_missing_mailbox_persisted' }),
+      });
+
+      assert.equal(outcome.ok, true);
+      assert.ok(outcome.request_id);
+      assert.ok(outcome.message_id);
+
+      const request = await readDispatchRequest('alpha', outcome.request_id!, cwd);
+      assert.equal(request?.status, 'pending');
+      assert.equal(request?.last_reason, 'leader_pane_missing_deferred');
+
+      const mailbox = await listMailboxMessages('alpha', 'leader-fixed', cwd);
+      assert.equal(mailbox.length, 1);
+      assert.equal(mailbox[0]?.body, 'hello leader');
+      assert.equal(mailbox[0]?.notified_at, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('queueBroadcastMailboxMessage notifies and marks notified per recipient', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-mcp-comm-'));
     try {

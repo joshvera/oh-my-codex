@@ -1447,46 +1447,56 @@ esac
 
   it('sendWorkerMessage hook-preferred path for leader waits for receipt then falls back to direct notify', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-leader-hook-'));
-    const binDir = join(cwd, 'bin');
-    const fakeTmuxPath = join(binDir, 'tmux');
-    const prevPath = process.env.PATH;
     try {
-      await mkdir(binDir, { recursive: true });
-      await writeFile(
-        fakeTmuxPath,
-        `#!/usr/bin/env node
-const args = process.argv.slice(2);
-if (args[0] === '-V') {
-  console.log('tmux 3.4');
-  process.exit(0);
-}
-process.exit(0);
-`,
-        { mode: 0o755 },
-      );
-      process.env.PATH = `${binDir}:${prevPath ?? ''}`;
-
       await initTeamState('team-leader-hook', 'leader hook fallback test', 'executor', 1, cwd);
       const cfg = await readTeamConfig('team-leader-hook', cwd);
       assert.ok(cfg);
       if (!cfg) throw new Error('missing team config');
-      cfg.leader_pane_id = '%999';
+      cfg.leader_pane_id = '';
       await saveTeamConfig(cfg, cwd);
       await sendWorkerMessage('team-leader-hook', 'worker-1', 'leader-fixed', 'hello leader', cwd);
 
       const mailbox = await listMailboxMessages('team-leader-hook', 'leader-fixed', cwd);
       assert.ok(mailbox.length >= 1, `expected at least 1 mailbox message, got ${mailbox.length}`);
       const notifiedMsg = mailbox.find((m: { notified_at?: string }) => m.notified_at);
-      assert.ok(notifiedMsg, 'expected at least one mailbox message with notified_at');
+      assert.equal(notifiedMsg, undefined, 'leader mailbox message should remain unnotified while pane is missing');
 
       const requests = await listDispatchRequests('team-leader-hook', cwd, { kind: 'mailbox' });
       assert.ok(requests.length >= 1, `expected at least 1 dispatch request, got ${requests.length}`);
-      const notified = requests.find((r: { status?: string }) => r.status === 'notified');
-      assert.ok(notified, 'expected a dispatch request with status notified');
-      assert.match(notified?.last_reason ?? '', /^fallback_confirmed:/);
+      const pending = requests.find((r: { status?: string; to_worker?: string }) =>
+        r.status === 'pending' && r.to_worker === 'leader-fixed');
+      assert.ok(pending, 'expected a pending leader-fixed dispatch request');
+      assert.equal(pending?.last_reason, 'leader_pane_missing_deferred');
     } finally {
-      if (typeof prevPath === 'string') process.env.PATH = prevPath;
-      else delete process.env.PATH;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('sendWorkerMessage transport_direct keeps leader-fixed request pending when leader_pane_id missing', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-leader-direct-'));
+    try {
+      await initTeamState('team-leader-direct', 'leader direct transport test', 'executor', 1, cwd);
+      const cfg = await readTeamConfig('team-leader-direct', cwd);
+      assert.ok(cfg);
+      if (!cfg) throw new Error('missing team config');
+      cfg.leader_pane_id = '';
+      await saveTeamConfig(cfg, cwd);
+
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'team-leader-direct', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
+      manifest.policy = { ...(manifest.policy || {}), dispatch_mode: 'transport_direct' };
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+      await sendWorkerMessage('team-leader-direct', 'worker-1', 'leader-fixed', 'hello leader direct', cwd);
+
+      const mailbox = await listMailboxMessages('team-leader-direct', 'leader-fixed', cwd);
+      assert.ok(mailbox.length >= 1, `expected at least 1 mailbox message, got ${mailbox.length}`);
+      const requests = await listDispatchRequests('team-leader-direct', cwd, { kind: 'mailbox', to_worker: 'leader-fixed' });
+      assert.ok(requests.length >= 1, `expected at least 1 leader-fixed dispatch request, got ${requests.length}`);
+      const latest = requests[requests.length - 1];
+      assert.equal(latest?.status, 'pending');
+      assert.equal(latest?.last_reason, 'leader_pane_missing_deferred');
+    } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });

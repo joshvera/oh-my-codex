@@ -184,3 +184,88 @@ describe("resolveGateway", () => {
     assert.equal(result, null);
   });
 });
+
+
+describe("getOpenClawConfig generic alias normalization", () => {
+  let tmpDir: string;
+  let originalEnv: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    originalEnv = { ...process.env };
+    tmpDir = join(tmpdir(), `omx-openclaw-alias-test-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+    process.env.OMX_OPENCLAW = "1";
+    process.env.HOME = tmpDir;
+    delete process.env.OMX_OPENCLAW_CONFIG;
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in originalEnv)) delete process.env[key];
+    }
+    for (const [key, val] of Object.entries(originalEnv)) {
+      process.env[key] = val;
+    }
+    try { rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  });
+
+  it("normalizes custom_webhook_command alias to openclaw runtime config", async () => {
+    const omxConfigPath = join(tmpDir, ".codex", ".omx-config.json");
+    mkdirSync(join(tmpDir, ".codex"), { recursive: true });
+    writeFileSync(omxConfigPath, JSON.stringify({
+      notifications: {
+        enabled: true,
+        custom_webhook_command: {
+          enabled: true,
+          url: "https://example.com/hook",
+          events: ["session-end", "ask-user-question"],
+          instruction: "Notify {{event}}",
+        },
+      },
+    }));
+
+    const { getOpenClawConfig, resetOpenClawConfigCache } = await import("../config.js");
+    resetOpenClawConfigCache();
+    const result = getOpenClawConfig();
+    assert.ok(result !== null);
+    assert.equal(result!.enabled, true);
+    assert.ok(result!.gateways["custom-webhook"]);
+    assert.equal(result!.hooks["session-end"]?.gateway, "custom-webhook");
+  });
+
+  it("explicit notifications.openclaw wins over generic aliases", async () => {
+    const omxConfigPath = join(tmpDir, ".codex", ".omx-config.json");
+    mkdirSync(join(tmpDir, ".codex"), { recursive: true });
+    writeFileSync(omxConfigPath, JSON.stringify({
+      notifications: {
+        enabled: true,
+        openclaw: {
+          enabled: true,
+          gateways: {
+            explicit: { type: "http", url: "https://explicit.example/hook" },
+          },
+          hooks: {
+            "session-end": {
+              enabled: true,
+              gateway: "explicit",
+              instruction: "explicit instruction",
+            },
+          },
+        },
+        custom_webhook_command: {
+          enabled: true,
+          url: "https://alias.example/hook",
+          events: ["session-end"],
+          instruction: "alias instruction",
+        },
+      },
+    }));
+
+    const { getOpenClawConfig, resetOpenClawConfigCache } = await import("../config.js");
+    resetOpenClawConfigCache();
+    const result = getOpenClawConfig();
+    assert.ok(result !== null);
+    assert.ok(result!.gateways["explicit"]);
+    assert.equal(result!.hooks["session-end"]?.instruction, "explicit instruction");
+  });
+});

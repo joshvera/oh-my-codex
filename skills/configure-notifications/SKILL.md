@@ -24,255 +24,257 @@ triggers:
 
 # Configure OMX Notifications
 
-Unified entry point for setting up notifications across all supported platforms.
-OMX can notify you on Discord, Telegram, Slack, or your own OpenClaw gateway.
+Unified and only entry point for notification setup.
 
-## How This Skill Works
+- **Native integrations (first-class):** Discord, Telegram, Slack
+- **Generic extensibility integrations:** `custom_webhook_command`, `custom_cli_command`
 
-This skill detects what's already configured, presents a menu, and delegates to the
-appropriate platform skill. It also handles cross-cutting settings like verbosity,
-notification profiles, reply listener, and idle cooldown.
+> Standalone configure skills (`configure-discord`, `configure-telegram`, `configure-slack`, `configure-openclaw`) are removed.
 
-## Step 1: Detect Currently Configured Platforms
+## Step 1: Inspect Current State
 
 ```bash
 CONFIG_FILE="$HOME/.codex/.omx-config.json"
 
 if [ -f "$CONFIG_FILE" ]; then
-  DISCORD_ENABLED=$(jq -r '.notifications.discord.enabled // false' "$CONFIG_FILE" 2>/dev/null)
-  DISCORD_BOT_ENABLED=$(jq -r '.notifications["discord-bot"].enabled // false' "$CONFIG_FILE" 2>/dev/null)
-  TELEGRAM_ENABLED=$(jq -r '.notifications.telegram.enabled // false' "$CONFIG_FILE" 2>/dev/null)
-  SLACK_ENABLED=$(jq -r '.notifications.slack.enabled // false' "$CONFIG_FILE" 2>/dev/null)
-  OPENCLAW_ENABLED=$(jq -r '.notifications.openclaw.enabled // false' "$CONFIG_FILE" 2>/dev/null)
-  NOTIF_ENABLED=$(jq -r '.notifications.enabled // false' "$CONFIG_FILE" 2>/dev/null)
-  VERBOSITY=$(jq -r '.notifications.verbosity // "session"' "$CONFIG_FILE" 2>/dev/null)
-  COOLDOWN=$(jq -r '.notifications.idleCooldownSeconds // 60' "$CONFIG_FILE" 2>/dev/null)
-  REPLY_ENABLED=$(jq -r '.notifications.reply.enabled // false' "$CONFIG_FILE" 2>/dev/null)
-
-  echo "NOTIF_ENABLED=$NOTIF_ENABLED"
-  echo "DISCORD_ENABLED=$DISCORD_ENABLED"
-  echo "DISCORD_BOT_ENABLED=$DISCORD_BOT_ENABLED"
-  echo "TELEGRAM_ENABLED=$TELEGRAM_ENABLED"
-  echo "SLACK_ENABLED=$SLACK_ENABLED"
-  echo "OPENCLAW_ENABLED=$OPENCLAW_ENABLED"
-  echo "VERBOSITY=$VERBOSITY"
-  echo "COOLDOWN=$COOLDOWN"
-  echo "REPLY_ENABLED=$REPLY_ENABLED"
+  jq -r '
+    {
+      notifications_enabled: (.notifications.enabled // false),
+      discord: (.notifications.discord.enabled // false),
+      discord_bot: (.notifications["discord-bot"].enabled // false),
+      telegram: (.notifications.telegram.enabled // false),
+      slack: (.notifications.slack.enabled // false),
+      openclaw: (.notifications.openclaw.enabled // false),
+      custom_webhook_command: (.notifications.custom_webhook_command.enabled // false),
+      custom_cli_command: (.notifications.custom_cli_command.enabled // false),
+      verbosity: (.notifications.verbosity // "session"),
+      idleCooldownSeconds: (.notifications.idleCooldownSeconds // 60),
+      reply_enabled: (.notifications.reply.enabled // false)
+    }
+  ' "$CONFIG_FILE"
 else
   echo "NO_CONFIG_FILE"
 fi
 ```
 
-## Step 2: Show Current Status and Main Menu
+## Step 2: Main Menu
 
-Display a summary of what's configured:
-
-```
-OMX Notification Status
-───────────────────────
-  Discord webhook: enabled / not configured
-  Discord bot:     enabled / not configured
-  Telegram:        enabled / not configured
-  Slack:           enabled / not configured
-  OpenClaw:        enabled / not configured
-
-  Verbosity:       session (default)
-  Idle cooldown:   60s
-  Reply listener:  disabled
-```
-
-Then use AskUserQuestion:
+Use AskUserQuestion:
 
 **Question:** "What would you like to configure?"
 
 **Options:**
-1. **Discord** - Webhook or bot notifications to Discord channels
-2. **Telegram** - Bot notifications to personal or group chats
-3. **Slack** - Incoming webhook notifications to Slack channels
-4. **OpenClaw** - Self-hosted gateway (`notifications.openclaw.gateways + hooks`) with /hooks/agent delivery verification
-5. **Cross-cutting settings** - Verbosity, idle cooldown, profiles, reply listener
-6. **Disable all notifications** - Turn off all notification dispatching
+1. **Discord (native)** - webhook or bot
+2. **Telegram (native)** - bot token + chat id
+3. **Slack (native)** - incoming webhook
+4. **Generic webhook command** - `custom_webhook_command`
+5. **Generic CLI command** - `custom_cli_command`
+6. **Cross-cutting settings** - verbosity, idle cooldown, profiles, reply listener
+7. **Disable all notifications** - set `notifications.enabled = false`
 
-## Step 3: Delegate to Platform Skill
+## Step 3: Configure Native Platforms (Discord / Telegram / Slack)
 
-Based on the user's choice, invoke the appropriate platform skill:
+Collect and validate platform-specific values, then write directly under native keys:
 
-- **Discord** → invoke `/configure-discord`
-- **Telegram** → invoke `/configure-telegram`
-- **Slack** → invoke `/configure-slack`
-- **OpenClaw** → invoke `/configure-openclaw`
-- **Cross-cutting settings** → continue with Step 4 below
-- **Disable all** → continue with Step 5 below
+- Discord webhook: `notifications.discord`
+- Discord bot: `notifications["discord-bot"]`
+- Telegram: `notifications.telegram`
+- Slack: `notifications.slack`
 
-When delegating, say: "Starting the [Platform] configuration wizard..." and invoke the skill.
+Do not write these as generic command/webhook aliases.
 
-## Step 4: Cross-Cutting Settings
+## Step 4: Configure Generic Extensibility
 
-If the user chose "Cross-cutting settings":
+### 4a) `custom_webhook_command`
 
-### 4a. Verbosity
+Use AskUserQuestion to collect:
+- URL
+- Optional headers
+- Optional method (`POST` default, or `PUT`)
+- Optional event list (`session-end`, `ask-user-question`, `session-start`, `session-idle`, `stop`)
+- Optional instruction template
 
-Use AskUserQuestion:
-
-**Question:** "How verbose should notifications be?"
-
-**Options:**
-1. **session (Recommended)** - Start, idle, stop, end events + tmux snippet
-2. **minimal** - Start, stop, end only (no idle events, no tmux tail)
-3. **agent** - All session events plus ask-user-question prompts
-4. **verbose** - Everything including tool call output
-
-Write verbosity to config:
+Write:
 
 ```bash
-echo "$(cat "$CONFIG_FILE")" | jq \
-  --arg verbosity "$VERBOSITY" \
-  '.notifications.verbosity = $verbosity' > "$CONFIG_FILE"
+jq \
+  --arg url "$URL" \
+  --arg method "${METHOD:-POST}" \
+  --arg instruction "${INSTRUCTION:-OMX event {{event}} for {{projectPath}}}" \
+  '.notifications = (.notifications // {enabled: true}) |
+   .notifications.enabled = true |
+   .notifications.custom_webhook_command = {
+     enabled: true,
+     url: $url,
+     method: $method,
+     instruction: $instruction,
+     events: ["session-end", "ask-user-question"]
+   }' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
 ```
 
-Env var alternative: `OMX_NOTIFY_VERBOSITY=session`
+### 4b) `custom_cli_command`
 
-### 4b. Idle Notification Cooldown
+Use AskUserQuestion to collect:
+- Command template (supports `{{event}}`, `{{instruction}}`, `{{sessionId}}`, `{{projectPath}}`)
+- Optional event list
+- Optional instruction template
 
-Use AskUserQuestion:
-
-**Question:** "How often should idle notifications fire at most? (in seconds)"
-
-**Options:**
-1. **60 seconds (default)** - At most once per minute
-2. **300 seconds** - At most once per 5 minutes
-3. **0 (disabled)** - Send every turn with no throttling
-4. **Custom** - Enter a number of seconds
-
-Write the cooldown to config:
+Write:
 
 ```bash
-echo "$(cat "$CONFIG_FILE")" | jq \
-  --argjson cooldown "$COOLDOWN_SECONDS" \
-  '.notifications.idleCooldownSeconds = $cooldown' > "$CONFIG_FILE"
+jq \
+  --arg command "$COMMAND_TEMPLATE" \
+  --arg instruction "${INSTRUCTION:-OMX event {{event}} for {{projectPath}}}" \
+  '.notifications = (.notifications // {enabled: true}) |
+   .notifications.enabled = true |
+   .notifications.custom_cli_command = {
+     enabled: true,
+     command: $command,
+     instruction: $instruction,
+     events: ["session-end", "ask-user-question"]
+   }' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
 ```
 
-Env var alternative: `OMX_IDLE_COOLDOWN_SECONDS=60`
+> Activation gate: OpenClaw-backed dispatch is active only when `OMX_OPENCLAW=1`.
+> For command gateways, also require `OMX_OPENCLAW_COMMAND=1`.
+> Optional timeout env override: `OMX_OPENCLAW_COMMAND_TIMEOUT_MS` (ms).
 
-### 4c. Notification Profiles
+### 4b-1) OpenClaw + Clawdbot Agent Workflow (recommended for dev)
 
-Explain that profiles let the user have different notification configs per context:
+If the user explicitly asks to route hook notifications through **clawdbot agent turns**
+(not direct message/webhook forwarding), use a command gateway that invokes
+`clawdbot agent` and delivers back to Discord.
 
-```
-Notification Profiles
-─────────────────────
-Profiles let you switch notification targets based on context.
-For example: a "work" profile for your work Slack, a "personal"
-profile for your personal Telegram.
+Notes:
+- Hook name mapping is intentional: notifications `session-stop` -> OpenClaw hook `stop`.
+- OMX shell-escapes template substitutions for command gateways (including `{{instruction}}`).
+- Keep `instruction` templates concise and avoid untrusted shell metacharacters.
+- During troubleshooting, avoid swallowing command output; route it to a log file.
+- Timeout precedence: `gateways.<name>.timeout` > `OMX_OPENCLAW_COMMAND_TIMEOUT_MS` > `5000`.
+- For clawdbot agent workflows, set `gateways.<name>.timeout` to `120000` (recommended).
+- For dev operations, enforce Korean output in all hook instructions.
+- Include both `session={{sessionId}}` and `tmux={{tmuxSession}}` in hook text for traceability.
+- If follow-up is needed, explicitly instruct clawdbot to consult `SOUL.md` and continue in `#omc-dev`.
 
-Activate a profile with: OMX_NOTIFY_PROFILE=work
-or set a default: .omx-config.json > notifications.defaultProfile
-```
-
-Use AskUserQuestion:
-
-**Question:** "Would you like to configure notification profiles?"
-
-**Options:**
-1. **Yes** - Set up named profiles
-2. **No, use flat config** - Keep the current single-config setup
-
-If yes, guide the user to manually add profiles under `notifications.profiles` in `.omx-config.json`, and set `defaultProfile`.
-
-### 4d. Reply Listener
-
-Explain the reply listener:
-
-```
-Reply Listener
-──────────────
-The reply listener lets you send messages back to Codex from
-Discord (bot) or Telegram. When OMX asks for input, you can
-reply directly from your phone or messaging app.
-
-Requires:
-  - Discord Bot or Telegram platform configured
-  - OMX_REPLY_ENABLED=true in your shell profile
-  - For Discord: OMX_REPLY_DISCORD_USER_IDS=<your user ID>
-    (only messages from these IDs are accepted for security)
-```
-
-Use AskUserQuestion:
-
-**Question:** "Would you like to enable the reply listener?"
-
-**Options:**
-1. **Yes** - Enable two-way communication from Discord/Telegram
-2. **No** - Keep notifications one-way only
-
-If yes, write to config:
+Example (targeting `#omc-dev`):
 
 ```bash
-echo "$(cat "$CONFIG_FILE")" | jq \
-  '.notifications.reply = (.notifications.reply // {}) |
-   .notifications.reply.enabled = true' > "$CONFIG_FILE"
+jq \
+  --arg command "(clawdbot agent --session-id omx-hooks --message {{instruction}} --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json >/tmp/omx-openclaw-agent.log 2>&1)" \
+  '.notifications = (.notifications // {enabled: true}) |
+   .notifications.enabled = true |
+   .notifications.verbosity = "verbose" |
+   .notifications.events = (.notifications.events // {}) |
+   .notifications.events["session-start"] = {enabled: true} |
+   .notifications.events["session-idle"] = {enabled: true} |
+   .notifications.events["ask-user-question"] = {enabled: true} |
+   .notifications.events["session-stop"] = {enabled: true} |
+   .notifications.events["session-end"] = {enabled: true} |
+   .notifications.openclaw = (.notifications.openclaw // {}) |
+   .notifications.openclaw.enabled = true |
+   .notifications.openclaw.gateways = (.notifications.openclaw.gateways // {}) |
+   .notifications.openclaw.gateways["local"] = {
+     type: "command",
+     command: $command,
+     timeout: 120000
+   } |
+   .notifications.openclaw.hooks = (.notifications.openclaw.hooks // {}) |
+   .notifications.openclaw.hooks["session-start"] = {
+     enabled: true,
+     gateway: "local",
+     instruction: "OMX hook=session-start project={{projectName}} session={{sessionId}} tmux={{tmuxSession}}. 한국어로 상태를 공유하고 SOUL.md를 참고해 필요한 후속 조치를 #omc-dev에 안내하세요."
+   } |
+   .notifications.openclaw.hooks["session-idle"] = {
+     enabled: true,
+     gateway: "local",
+     instruction: "OMX hook=session-idle project={{projectName}} session={{sessionId}} tmux={{tmuxSession}}. 한국어로 idle 상황을 간단히 공유하고 진행중인 작업 팔로업을 안내하세요."
+   } |
+   .notifications.openclaw.hooks["ask-user-question"] = {
+     enabled: true,
+     gateway: "local",
+     instruction: "OMX hook=ask-user-question session={{sessionId}} tmux={{tmuxSession}} question={{question}}. 한국어로 사용자 응답 필요를 #omc-dev에 알리고 즉시 액션 아이템을 제시하세요."
+   } |
+   .notifications.openclaw.hooks["stop"] = {
+     enabled: true,
+     gateway: "local",
+     instruction: "OMX hook=session-stop project={{projectName}} session={{sessionId}} tmux={{tmuxSession}}. 한국어로 중단 상태와 정리 액션을 SOUL.md 기준으로 전달하세요."
+   } |
+   .notifications.openclaw.hooks["session-end"] = {
+     enabled: true,
+     gateway: "local",
+     instruction: "OMX hook=session-end project={{projectName}} session={{sessionId}} tmux={{tmuxSession}} reason={{reason}}. 한국어로 완료 요약을 1줄로 남기고 필요한 후속 조치를 안내하세요."
+   }' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
 ```
 
-And remind them to set `OMX_REPLY_ENABLED=true` and (for Discord) `OMX_REPLY_DISCORD_USER_IDS`.
-
-## Step 5: Disable All Notifications
-
-If the user chose "Disable all notifications":
-
-Use AskUserQuestion:
-
-**Question:** "Are you sure you want to disable all notifications?"
-
-**Options:**
-1. **Yes, disable all** - Set notifications.enabled = false
-2. **No, go back** - Return to the main menu
-
-If confirmed:
+Verification for this mode:
 
 ```bash
-echo "$(cat "$CONFIG_FILE")" | jq \
-  '.notifications.enabled = false' > "$CONFIG_FILE"
+clawdbot agent --session-id omx-hooks --message "OMX hook test via clawdbot agent path" \
+  --thinking minimal --deliver --reply-channel discord --reply-to '#omc-dev' --timeout 120 --json
 ```
 
-Confirm: "Notifications disabled. Re-enable anytime by running /configure-notifications."
+Dev runbook (Korean + tmux follow-up):
 
-## Step 6: After Configuration
+```bash
+# 1) identify active OMX tmux sessions
+tmux list-sessions -F '#{session_name}' | rg '^omx-' || true
 
-After completing any platform or setting configuration, offer to configure another:
+# 2) confirm hook templates include session/tmux context
+jq '.notifications.openclaw.hooks' "$CONFIG_FILE"
 
-Use AskUserQuestion:
-
-**Question:** "Would you like to configure another platform or setting?"
-
-**Options:**
-1. **Yes** - Return to the main menu (Step 2)
-2. **No, I'm done** - Show final summary and exit
-
-## Final Summary
-
-Display a summary of all active notification platforms:
-
+# 3) inspect agent logs when delivery looks broken
+tail -n 120 /tmp/omx-openclaw-agent.log
 ```
-OMX Notification Configuration Complete!
-─────────────────────────────────────────
-  Active platforms:
-    Discord webhook: enabled
-    Telegram:        enabled
 
-  Verbosity:       session
-  Idle cooldown:   60s
-  Reply listener:  disabled
+### 4c) Compatibility + precedence contract
 
-Config saved to: ~/.codex/.omx-config.json
+OMX accepts both:
+- explicit `notifications.openclaw` schema (legacy/runtime shape)
+- generic aliases (`custom_webhook_command`, `custom_cli_command`)
 
-Quick reference — env vars:
-  OMX_DISCORD_WEBHOOK_URL=...
-  OMX_TELEGRAM_BOT_TOKEN=...
-  OMX_TELEGRAM_CHAT_ID=...
-  OMX_SLACK_WEBHOOK_URL=...
-  OMX_NOTIFY_VERBOSITY=session
-  OMX_IDLE_COOLDOWN_SECONDS=60
-  OMX_OPENCLAW=1
+Deterministic precedence:
+1. `notifications.openclaw` **wins** when present and valid.
+2. Generic aliases are ignored in that case (with warning).
 
-Run /configure-notifications again to update any settings.
+## Step 5: Cross-Cutting Settings
+
+### Verbosity
+- minimal / session (recommended) / agent / verbose
+
+### Idle cooldown
+- `notifications.idleCooldownSeconds`
+
+### Profiles
+- `notifications.profiles`
+- `notifications.defaultProfile`
+
+### Reply listener
+- `notifications.reply.enabled`
+- env gates: `OMX_REPLY_ENABLED=true`, and for Discord `OMX_REPLY_DISCORD_USER_IDS=...`
+
+## Step 6: Disable All Notifications
+
+```bash
+jq '.notifications.enabled = false' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
 ```
+
+## Step 7: Verification Guidance
+
+After writing config, run a smoke check:
+
+```bash
+npm run build
+```
+
+For OpenClaw-like HTTP integrations, verify both:
+- `/hooks/wake` smoke test
+- `/hooks/agent` delivery verification
+
+## Final Summary Template
+
+Show:
+- Native platforms enabled
+- Generic aliases enabled (`custom_webhook_command`, `custom_cli_command`)
+- Whether explicit `notifications.openclaw` exists (and therefore overrides aliases)
+- Verbosity + idle cooldown + reply listener state
+- Config path (`~/.codex/.omx-config.json`)

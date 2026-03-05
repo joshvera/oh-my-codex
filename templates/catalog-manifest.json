@@ -235,22 +235,6 @@
       "internalRequired": false
     },
     {
-      "name": "configure-telegram",
-      "category": "utility",
-      "status": "merged",
-      "canonical": "omx-setup",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "configure-discord",
-      "category": "utility",
-      "status": "merged",
-      "canonical": "omx-setup",
-      "core": false,
-      "internalRequired": false
-    },
-    {
       "name": "ralph-init",
       "category": "utility",
       "status": "merged",

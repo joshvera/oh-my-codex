@@ -40,6 +40,15 @@ function isConfirmedNotification(outcome: DispatchOutcome): boolean {
   return outcome.reason !== 'queued_for_hook_dispatch';
 }
 
+function isLeaderPaneMissingMailboxPersistedOutcome(
+  request: TeamDispatchRequest,
+  outcome: DispatchOutcome,
+): boolean {
+  return request.to_worker === 'leader-fixed'
+    && outcome.ok
+    && outcome.reason === 'leader_pane_missing_mailbox_persisted';
+}
+
 function fallbackTransportForPreference(
   preference: TeamDispatchRequestInput['transport_preference'],
 ): DispatchTransport {
@@ -75,6 +84,30 @@ async function markImmediateDispatchFailure(params: {
     {
       message_id: messageId ?? current.message_id,
       last_reason: reason,
+    },
+    cwd,
+  ).catch(() => {});
+}
+
+async function markLeaderPaneMissingDeferred(params: {
+  teamName: string;
+  request: TeamDispatchRequest;
+  cwd: string;
+  messageId?: string;
+}): Promise<void> {
+  const { teamName, request, cwd, messageId } = params;
+  const current = await readDispatchRequest(teamName, request.request_id, cwd);
+  if (!current) return;
+  if (current.status !== 'pending') return;
+
+  await transitionDispatchRequest(
+    teamName,
+    request.request_id,
+    current.status,
+    current.status,
+    {
+      message_id: messageId ?? current.message_id,
+      last_reason: 'leader_pane_missing_deferred',
     },
     cwd,
   ).catch(() => {});
@@ -206,6 +239,15 @@ export async function queueDirectMailboxMessage(params: QueueDirectMessageParams
     message_id: message.message_id,
     to_worker: params.toWorker,
   };
+  if (isLeaderPaneMissingMailboxPersistedOutcome(queued.request, outcome)) {
+    await markLeaderPaneMissingDeferred({
+      teamName: params.teamName,
+      request: queued.request,
+      cwd: params.cwd,
+      messageId: message.message_id,
+    });
+    return outcome;
+  }
   if (isConfirmedNotification(outcome)) {
     await markMessageNotified(params.teamName, params.toWorker, message.message_id, params.cwd);
     await markDispatchRequestNotified(

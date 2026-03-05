@@ -37,8 +37,6 @@
     { "name": "skill", "category": "utility", "status": "active" },
     { "name": "hud", "category": "utility", "status": "active" },
     { "name": "omx-setup", "category": "utility", "status": "active" },
-    { "name": "configure-telegram", "category": "utility", "status": "merged", "canonical": "omx-setup" },
-    { "name": "configure-discord", "category": "utility", "status": "merged", "canonical": "omx-setup" },
     { "name": "ralph-init", "category": "utility", "status": "merged", "canonical": "plan" },
     { "name": "worker", "category": "utility", "status": "internal", "internalRequired": true }
   ],

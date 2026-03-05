@@ -63,6 +63,7 @@ function runNotifyHookAsWorker(
       ...process.env,
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       OMX_TEAM_WORKER: workerEnv,
+      OMX_TEAM_WORKER_IDLE_NOTIFY: 'false',
       OMX_TEAM_ALL_IDLE_COOLDOWN_MS: '500', // short cooldown for tests
       TMUX: '',
       TMUX_PANE: '',
@@ -116,12 +117,28 @@ describe('notify-hook all-workers-idle notification', () => {
       const result = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`);
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
-      assert.ok(existsSync(tmuxLogPath), 'tmux should have been called');
-      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /send-keys/, 'should use send-keys to notify leader');
-      assert.match(tmuxLog, /-t devsess:0/, 'should target the leader tmux session');
-      assert.match(tmuxLog, /\[OMX\] All 2 workers idle/, 'should include all-workers-idle message');
-      assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should include injection marker');
+      if (existsSync(tmuxLogPath)) {
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(tmuxLog, /send-keys -t .*devsess:0/, 'must not inject to session when leader pane is missing');
+      }
+
+      const eventsPath = join(teamDir, 'events', 'events.ndjson');
+      assert.ok(existsSync(eventsPath), 'events.ndjson should exist after deferred notification');
+      const eventsContent = await readFile(eventsPath, 'utf-8');
+      const events = eventsContent.trim().split('\n').map(line => JSON.parse(line));
+      const deferredEvent = events.find((e: { type: string; reason?: string }) =>
+        e.type === 'leader_notification_deferred' && e.reason === 'leader_pane_missing_no_injection');
+      assert.ok(deferredEvent, 'should emit leader_notification_deferred with missing-pane reason');
+
+      const logPath = join(logsDir, `tmux-hook-${new Date().toISOString().split('T')[0]}.jsonl`);
+      assert.ok(existsSync(logPath), 'tmux hook log should exist');
+      const logLines = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean);
+      const warn = logLines
+        .map((line) => JSON.parse(line))
+        .find((entry: { type?: string; reason?: string }) =>
+          entry.type === 'leader_notification_deferred' && entry.reason === 'leader_pane_missing_no_injection');
+      assert.ok(warn, 'should log leader_notification_deferred warning');
+      assert.equal(warn.tmux_injection_attempted, false);
     });
   });
 
@@ -405,6 +422,7 @@ describe('notify-hook all-workers-idle notification', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'omx-team-event',
+        leader_pane_id: '%77',
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
           { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
@@ -522,6 +540,7 @@ describe('notify-hook all-workers-idle notification', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'solo-session:0',
+        leader_pane_id: '%13',
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
         ],
@@ -577,6 +596,7 @@ describe('notify-hook all-workers-idle notification', () => {
         policy: { display_mode: 'auto', delegation_only: false, plan_approval_required: false, nested_teams_allowed: false, one_team_per_leader_session: true, cleanup_requires_all_workers_inactive: true },
         permissions_snapshot: { approval_mode: 'unknown', sandbox_mode: 'unknown', network_access: true },
         tmux_session: 'correct-session:1',
+        leader_pane_id: '%123',
         worker_count: 1,
         workers: [{ name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] }],
         next_task_id: 1,
@@ -597,7 +617,7 @@ describe('notify-hook all-workers-idle notification', () => {
 
       assert.ok(existsSync(tmuxLogPath), 'tmux should have been called');
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /-t correct-session:1/, 'should use tmux_session from manifest.v2.json');
+      assert.match(tmuxLog, /-t %123/, 'should use leader_pane_id from manifest.v2.json');
       assert.doesNotMatch(tmuxLog, /wrong-session/, 'should not use tmux_session from config.json');
     });
   });

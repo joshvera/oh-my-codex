@@ -163,6 +163,7 @@ describe('notify-hook team leader nudge', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'devsess:0',
+        leader_pane_id: '%91',
       });
       await writeJson(join(mailboxDir, 'leader-fixed.json'), {
         worker: 'leader-fixed',
@@ -185,7 +186,8 @@ describe('notify-hook team leader nudge', () => {
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /send-keys/);
-      assert.match(tmuxLog, /-t devsess:0/);
+      assert.match(tmuxLog, /-t %91/);
+      assert.doesNotMatch(tmuxLog, /-t devsess:0/);
       assert.match(tmuxLog, /Team alpha:/);
       assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should include injection marker');
     });
@@ -214,6 +216,7 @@ describe('notify-hook team leader nudge', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'omx-team-beta',
+        leader_pane_id: '%92',
       });
 
       // Leader HUD state is stale (last turn 5 minutes ago)
@@ -264,6 +267,7 @@ describe('notify-hook team leader nudge', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'omx-team-gamma',
+        leader_pane_id: '%93',
       });
       await writeJson(join(mailboxDir, 'leader-fixed.json'), {
         worker: 'leader-fixed',
@@ -294,6 +298,69 @@ describe('notify-hook team leader nudge', () => {
       assert.equal(nudgeEvent.team, teamName);
       assert.equal(nudgeEvent.worker, 'leader-fixed');
       assert.ok(nudgeEvent.reason, 'event should have a reason');
+      assert.notEqual(nudgeEvent.reason, 'leader_pane_missing_no_injection');
+    });
+  });
+
+  it('defers leader nudge when leader_pane_id is missing', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'gamma-missing-pane';
+      const teamDir = join(stateDir, 'team', teamName);
+      const eventsDir = join(teamDir, 'events');
+      const mailboxDir = join(teamDir, 'mailbox');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(eventsDir, { recursive: true });
+      await mkdir(mailboxDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'devsess:0',
+      });
+      await writeJson(join(mailboxDir, 'leader-fixed.json'), {
+        worker: 'leader-fixed',
+        messages: [
+          {
+            message_id: 'msg-missing-pane',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'Task complete',
+            created_at: '2026-02-14T00:00:00.000Z',
+          },
+        ],
+      });
+
+      await writeFile(fakeTmuxPath, buildFakeTmux(tmuxLogPath));
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      if (existsSync(tmuxLogPath)) {
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(tmuxLog, /send-keys -t .*devsess/, 'must not fall back to session target');
+      }
+
+      const eventsPath = join(eventsDir, 'events.ndjson');
+      assert.ok(existsSync(eventsPath), 'events.ndjson should exist');
+      const eventsContent = await readFile(eventsPath, 'utf-8');
+      const events = eventsContent.trim().split('\n').map(line => JSON.parse(line));
+      const deferred = events.find((e: { type?: string; reason?: string }) =>
+        e.type === 'leader_notification_deferred' && e.reason === 'leader_pane_missing_no_injection');
+      assert.ok(deferred);
+      assert.equal(deferred.type, 'leader_notification_deferred');
     });
   });
 
@@ -352,6 +419,7 @@ describe('notify-hook team leader nudge', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'omx-team-delta',
+        leader_pane_id: '%94',
       });
 
       // Leader stale

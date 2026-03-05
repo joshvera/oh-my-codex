@@ -4,6 +4,12 @@ import { DEFAULT_MAX_WORKERS } from '../team/state.js';
 import { sanitizeTeamName } from '../team/tmux-session.js';
 import { parseWorktreeMode, type WorktreeMode } from '../team/worktree.js';
 import { routeTaskToRole } from '../team/role-router.js';
+import {
+  TEAM_API_OPERATIONS,
+  resolveTeamApiOperation,
+  executeTeamApiOperation,
+  type TeamApiOperation,
+} from '../team/api-interop.js';
 
 interface TeamCliOptions {
   verbose?: boolean;
@@ -19,10 +25,208 @@ interface ParsedTeamArgs {
 }
 
 const MIN_WORKER_COUNT = 1;
+const TEAM_HELP = `
+Usage: omx team [ralph] [N:agent-type] "<task description>"
+       omx team status <team-name>
+       omx team resume <team-name>
+       omx team shutdown <team-name> [--force] [--ralph]
+       omx team api <operation> [--input <json>] [--json]
+       omx team api --help
+
+Examples:
+  omx team 3:executor "fix failing tests"
+  omx team status my-team
+  omx team api send-message --input '{"team_name":"my-team","from_worker":"worker-1","to_worker":"leader-fixed","body":"ACK"}' --json
+`;
+
+const TEAM_API_HELP = `
+Usage: omx team api <operation> [--input <json>] [--json]
+       omx team api <operation> --help
+
+Supported operations:
+  ${TEAM_API_OPERATIONS.join('\n  ')}
+
+Examples:
+  omx team api list-tasks --input '{"team_name":"my-team"}' --json
+  omx team api claim-task --input '{"team_name":"my-team","task_id":"1","worker":"worker-1","expected_version":1}' --json
+`;
+
+const HELP_TOKENS = new Set(['--help', '-h', 'help']);
+
+const TEAM_API_OPERATION_REQUIRED_FIELDS: Record<TeamApiOperation, string[]> = {
+  'send-message': ['team_name', 'from_worker', 'to_worker', 'body'],
+  'broadcast': ['team_name', 'from_worker', 'body'],
+  'mailbox-list': ['team_name', 'worker'],
+  'mailbox-mark-delivered': ['team_name', 'worker', 'message_id'],
+  'mailbox-mark-notified': ['team_name', 'worker', 'message_id'],
+  'create-task': ['team_name', 'subject', 'description'],
+  'read-task': ['team_name', 'task_id'],
+  'list-tasks': ['team_name'],
+  'update-task': ['team_name', 'task_id'],
+  'claim-task': ['team_name', 'task_id', 'worker'],
+  'transition-task-status': ['team_name', 'task_id', 'from', 'to', 'claim_token'],
+  'release-task-claim': ['team_name', 'task_id', 'claim_token', 'worker'],
+  'read-config': ['team_name'],
+  'read-manifest': ['team_name'],
+  'read-worker-status': ['team_name', 'worker'],
+  'read-worker-heartbeat': ['team_name', 'worker'],
+  'update-worker-heartbeat': ['team_name', 'worker', 'pid', 'turn_count', 'alive'],
+  'write-worker-inbox': ['team_name', 'worker', 'content'],
+  'write-worker-identity': ['team_name', 'worker', 'index', 'role'],
+  'append-event': ['team_name', 'type', 'worker'],
+  'get-summary': ['team_name'],
+  'cleanup': ['team_name'],
+  'write-shutdown-request': ['team_name', 'worker', 'requested_by'],
+  'read-shutdown-ack': ['team_name', 'worker'],
+  'read-monitor-snapshot': ['team_name'],
+  'write-monitor-snapshot': ['team_name', 'snapshot'],
+  'read-task-approval': ['team_name', 'task_id'],
+  'write-task-approval': ['team_name', 'task_id', 'status', 'reviewer', 'decision_reason'],
+};
+
+const TEAM_API_OPERATION_OPTIONAL_FIELDS: Partial<Record<TeamApiOperation, string[]>> = {
+  'create-task': ['owner', 'blocked_by', 'requires_code_change'],
+  'update-task': ['subject', 'description', 'blocked_by', 'requires_code_change'],
+  'claim-task': ['expected_version'],
+  'read-shutdown-ack': ['min_updated_at'],
+  'write-worker-identity': [
+    'assigned_tasks', 'pid', 'pane_id', 'working_dir',
+    'worktree_path', 'worktree_branch', 'worktree_detached', 'team_state_root',
+  ],
+  'append-event': ['task_id', 'message_id', 'reason'],
+  'write-task-approval': ['required'],
+};
+
+const TEAM_API_OPERATION_NOTES: Partial<Record<TeamApiOperation, string>> = {
+  'update-task': 'Only non-lifecycle task metadata can be updated.',
+  'release-task-claim': 'Use this only for rollback/requeue to pending (not for completion).',
+  'transition-task-status': 'Lifecycle flow is claim-safe and typically transitions in_progress -> completed|failed.',
+};
+
+function sampleValueForTeamApiField(field: string): unknown {
+  switch (field) {
+    case 'team_name': return 'my-team';
+    case 'from_worker': return 'worker-1';
+    case 'to_worker': return 'leader-fixed';
+    case 'worker': return 'worker-1';
+    case 'body': return 'ACK';
+    case 'subject': return 'Demo task';
+    case 'description': return 'Created through CLI interop';
+    case 'task_id': return '1';
+    case 'message_id': return 'msg-123';
+    case 'from': return 'in_progress';
+    case 'to': return 'completed';
+    case 'claim_token': return 'claim-token';
+    case 'expected_version': return 1;
+    case 'pid': return 12345;
+    case 'turn_count': return 12;
+    case 'alive': return true;
+    case 'content': return '# Inbox update\nProceed with task 2.';
+    case 'index': return 1;
+    case 'role': return 'executor';
+    case 'assigned_tasks': return ['1', '2'];
+    case 'type': return 'task_completed';
+    case 'requested_by': return 'leader-fixed';
+    case 'min_updated_at': return '2026-03-04T00:00:00.000Z';
+    case 'snapshot':
+      return {
+        taskStatusById: { '1': 'completed' },
+        workerAliveByName: { 'worker-1': true },
+        workerStateByName: { 'worker-1': 'idle' },
+        workerTurnCountByName: { 'worker-1': 12 },
+        workerTaskIdByName: { 'worker-1': '1' },
+        mailboxNotifiedByMessageId: {},
+        completedEventTaskIds: { '1': true },
+      };
+    case 'status': return 'approved';
+    case 'reviewer': return 'leader-fixed';
+    case 'decision_reason': return 'approved in demo';
+    case 'required': return true;
+    default: return `<${field}>`;
+  }
+}
+
+function buildTeamApiOperationHelp(operation: TeamApiOperation): string {
+  const requiredFields = TEAM_API_OPERATION_REQUIRED_FIELDS[operation] ?? [];
+  const optionalFields = TEAM_API_OPERATION_OPTIONAL_FIELDS[operation] ?? [];
+  const sampleInput: Record<string, unknown> = {};
+
+  for (const field of requiredFields) {
+    sampleInput[field] = sampleValueForTeamApiField(field);
+  }
+  const sampleInputJson = JSON.stringify(sampleInput);
+  const required = requiredFields.length > 0
+    ? requiredFields.map((field) => `  - ${field}`).join('\n')
+    : '  (none)';
+  const optional = optionalFields.length > 0
+    ? `\nOptional input fields:\n${optionalFields.map((field) => `  - ${field}`).join('\n')}\n`
+    : '\n';
+  const note = TEAM_API_OPERATION_NOTES[operation]
+    ? `\nNote:\n  ${TEAM_API_OPERATION_NOTES[operation]}\n`
+    : '';
+
+  return `
+Usage: omx team api ${operation} --input <json> [--json]
+
+Required input fields:
+${required}${optional}${note}Example:
+  omx team api ${operation} --input '${sampleInputJson}' --json
+`.trim();
+}
 
 export interface ParsedTeamStartArgs {
   parsed: ParsedTeamArgs;
   worktreeMode: WorktreeMode;
+}
+
+function parseTeamApiArgs(args: string[]): {
+  operation: TeamApiOperation;
+  input: Record<string, unknown>;
+  json: boolean;
+} {
+  const operation = resolveTeamApiOperation(args[0] || '');
+  if (!operation) {
+    throw new Error(`Usage: omx team api <operation> [--input <json>] [--json]\nSupported operations: ${TEAM_API_OPERATIONS.join(', ')}`);
+  }
+  let input: Record<string, unknown> = {};
+  let json = false;
+  for (let i = 1; i < args.length; i += 1) {
+    const token = args[i];
+    if (token === '--json') {
+      json = true;
+      continue;
+    }
+    if (token === '--input') {
+      const next = args[i + 1];
+      if (!next) throw new Error('Missing value after --input');
+      try {
+        const parsed = JSON.parse(next) as unknown;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('input must be a JSON object');
+        }
+        input = parsed as Record<string, unknown>;
+      } catch (error) {
+        throw new Error(`Invalid --input JSON: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      i += 1;
+      continue;
+    }
+    if (token.startsWith('--input=')) {
+      const raw = token.slice('--input='.length);
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('input must be a JSON object');
+        }
+        input = parsed as Record<string, unknown>;
+      } catch (error) {
+        throw new Error(`Invalid --input JSON: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      continue;
+    }
+    throw new Error(`Unknown argument for "omx team api": ${token}`);
+  }
+  return { operation, input, json };
 }
 
 function slugifyTask(task: string): string {
@@ -237,6 +441,75 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
   const teamArgs = parsedWorktree.remainingArgs;
   const [subcommandRaw] = teamArgs;
   const subcommand = (subcommandRaw || '').toLowerCase();
+
+  if (HELP_TOKENS.has(subcommand)) {
+    console.log(TEAM_HELP.trim());
+    return;
+  }
+
+  if (subcommand === 'api') {
+    const apiSubcommand = (teamArgs[1] || '').toLowerCase();
+    if (HELP_TOKENS.has(apiSubcommand)) {
+      const operationFromHelpAlias = resolveTeamApiOperation((teamArgs[2] || '').toLowerCase());
+      if (operationFromHelpAlias) {
+        console.log(buildTeamApiOperationHelp(operationFromHelpAlias));
+        return;
+      }
+      console.log(TEAM_API_HELP.trim());
+      return;
+    }
+    const operation = resolveTeamApiOperation(apiSubcommand);
+    if (operation) {
+      const trailing = teamArgs.slice(2).map((token) => token.toLowerCase());
+      if (trailing.some((token) => HELP_TOKENS.has(token))) {
+        console.log(buildTeamApiOperationHelp(operation));
+        return;
+      }
+    }
+    const wantsJson = teamArgs.includes('--json');
+    const jsonBase = {
+      schema_version: '1.0',
+      timestamp: new Date().toISOString(),
+    };
+    let parsedApi: ReturnType<typeof parseTeamApiArgs>;
+    try {
+      parsedApi = parseTeamApiArgs(teamArgs.slice(1));
+    } catch (error) {
+      if (wantsJson) {
+        console.log(JSON.stringify({
+          ...jsonBase,
+          ok: false,
+          command: 'omx team api',
+          operation: 'unknown',
+          error: {
+            code: 'invalid_input',
+            message: error instanceof Error ? error.message : String(error),
+          },
+        }));
+        process.exitCode = 1;
+        return;
+      }
+      throw error;
+    }
+    const envelope = await executeTeamApiOperation(parsedApi.operation, parsedApi.input, cwd);
+    if (parsedApi.json) {
+      console.log(JSON.stringify({
+        ...jsonBase,
+        command: `omx team api ${parsedApi.operation}`,
+        ...envelope,
+      }));
+      if (!envelope.ok) process.exitCode = 1;
+      return;
+    }
+    if (envelope.ok) {
+      console.log(`ok operation=${envelope.operation}`);
+      console.log(JSON.stringify(envelope.data, null, 2));
+      return;
+    }
+    console.error(`error operation=${envelope.operation} code=${envelope.error.code}: ${envelope.error.message}`);
+    process.exitCode = 1;
+    return;
+  }
 
   if (subcommand === 'status') {
     const name = teamArgs[1];

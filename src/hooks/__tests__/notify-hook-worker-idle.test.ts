@@ -118,13 +118,17 @@ describe('notify-hook per-worker idle notification', () => {
       const result = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`);
       assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
 
-      assert.ok(existsSync(tmuxLogPath), 'tmux should have been called');
-      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
-      assert.match(tmuxLog, /send-keys/, 'should use send-keys to notify leader');
-      assert.match(tmuxLog, /worker-1 idle/, 'should include worker name in message');
-      assert.match(tmuxLog, /was: working/, 'should include previous state');
-      assert.match(tmuxLog, /task: task-42/, 'should include task id');
-      assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should include injection marker');
+      if (existsSync(tmuxLogPath)) {
+        const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+        assert.doesNotMatch(tmuxLog, /-t devsess:0/, 'should not target session for leader notify');
+      }
+
+      const eventsPath = join(teamDir, 'events', 'events.ndjson');
+      assert.ok(existsSync(eventsPath), 'events.ndjson should exist for deferred leader notification');
+      const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      const event = events.find((entry: { type?: string; reason?: string }) =>
+        entry.type === 'leader_notification_deferred' && entry.reason === 'leader_pane_missing_no_injection');
+      assert.ok(event, 'should emit deferred event with missing-pane reason');
     });
   });
 
@@ -145,6 +149,7 @@ describe('notify-hook per-worker idle notification', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'devsess:0',
+        leader_pane_id: '%57',
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
         ],
@@ -192,6 +197,7 @@ describe('notify-hook per-worker idle notification', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'devsess:0',
+        leader_pane_id: '%58',
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
         ],
@@ -233,6 +239,7 @@ describe('notify-hook per-worker idle notification', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'devsess:0',
+        leader_pane_id: '%59',
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
         ],
@@ -286,6 +293,7 @@ describe('notify-hook per-worker idle notification', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'devsess:0',
+        leader_pane_id: '%61',
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
         ],
@@ -423,6 +431,7 @@ describe('notify-hook per-worker idle notification', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'devsess:0',
+        leader_pane_id: '%62',
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
         ],
@@ -522,6 +531,7 @@ describe('notify-hook per-worker idle notification', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'devsess:0',
+        leader_pane_id: '%70',
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
         ],
@@ -584,6 +594,7 @@ describe('notify-hook per-worker idle notification', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'devsess:0',
+        leader_pane_id: '%71',
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
         ],
@@ -672,6 +683,7 @@ describe('notify-hook per-worker idle notification', () => {
       await writeJson(join(teamDir, 'config.json'), {
         name: teamName,
         tmux_session: 'devsess:0',
+        leader_pane_id: '%63',
         workers: [
           { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
         ],
