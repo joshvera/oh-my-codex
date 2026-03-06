@@ -458,6 +458,11 @@ npm test
 - OpenClaw integration examples: `docs/openclaw-integration.md`
 - Setup and contribution details: `CONTRIBUTING.md`
 
+## Maintainers
+
+- [Yeachan-Heo](https://github.com/Yeachan-Heo)
+- [HaD0Yun](https://github.com/HaD0Yun)
+
 ## Acknowledgments
 
 Inspired by [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode), adapted for Codex CLI.
