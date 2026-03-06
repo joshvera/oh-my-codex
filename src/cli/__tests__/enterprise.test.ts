@@ -163,6 +163,8 @@ describe('enterpriseCommand', () => {
       await enterpriseCommand(['inspect', 'subordinate', 'subordinate-verifier']);
       assert.ok(logs.some((line) => line.includes('workerIdentity')));
       assert.ok(logs.some((line) => line.includes('workerState')));
+      assert.ok(logs.some((line) => line.includes('workerHeartbeat')));
+      assert.ok(logs.some((line) => line.includes('workerHealth')));
     } finally {
       mock.restoreAll();
       process.chdir(previousCwd);
@@ -314,6 +316,8 @@ describe('enterpriseCommand', () => {
       logs.length = 0;
       await enterpriseCommand(['inspect', 'workers']);
       assert.ok(logs.some((line) => line.includes('workerState')));
+      assert.ok(logs.some((line) => line.includes('workerHeartbeat')));
+      assert.ok(logs.some((line) => line.includes('workerHealth')));
       assert.ok(logs.some((line) => line.includes('subordinate-1')));
     } finally {
       mock.restoreAll();

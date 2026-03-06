@@ -37,10 +37,13 @@ describe('enterprise live runtime', () => {
       assert.equal(handle.live.workers.find((worker) => worker.nodeId === 'subordinate-1')?.ownerLeadId, 'division-1');
       const workerIdentity = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'enterprise', 'workers', 'subordinate-1.json'), 'utf-8')) as { nodeId: string; role: string };
       const workerState = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'enterprise', 'worker-state', 'subordinate-1.json'), 'utf-8')) as { nodeId: string; state: string };
+      const workerHeartbeat = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'enterprise', 'worker-heartbeat', 'subordinate-1.json'), 'utf-8')) as { nodeId: string; alive: boolean };
       assert.equal(workerIdentity.nodeId, 'subordinate-1');
       assert.equal(workerIdentity.role, 'subordinate');
       assert.equal(workerState.nodeId, 'subordinate-1');
       assert.equal(workerState.state, 'active');
+      assert.equal(workerHeartbeat.nodeId, 'subordinate-1');
+      assert.equal(workerHeartbeat.alive, true);
       const reread = await runtime.readEnterpriseRuntime(cwd);
       assert.equal(reread?.modeState.live_subordinate_count, 1);
       const monitor = await liveRuntime.readEnterpriseMonitorSnapshot(cwd);
@@ -145,7 +148,9 @@ describe('enterprise live runtime', () => {
       const reread = await runtime.readEnterpriseRuntime(cwd);
       assert.equal(reread?.modeState.live_subordinate_count, 0);
       const workerState = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'enterprise', 'worker-state', 'subordinate-1.json'), 'utf-8')) as { state: string };
+      const workerHeartbeat = JSON.parse(await readFile(join(cwd, '.omx', 'state', 'enterprise', 'worker-heartbeat', 'subordinate-1.json'), 'utf-8')) as { alive: boolean };
       assert.equal(workerState.state, 'stopped');
+      assert.equal(workerHeartbeat.alive, false);
     } finally {
       if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
       else delete process.env.TMUX;

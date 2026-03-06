@@ -4,7 +4,7 @@ import { join, resolve } from 'path';
 import { enterpriseTmuxAdapter, type EnterpriseTmuxSession } from './tmux-adapter.js';
 import { writeEnterpriseWorkerInstructions } from './worker-bootstrap.js';
 import { applyEnterpriseExecutionUpdates, readEnterpriseRuntime, type EnterpriseRuntimeHandle } from './runtime.js';
-import { appendEnterpriseEvent, clearEnterpriseLiveState, sendEnterpriseMailboxMessage, writeEnterpriseWorkerIdentity, writeEnterpriseWorkerState } from './state.js';
+import { appendEnterpriseEvent, clearEnterpriseLiveState, sendEnterpriseMailboxMessage, writeEnterpriseWorkerHeartbeat, writeEnterpriseWorkerIdentity, writeEnterpriseWorkerState } from './state.js';
 import { updateModeState } from '../modes/base.js';
 import type { EnterpriseMonitorSnapshot, EnterpriseNode } from './contracts.js';
 
@@ -68,6 +68,13 @@ async function buildLiveWorker(
     paneId,
     ownerLeadId,
     updatedAt: now,
+  });
+  await writeEnterpriseWorkerHeartbeat(projectRoot, {
+    nodeId: node.id,
+    paneId,
+    alive: true,
+    lastHeartbeatAt: now,
+    ownerLeadId,
   });
   const instructionPath = await writeEnterpriseWorkerInstructions(projectRoot, {
     nodeId: node.id,
@@ -307,12 +314,20 @@ export async function shutdownEnterpriseLiveNode(nodeId: string, cwd: string = p
       updatedAt: new Date().toISOString(),
     });
     await enterpriseTmuxAdapter.killPane(worker.paneId);
+    const stoppedAt = new Date().toISOString();
     await writeEnterpriseWorkerState(projectRoot, {
       nodeId: worker.nodeId,
       state: 'stopped',
       paneId: null,
       ownerLeadId: worker.ownerLeadId,
-      updatedAt: new Date().toISOString(),
+      updatedAt: stoppedAt,
+    });
+    await writeEnterpriseWorkerHeartbeat(projectRoot, {
+      nodeId: worker.nodeId,
+      paneId: null,
+      alive: false,
+      lastHeartbeatAt: stoppedAt,
+      ownerLeadId: worker.ownerLeadId,
     });
   }
 
@@ -333,6 +348,13 @@ export async function shutdownEnterpriseLiveNode(nodeId: string, cwd: string = p
       paneId: workerRecord.paneId,
       ownerLeadId: workerRecord.ownerLeadId,
       updatedAt: updatedLive.updated_at,
+    });
+    await writeEnterpriseWorkerHeartbeat(projectRoot, {
+      nodeId: workerRecord.nodeId,
+      paneId: workerRecord.paneId,
+      alive: true,
+      lastHeartbeatAt: updatedLive.updated_at,
+      ownerLeadId: workerRecord.ownerLeadId,
     });
   }
   await updateModeState('enterprise', {
@@ -398,6 +420,13 @@ export async function shutdownEnterpriseLiveRuntime(cwd: string = process.cwd())
         paneId: null,
         ownerLeadId: worker.ownerLeadId,
         updatedAt: now,
+      });
+      await writeEnterpriseWorkerHeartbeat(projectRoot, {
+        nodeId: worker.nodeId,
+        paneId: null,
+        alive: false,
+        lastHeartbeatAt: now,
+        ownerLeadId: worker.ownerLeadId,
       });
     }
   }

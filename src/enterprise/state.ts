@@ -52,6 +52,17 @@ export interface EnterpriseMailbox {
 }
 
 
+
+export interface EnterpriseWorkerHeartbeatRecord {
+  nodeId: string;
+  paneId: string | null;
+  alive: boolean;
+  lastHeartbeatAt: string;
+  ownerLeadId: string | null;
+}
+
+export type EnterpriseWorkerHealth = 'healthy' | 'stale' | 'offline';
+
 export interface EnterpriseWorkerStateRecord {
   nodeId: string;
   state: 'starting' | 'active' | 'draining' | 'stopped';
@@ -139,6 +150,47 @@ export function mailboxPath(cwd: string, nodeId: string): string {
   return join(mailboxDir(cwd), `${nodeId}.json`);
 }
 
+
+function workerHeartbeatDir(cwd: string): string {
+  return join(enterpriseStateRoot(cwd), 'worker-heartbeat');
+}
+
+export function workerHeartbeatPath(cwd: string, nodeId: string): string {
+  return join(workerHeartbeatDir(cwd), `${nodeId}.json`);
+}
+
+export async function writeEnterpriseWorkerHeartbeat(cwd: string, record: EnterpriseWorkerHeartbeatRecord): Promise<void> {
+  await mkdir(workerHeartbeatDir(cwd), { recursive: true });
+  await writeFile(workerHeartbeatPath(cwd, record.nodeId), JSON.stringify(record, null, 2));
+}
+
+export async function readEnterpriseWorkerHeartbeat(cwd: string, nodeId: string): Promise<EnterpriseWorkerHeartbeatRecord | null> {
+  const path = workerHeartbeatPath(cwd, nodeId);
+  if (!existsSync(path)) return null;
+  return JSON.parse(await readFile(path, 'utf-8')) as EnterpriseWorkerHeartbeatRecord;
+}
+
+export async function listEnterpriseWorkerHeartbeats(cwd: string): Promise<EnterpriseWorkerHeartbeatRecord[]> {
+  const dir = workerHeartbeatDir(cwd);
+  if (!existsSync(dir)) return [];
+  const files = await readdir(dir);
+  const records = await Promise.all(files.filter((file) => file.endsWith('.json')).map(async (file) => {
+    const raw = await readFile(join(dir, file), 'utf-8');
+    return JSON.parse(raw) as EnterpriseWorkerHeartbeatRecord;
+  }));
+  return records.sort((left, right) => left.nodeId.localeCompare(right.nodeId));
+}
+
+export function classifyEnterpriseWorkerHealth(
+  heartbeat: EnterpriseWorkerHeartbeatRecord | null,
+  now: number = Date.now(),
+  staleAfterMs: number = 60_000,
+): EnterpriseWorkerHealth {
+  if (!heartbeat || heartbeat.alive !== true) return 'offline';
+  const last = new Date(heartbeat.lastHeartbeatAt).getTime();
+  if (!Number.isFinite(last)) return 'offline';
+  return now - last > staleAfterMs ? 'stale' : 'healthy';
+}
 
 function workerStateDir(cwd: string): string {
   return join(enterpriseStateRoot(cwd), 'worker-state');

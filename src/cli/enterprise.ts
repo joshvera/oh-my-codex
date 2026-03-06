@@ -17,11 +17,14 @@ import {
   readEnterpriseEventLog,
   readEnterpriseMailbox,
   readEnterpriseSubordinateRecord,
+  classifyEnterpriseWorkerHealth,
   listEnterpriseAssignments,
   listEnterpriseEscalations,
+  listEnterpriseWorkerHeartbeats,
   listEnterpriseWorkerIdentities,
   listEnterpriseWorkerStates,
   markEnterpriseMailboxDelivered,
+  readEnterpriseWorkerHeartbeat,
   readEnterpriseWorkerIdentity,
   readEnterpriseWorkerState,
   sendEnterpriseMailboxMessage,
@@ -256,7 +259,9 @@ async function renderInspect(kind: string, id: string | undefined): Promise<void
       const liveWorker = live?.workers.find((worker) => worker.nodeId === id) ?? null;
       const workerIdentity = await readEnterpriseWorkerIdentity(cwd, id);
       const workerState = await readEnterpriseWorkerState(cwd, id);
-      console.log(JSON.stringify({ ...record, liveWorker, workerIdentity, workerState, mailbox: await readEnterpriseMailbox(cwd, id) }, null, 2));
+      const workerHeartbeat = await readEnterpriseWorkerHeartbeat(cwd, id);
+      const workerHealth = classifyEnterpriseWorkerHealth(workerHeartbeat);
+      console.log(JSON.stringify({ ...record, liveWorker, workerIdentity, workerState, workerHeartbeat, workerHealth, mailbox: await readEnterpriseMailbox(cwd, id) }, null, 2));
       return;
     }
     case 'division': {
@@ -268,7 +273,9 @@ async function renderInspect(kind: string, id: string | undefined): Promise<void
       const subordinateWorkers = live?.workers.filter((worker) => worker.ownerLeadId === id) ?? [];
       const workerIdentity = await readEnterpriseWorkerIdentity(cwd, id);
       const workerState = await readEnterpriseWorkerState(cwd, id);
-      console.log(JSON.stringify({ ...summary, liveLeadWorker: leadWorker, workerIdentity, workerState, liveSubordinateWorkers: subordinateWorkers }, null, 2));
+      const workerHeartbeat = await readEnterpriseWorkerHeartbeat(cwd, id);
+      const workerHealth = classifyEnterpriseWorkerHealth(workerHeartbeat);
+      console.log(JSON.stringify({ ...summary, liveLeadWorker: leadWorker, workerIdentity, workerState, workerHeartbeat, workerHealth, liveSubordinateWorkers: subordinateWorkers }, null, 2));
       return;
     }
     case 'chairman': {
@@ -292,8 +299,18 @@ async function renderInspect(kind: string, id: string | undefined): Promise<void
     case 'workers': {
       const identities = await listEnterpriseWorkerIdentities(cwd);
       const states = await listEnterpriseWorkerStates(cwd);
+      const heartbeats = await listEnterpriseWorkerHeartbeats(cwd);
       const byNodeId = new Map(states.map((state) => [state.nodeId, state] as const));
-      console.log(JSON.stringify(identities.map((identity) => ({ ...identity, workerState: byNodeId.get(identity.nodeId) ?? null })), null, 2));
+      const hbByNodeId = new Map(heartbeats.map((heartbeat) => [heartbeat.nodeId, heartbeat] as const));
+      console.log(JSON.stringify(identities.map((identity) => {
+        const workerHeartbeat = hbByNodeId.get(identity.nodeId) ?? null;
+        return {
+          ...identity,
+          workerState: byNodeId.get(identity.nodeId) ?? null,
+          workerHeartbeat,
+          workerHealth: classifyEnterpriseWorkerHealth(workerHeartbeat),
+        };
+      }), null, 2));
       return;
     }
     default:
