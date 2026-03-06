@@ -132,6 +132,65 @@ describe('enterpriseCommand', () => {
     }
   });
 
+
+  it('shows chairman rollup counts in inspect chairman', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-enterprise-cli-'));
+    const previousCwd = process.cwd();
+    const logs: string[] = [];
+    const originalLog = console.log;
+    try {
+      process.chdir(cwd);
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+      await enterpriseCommand(['issue', '590']);
+      logs.length = 0;
+      await enterpriseCommand(['inspect', 'chairman']);
+      assert.ok(logs.some((line) => line.includes('assignmentCount')));
+      assert.ok(logs.some((line) => line.includes('escalationCount')));
+      assert.ok(logs.some((line) => line.includes('workerCount')));
+      assert.ok(logs.some((line) => line.includes('workerHealth')));
+    } finally {
+      process.chdir(previousCwd);
+      console.log = originalLog;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('shows division rollup details in inspect division', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-enterprise-cli-'));
+    const previousCwd = process.cwd();
+    const previousTmux = process.env.TMUX;
+    const logs: string[] = [];
+    const originalLog = console.log;
+    try {
+      process.chdir(cwd);
+      process.env.TMUX = 'leader-session';
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+      await enterpriseCommand(['issue', '590']);
+
+      const tmuxAdapter = await import('../../enterprise/tmux-adapter.js');
+      mock.method(tmuxAdapter.enterpriseTmuxAdapter, 'isTmuxAvailable', async () => true);
+      mock.method(tmuxAdapter.enterpriseTmuxAdapter, 'createTmuxSession', async () => ({
+        name: 'leader:1', workerCount: 1, cwd, workerPaneIds: ['%101'], leaderPaneId: '%100', hudPaneId: null, resizeHookName: null, resizeHookTarget: null,
+      }));
+      mock.method(tmuxAdapter.enterpriseTmuxAdapter, 'buildWorkerStartupCommand', async (_team: string, idx: number) => `codex --worker ${idx}`);
+      mock.method(tmuxAdapter.enterpriseTmuxAdapter, 'spawnPane', async () => '%102');
+      await enterpriseCommand(['live-start']);
+      await enterpriseCommand(['assign', 'division-1', 'Verifier:verify runtime shell']);
+
+      logs.length = 0;
+      await enterpriseCommand(['inspect', 'division', 'division-1']);
+      assert.ok(logs.some((line) => line.includes('subordinateHealth')));
+      assert.ok(logs.some((line) => line.includes('assignments')));
+      assert.ok(logs.some((line) => line.includes('escalations')));
+    } finally {
+      mock.restoreAll();
+      process.chdir(previousCwd);
+      console.log = originalLog;
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux; else delete process.env.TMUX;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('creates an assignment and exposes it via inspect', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-enterprise-cli-'));
     const previousCwd = process.cwd();

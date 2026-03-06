@@ -278,13 +278,29 @@ async function renderInspect(kind: string, id: string | undefined): Promise<void
       const workerState = await readEnterpriseWorkerState(cwd, id);
       const workerHeartbeat = await readEnterpriseWorkerHeartbeat(cwd, id);
       const workerHealth = classifyEnterpriseWorkerHealth(workerHeartbeat);
-      console.log(JSON.stringify({ ...summary, liveLeadWorker: leadWorker, workerIdentity, workerState, workerHeartbeat, workerHealth, liveSubordinateWorkers: subordinateWorkers }, null, 2));
+      const assignments = (await listEnterpriseAssignments(cwd)).filter((entry) => entry.leadId === id);
+      const escalations = (await listEnterpriseEscalations(cwd)).filter((entry) => entry.leadId === id);
+      const subordinateHealth = { healthy: 0, stale: 0, offline: 0 };
+      for (const worker of subordinateWorkers) {
+        const hb = await readEnterpriseWorkerHeartbeat(cwd, worker.nodeId);
+        const health = classifyEnterpriseWorkerHealth(hb);
+        subordinateHealth[health] += 1;
+      }
+      console.log(JSON.stringify({ ...summary, liveLeadWorker: leadWorker, workerIdentity, workerState, workerHeartbeat, workerHealth, liveSubordinateWorkers: subordinateWorkers, subordinateHealth, assignments, escalations }, null, 2));
       return;
     }
     case 'chairman': {
       const summary = await readEnterpriseChairmanSummary(cwd);
       if (!summary) throw new Error('Enterprise chairman summary not found.');
-      console.log(JSON.stringify(summary, null, 2));
+      const assignments = await listEnterpriseAssignments(cwd);
+      const escalations = await listEnterpriseEscalations(cwd);
+      const identities = await listEnterpriseWorkerIdentities(cwd);
+      const heartbeats = await listEnterpriseWorkerHeartbeats(cwd);
+      const health = { healthy: 0, stale: 0, offline: 0 };
+      for (const heartbeat of heartbeats) {
+        health[classifyEnterpriseWorkerHealth(heartbeat)] += 1;
+      }
+      console.log(JSON.stringify({ ...summary, assignmentCount: assignments.length, escalationCount: escalations.length, workerCount: identities.length, workerHealth: health }, null, 2));
       return;
     }
     case 'assignments': {
