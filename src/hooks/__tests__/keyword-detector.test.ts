@@ -53,6 +53,19 @@ describe('keyword detector swarm/team compatibility', () => {
     assert.equal(spaced.skill, 'code-review');
   });
 
+  it('prefers dedicated security-review over generic code-review when both words appear', () => {
+    const match = detectPrimaryKeyword('please do a security review of this auth change');
+
+    assert.ok(match);
+    assert.equal(match.skill, 'security-review');
+    assert.equal(match.keyword.toLowerCase(), 'security review');
+  });
+
+  it('does not treat plain review requests as code-review keyword activations', () => {
+    const match = detectPrimaryKeyword('please review this plan before we start');
+    assert.equal(match, null);
+  });
+
   it('supports explicit multi-skill invocation by prioritizing left-most $skill', () => {
     const match = detectPrimaryKeyword('$ultraqa $analyze $code-review run now');
     assert.ok(match);

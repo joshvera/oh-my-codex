@@ -85,9 +85,9 @@ Workflow skills (in `~/.agents/skills/`): `$ralph`, `$autopilot`, `$plan`, `$ral
 
 <model_routing>
 Match agent role to task complexity:
-- **Low complexity** (quick lookups, narrow checks): `explore`, `style-reviewer`, `writer`
-- **Standard** (implementation, debugging, reviews): `executor`, `debugger`, `test-engineer`
-- **High complexity** (architecture, deep analysis, complex refactors): `architect`, `executor`, `critic`
+- **Low complexity** (quick lookups, narrow checks): `explore`, `writer`
+- **Standard** (implementation, debugging, focused verification): `executor`, `debugger`, `test-engineer`
+- **High complexity** (architecture, umbrella review, security review, deep critique): `architect`, `code-reviewer`, `security-reviewer`, `critic`, `executor`
 
 For interactive use: `/prompts:name` (e.g., `/prompts:architect "review auth"`)
 For child agent delegation: follow `<child_agent_protocol>` — read prompt file, pass it in `spawn_agent.message`
@@ -99,22 +99,31 @@ For workflow skills: `$name` (e.g., `$ralph "fix all tests"`)
 <agent_catalog>
 Use `/prompts:name` to invoke specialized agents (Codex CLI custom prompt syntax).
 
-Build/Analysis Lane:
+Public review/analysis surface (mixed by design):
+- `$analyze`: task-intent investigation entry that routes into `architect` or `debugger`
+- `$code-review`: public umbrella review entry that routes into `code-reviewer` with `security-reviewer` escalation when needed
+- `/prompts:critic`: direct critique entry for plans/designs when critique itself is the task
+
+This lane intentionally mixes skills and prompts: `analyze` and `code-review` are public skill routers, while `critic` remains a prompt because it is already the user-facing critique capability.
+
+Build/Execution + Internal Analysis Experts:
 - `/prompts:explore`: Fast codebase search, file/symbol mapping
 - `/prompts:analyst`: Requirements clarity, acceptance criteria, hidden constraints
 - `/prompts:planner`: Task sequencing, execution plans, risk flags
-- `/prompts:architect`: System design, boundaries, interfaces, long-horizon tradeoffs
-- `/prompts:debugger`: Root-cause analysis, regression isolation, failure diagnosis
+- `/prompts:architect` (internal expert): System boundaries, interface tradeoffs, and structural diagnosis; not the generic catch-all for all code analysis
+- `/prompts:debugger` (internal expert): Root-cause analysis, regressions, causal diagnosis, and failure isolation
 - `/prompts:executor`: Code implementation, refactoring, feature work
 - `/prompts:verifier`: Completion evidence, claim validation, test adequacy
 
-Review Lane:
-- `/prompts:style-reviewer`: Formatting, naming, idioms, lint conventions
-- `/prompts:quality-reviewer`: Logic defects, maintainability, anti-patterns
-- `/prompts:api-reviewer`: API contracts, versioning, backward compatibility
-- `/prompts:security-reviewer`: Vulnerabilities, trust boundaries, authn/authz
-- `/prompts:performance-reviewer`: Hotspots, complexity, memory/latency optimization
-- `/prompts:code-reviewer`: Comprehensive review across all concerns
+Internal Review Experts:
+- `/prompts:code-reviewer`: Default umbrella review engine for quality, API, performance, and style concerns behind `$code-review`
+- `/prompts:security-reviewer`: Dedicated security/trust-boundary reviewer used for escalation behind `$code-review` and compatibility flows
+
+Compatibility Review Prompts:
+- `/prompts:style-reviewer` -> compatibility alias into `code-reviewer`
+- `/prompts:quality-reviewer` -> compatibility alias into `code-reviewer`
+- `/prompts:api-reviewer` -> compatibility alias into `code-reviewer`
+- `/prompts:performance-reviewer` -> compatibility alias into `code-reviewer`
 
 Domain Specialists:
 - `/prompts:dependency-expert`: External SDK/API/package evaluation
@@ -123,7 +132,7 @@ Domain Specialists:
 - `/prompts:build-fixer`: Build/toolchain/type failures
 - `/prompts:designer`: UX/UI architecture, interaction design
 - `/prompts:writer`: Docs, migration notes, user guidance
-- `/prompts:qa-tester`: Interactive CLI/service runtime validation
+- `/prompts:qa-tester`: Interactive runtime QA validation
 - `/prompts:git-master`: Commit strategy, history hygiene
 - `/prompts:researcher`: External documentation and reference research
 
@@ -134,7 +143,7 @@ Product Lane:
 - `/prompts:product-analyst`: Product metrics, funnel analysis, experiments
 
 Coordination:
-- `/prompts:critic`: Plan/design critical challenge
+- `/prompts:critic`: Plan/design critical challenge only; not generic code review or bug diagnosis
 - `/prompts:vision`: Image/screenshot/diagram analysis
 </agent_catalog>
 
@@ -150,7 +159,7 @@ Do not ask for confirmation — just read the skill file and follow its instruct
 | "autopilot", "build me", "I want a" | `$autopilot` | Read `~/.agents/skills/autopilot/SKILL.md`, execute autonomous pipeline |
 | "ultrawork", "ulw", "parallel" | `$ultrawork` | Read `~/.agents/skills/ultrawork/SKILL.md`, execute parallel agents |
 | "ultraqa" | `$ultraqa` | Read `~/.agents/skills/ultraqa/SKILL.md`, run QA cycling workflow |
-| "analyze", "investigate" | `$analyze` | Read `~/.agents/skills/analyze/SKILL.md`, run deep analysis |
+| "analyze", "investigate" | `$analyze` | Read `~/.agents/skills/analyze/SKILL.md`, route deep analysis to architect/debugger as appropriate |
 | "plan this", "plan the", "let's plan" | `$plan` | Read `~/.agents/skills/plan/SKILL.md`, start planning workflow |
 | "interview", "deep interview", "gather requirements", "interview me", "don't assume", "ouroboros" | `$deep-interview` | Read `~/.agents/skills/deep-interview/SKILL.md`, run Ouroboros-inspired Socratic ambiguity-gated interview workflow |
 | "ralplan", "consensus plan" | `$ralplan` | Read `~/.agents/skills/ralplan/SKILL.md`, start consensus planning with RALPLAN-DR structured deliberation (short by default, `--deliberate` for high-risk) |
@@ -160,7 +169,7 @@ Do not ask for confirmation — just read the skill file and follow its instruct
 | "tdd", "test first" | `$tdd` | Read `~/.agents/skills/tdd/SKILL.md`, start test-driven workflow |
 | "fix build", "type errors" | `$build-fix` | Read `~/.agents/skills/build-fix/SKILL.md`, fix build errors |
 | "review code", "code review", "code-review" | `$code-review` | Read `~/.agents/skills/code-review/SKILL.md`, run code review |
-| "security review" | `$security-review` | Read `~/.agents/skills/security-review/SKILL.md`, run security audit |
+| "security review" | `$security-review` | Read `~/.agents/skills/security-review/SKILL.md`, run the compatibility security-audit flow (prefer `$code-review` for new general review requests) |
 | "web-clone", "clone site", "clone website", "copy webpage" | `$web-clone` | Read `~/.agents/skills/web-clone/SKILL.md`, start website cloning pipeline |
 
 Detection rules:
@@ -196,13 +205,15 @@ Workflow Skills:
 - `deep-interview`: Socratic deep interview with Ouroboros-inspired mathematical ambiguity gating before execution
 - `ralplan`: Iterative consensus planning with RALPLAN-DR structured deliberation (planner + architect + critic); supports `--deliberate` for high-risk work
 
-Agent Shortcuts:
-- `analyze` -> debugger: Investigation and root-cause analysis
+Shortcut Skills:
+- Public review/analysis entry points are `analyze`, `code-review`, and `/prompts:critic`.
+- `analyze` -> architect/debugger router: Deep investigation and causal analysis routed by problem type
 - `deepsearch` -> explore: Thorough codebase search
 - `tdd` -> test-engineer: Test-driven development workflow
 - `build-fix` -> build-fixer: Build error resolution
-- `code-review` -> code-reviewer: Comprehensive code review
-- `security-review` -> security-reviewer: Security audit
+- `code-review` -> code-reviewer: Umbrella code review across quality, API, performance, and style concerns
+- `security-review` -> security-reviewer: Compatibility/deprecated shim for dedicated security audits; prefer `code-review` unless the request is explicitly security-only
+- `review` -> plan --review: Compatibility/deprecated shim for older critic-style plan reviews
 - `frontend-ui-ux` -> designer: UI component and styling work
 - `git-master` -> git-master: Git commit and history management
 
@@ -212,6 +223,9 @@ Utilities:
 - `doctor`: Diagnose installation issues
 - `help`: Usage guidance
 - `trace`: Show agent flow timeline
+
+Internal-only:
+- `worker`: Team worker protocol and claim-safe task lifecycle handling
 </skills>
 
 ---
@@ -220,13 +234,13 @@ Utilities:
 Common agent workflows for typical scenarios:
 
 Feature Development:
-  analyst -> planner -> executor -> test-engineer -> quality-reviewer -> verifier
+  analyst -> planner -> executor -> test-engineer -> code-reviewer -> verifier
 
 Bug Investigation:
   explore + debugger + executor + test-engineer + verifier
 
 Code Review:
-  style-reviewer + quality-reviewer + api-reviewer + security-reviewer
+  code-reviewer + security-reviewer
 
 Product Discovery:
   product-manager + ux-researcher + product-analyst + designer

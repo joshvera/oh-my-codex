@@ -1,11 +1,11 @@
 ---
 name: code-review
-description: Run a comprehensive code review
+description: Run the primary public code-quality review workflow
 ---
 
 # Code Review Skill
 
-Conduct a thorough code review for quality, security, and maintainability with severity-rated feedback.
+Conduct a thorough code review for correctness, maintainability, API design, performance, and style.
 
 ## When to Use
 
@@ -13,33 +13,46 @@ This skill activates when:
 - User requests "review this code", "code review"
 - Before merging a pull request
 - After implementing a major feature
-- User wants quality assessment
+- User wants quality assessment or maintainability feedback
+
+## Boundary
+
+`code-review` is the primary public review entry for general code quality in this consolidation.
+
+It **does cover**:
+- correctness and bug risk
+- maintainability and code health
+- API contracts and integration boundaries
+- performance concerns
+- style / consistency issues
+
+It **does not replace** a dedicated security audit. For trust boundaries, auth/authz, OWASP-style vulnerability review, secrets scanning, or dependency CVE review, escalate to `security-review` as the specialist compatibility lane.
 
 ## What It Does
 
-Delegates to the `code-reviewer` agent (THOROUGH tier) for deep analysis:
+Delegates to the `code-reviewer` agent (THOROUGH tier) for a deep quality review:
 
 1. **Identify Changes**
    - Run `git diff` to find changed files
    - Determine scope of review (specific files or entire PR)
 
 2. **Review Categories**
-   - **Security** - Hardcoded secrets, injection risks, XSS, CSRF
-   - **Code Quality** - Function size, complexity, nesting depth
-   - **Performance** - Algorithm efficiency, N+1 queries, caching
-   - **Best Practices** - Naming, documentation, error handling
-   - **Maintainability** - Duplication, coupling, testability
+   - **Correctness & Risk** - likely bugs, fragile logic, missing edge cases
+   - **Code Quality** - complexity, duplication, testability, readability
+   - **API & Contracts** - compatibility, interface clarity, call-site impact
+   - **Performance** - inefficient algorithms, hot paths, needless work
+   - **Style & Consistency** - naming, structure, conventions, lint alignment
 
 3. **Severity Rating**
-   - **CRITICAL** - Security vulnerability (must fix before merge)
-   - **HIGH** - Bug or major code smell (should fix before merge)
-   - **MEDIUM** - Minor issue (fix when possible)
-   - **LOW** - Style/suggestion (consider fixing)
+   - **CRITICAL** - severe correctness/production risk blocking merge
+   - **HIGH** - bug or major design smell that should be fixed before merge
+   - **MEDIUM** - moderate issue worth fixing soon
+   - **LOW** - style/suggestion or non-blocking improvement
 
 4. **Specific Recommendations**
    - File:line locations for each issue
    - Concrete fix suggestions
-   - Code examples where applicable
+   - Call out when a separate `security-review` should be run
 
 ## Agent Delegation
 
@@ -49,16 +62,21 @@ delegate(
   tier="THOROUGH",
   prompt="CODE REVIEW TASK
 
-Review code changes for quality, security, and maintainability.
+Review code changes for correctness, maintainability, API boundaries, performance, and style.
 
 Scope: [git diff or specific files]
 
 Review Checklist:
-- Security vulnerabilities (OWASP Top 10)
-- Code quality (complexity, duplication)
-- Performance issues (N+1, inefficient algorithms)
-- Best practices (naming, documentation, error handling)
-- Maintainability (coupling, testability)
+- Correctness and regression risk
+- Code quality (complexity, duplication, readability)
+- API compatibility and interface clarity
+- Performance issues (hot spots, needless work)
+- Maintainability (coupling, testability, documentation)
+- Style and consistency
+
+Important boundary:
+- Do not perform a full OWASP/security audit here.
+- If trust-boundary or auth/input-risk concerns are discovered, recommend `security-review` explicitly.
 
 Output: Code review report with:
 - Files reviewed count
@@ -80,10 +98,10 @@ The code-reviewer agent SHOULD consult Codex for cross-validation.
 4. **Graceful fallback** - Never block if tools unavailable
 
 ### When to Consult
-- Security-sensitive code changes
-- Complex architectural patterns
+- Complex architectural changes
 - Unfamiliar codebases or languages
 - High-stakes production code
+- Large refactors with many moving parts
 
 ### When to Skip
 - Simple refactoring
@@ -105,85 +123,75 @@ CODE REVIEW REPORT
 ==================
 
 Files Reviewed: 8
-Total Issues: 15
+Total Issues: 10
 
 CRITICAL (0)
 -----------
 (none)
 
-HIGH (3)
+HIGH (2)
 --------
-1. src/api/auth.ts:42
-   Issue: User input not sanitized before SQL query
-   Risk: SQL injection vulnerability
-   Fix: Use parameterized queries or ORM
+1. src/api/contracts.ts:42
+   Issue: Breaking response-shape change without migration path
+   Risk: Existing callers will fail at runtime
+   Fix: Preserve the old field or add a compatibility layer
 
-2. src/components/UserProfile.tsx:89
-   Issue: Password displayed in plain text in logs
-   Risk: Credential exposure
-   Fix: Remove password from log statements
+2. src/cache/team-state.ts:89
+   Issue: Recomputed data in a hot path on every call
+   Risk: Avoidable latency under load
+   Fix: Memoize or cache the derived result
 
-3. src/utils/validation.ts:15
-   Issue: Email regex allows invalid formats
-   Risk: Accepts malformed emails
-   Fix: Use proven email validation library
-
-MEDIUM (7)
+MEDIUM (5)
 ----------
 ...
 
-LOW (5)
+LOW (3)
 -------
 ...
 
 RECOMMENDATION: REQUEST CHANGES
 
-Critical security issues must be addressed before merge.
+If the change affects auth, trust boundaries, or untrusted input handling, also run `security-review`.
 ```
 
 ## Review Checklist
 
 The code-reviewer agent checks:
 
-### Security
-- [ ] No hardcoded secrets (API keys, passwords, tokens)
-- [ ] All user inputs sanitized
-- [ ] SQL/NoSQL injection prevention
-- [ ] XSS prevention (escaped outputs)
-- [ ] CSRF protection on state-changing operations
-- [ ] Authentication/authorization properly enforced
+### Correctness & Design
+- [ ] Likely bugs and fragile assumptions identified
+- [ ] Edge cases are handled or intentionally documented
+- [ ] Interfaces and data contracts remain coherent
+- [ ] Changes are understandable and maintainable
 
 ### Code Quality
-- [ ] Functions < 50 lines (guideline)
-- [ ] Cyclomatic complexity < 10
-- [ ] No deeply nested code (> 4 levels)
-- [ ] No duplicate logic (DRY principle)
-- [ ] Clear, descriptive naming
+- [ ] Functions are reasonably sized and readable
+- [ ] Cyclomatic complexity is controlled
+- [ ] No needless duplication
+- [ ] Names are descriptive and consistent
 
 ### Performance
-- [ ] No N+1 query patterns
-- [ ] Appropriate caching where applicable
-- [ ] Efficient algorithms (avoid O(n²) when O(n) possible)
-- [ ] No unnecessary re-renders (React/Vue)
+- [ ] No obvious hot-path inefficiencies
+- [ ] No accidental O(n²) behavior when avoidable
+- [ ] No unnecessary rendering / recomputation loops
 
 ### Best Practices
-- [ ] Error handling present and appropriate
-- [ ] Logging at appropriate levels
-- [ ] Documentation for public APIs
-- [ ] Tests for critical paths
-- [ ] No commented-out code
+- [ ] Error handling is appropriate
+- [ ] Logging is useful and safe
+- [ ] Documentation exists where public behavior changes
+- [ ] Tests cover critical behavior
 
 ## Approval Criteria
 
-**APPROVE** - No CRITICAL or HIGH issues, minor improvements only
-**REQUEST CHANGES** - CRITICAL or HIGH issues present
+**APPROVE** - No CRITICAL or HIGH issues, minor improvements only  
+**REQUEST CHANGES** - CRITICAL or HIGH issues present  
 **COMMENT** - Only LOW/MEDIUM issues, no blocking concerns
 
 ## Use with Other Skills
 
 **With Team:**
 ```
-/team "review recent auth changes and report findings"
+/team "review recent state-management changes and report findings"
 ```
 Includes coordinated review execution across specialized agents.
 
@@ -193,16 +201,17 @@ Includes coordinated review execution across specialized agents.
 ```
 Review code, get feedback, fix until approved.
 
-**With Ultrawork:**
+**With Security Review:**
 ```
-/ultrawork review all files in src/
+/code-review
+/security-review
 ```
-Parallel code review across multiple files.
+Run quality review and dedicated security review separately when both are needed.
 
 ## Best Practices
 
 - **Review early** - Catch issues before they compound
-- **Review often** - Small, frequent reviews better than huge ones
-- **Address CRITICAL/HIGH first** - Fix security and bugs immediately
-- **Consider context** - Some "issues" may be intentional trade-offs
-- **Learn from reviews** - Use feedback to improve coding practices
+- **Review often** - Small, frequent reviews beat giant reviews
+- **Keep security separate when needed** - Use `security-review` for trust-boundary and OWASP work
+- **Consider context** - Some issues may reflect intentional trade-offs
+- **Learn from reviews** - Use feedback to improve future implementations

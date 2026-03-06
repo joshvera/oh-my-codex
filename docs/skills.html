@@ -20,53 +20,75 @@
 
     <main class="container">
       <h1>Skills Reference</h1>
-      <p class="muted">All skills with category grouping and <code>$name</code> usage syntax.</p>
+      <p class="muted">Workflow, shortcut, utility, and internal-only skills.</p>
+      <p>
+        The public review/analysis surface is task-shaped: use <code>$analyze</code> for investigation,
+        <code>$code-review</code> for umbrella review, and <code>/prompts:critic</code> when you want direct plan/design
+        critique. This mixed invocation model is intentional: <code>$analyze</code> and <code>$code-review</code> are
+        skill routers, while <code>/prompts:critic</code> remains a direct prompt. <code>$security-review</code> and
+        <code>$review</code> stay available only as compatibility/deprecated shims for older instructions.
+      </p>
 
-      <h2>Execution Modes</h2>
+      <h2>Public Review/Analysis Entry Points</h2>
+      <table>
+        <thead><tr><th>Entry Point</th><th>Type</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td><code>$analyze</code></td><td>skill</td><td>Task-intent investigation entry that routes to <code>/prompts:architect</code> or <code>/prompts:debugger</code>.</td></tr>
+          <tr><td><code>$code-review</code></td><td>skill</td><td>Public umbrella review entry with escalation to <code>/prompts:security-reviewer</code> when trust-boundary or vulnerability work is needed.</td></tr>
+          <tr><td><code>/prompts:critic</code></td><td>prompt</td><td>Direct critique entry for plans and designs when critique itself is the task.</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Workflow Skills</h2>
       <ul>
         <li><code>$autopilot</code> - full autonomous execution</li>
         <li><code>$ralph</code> - persistence loop until completion</li>
         <li><code>$ultrawork</code> - max parallel execution</li>
         <li><code>$visual-verdict</code> - structured visual QA loop for screenshot/reference matching</li>
+        <li><code>$web-clone</code> - URL-driven site cloning with visual + functional verification</li>
         <li><code>$team</code> - coordinated multi-agent pipeline</li>
+        <li><code>$swarm</code> - team compatibility facade</li>
         <li><code>$ecomode</code> - token-efficient model routing</li>
         <li><code>$ultraqa</code> - test/verify/fix loop</li>
-        <li><code>$swarm</code> - team compatibility facade</li>
-      </ul>
-
-      <h2>Planning</h2>
-      <ul>
         <li><code>$plan</code> - strategic planning workflow</li>
         <li><code>$ralplan</code> - planner/architect/critic consensus planning</li>
+        <li><code>$deep-interview</code> - requirements interview before execution</li>
       </ul>
 
-      <h2>Agent Shortcuts</h2>
-      <ul>
-        <li><code>$analyze</code></li>
-        <li><code>$deepsearch</code></li>
-        <li><code>$tdd</code></li>
-        <li><code>$build-fix</code></li>
-        <li><code>$code-review</code></li>
-        <li><code>$security-review</code></li>
-        <li><code>$frontend-ui-ux</code></li>
-        <li><code>$git-master</code></li>
-        <li><code>$review</code></li>
-      </ul>
+      <h2>Shortcut Skills</h2>
+      <table>
+        <thead><tr><th>Skill</th><th>Routes To</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td><code>$analyze</code></td><td>architect/debugger router</td><td>Deep investigation and causal analysis routed by problem type.</td></tr>
+          <tr><td><code>$deepsearch</code></td><td><code>/prompts:explore</code></td><td>Thorough codebase search and fact gathering.</td></tr>
+          <tr><td><code>$tdd</code></td><td><code>/prompts:test-engineer</code></td><td>Test-first development workflow.</td></tr>
+          <tr><td><code>$build-fix</code></td><td><code>/prompts:build-fixer</code></td><td>Build, type, and toolchain error resolution.</td></tr>
+          <tr><td><code>$code-review</code></td><td><code>/prompts:code-reviewer</code></td><td>Umbrella code review across quality, API, performance, and style concerns.</td></tr>
+          <tr><td><code>$security-review</code></td><td><code>/prompts:security-reviewer</code></td><td>Compatibility/deprecated shim for dedicated security audits; prefer <code>$code-review</code> for new general review requests.</td></tr>
+          <tr><td><code>$review</code></td><td><code>/plan --review</code></td><td>Compatibility/deprecated shim for older critic-style plan review flows.</td></tr>
+          <tr><td><code>$frontend-ui-ux</code></td><td><code>/prompts:designer</code></td><td>UI component and UX-focused work.</td></tr>
+          <tr><td><code>$git-master</code></td><td><code>/prompts:git-master</code></td><td>Git hygiene, commit strategy, and history cleanup.</td></tr>
+        </tbody>
+      </table>
 
       <h2>Utilities</h2>
       <ul>
         <li><code>$cancel</code>, <code>$doctor</code>, <code>$help</code>, <code>$note</code>, <code>$trace</code></li>
-        <li><code>$skill</code></li>
-        <li><code>$hud</code>, <code>$omx-setup</code>, <code>$configure-notifications</code></li>
-        <li><code>$ralph-init</code></li>
-        <li><code>$worker</code> (internal) - team worker protocol / lifecycle</li>
+        <li><code>$skill</code>, <code>$hud</code>, <code>$omx-setup</code>, <code>$configure-notifications</code></li>
+        <li><code>$ralph-init</code> - bootstrap Ralph planning artifacts</li>
+      </ul>
+
+      <h2>Internal-only</h2>
+      <ul>
+        <li><code>$worker</code> - team worker protocol / lifecycle handling</li>
       </ul>
 
       <h2>Usage Examples</h2>
       <pre><code>$autopilot "build a release checklist"
 $team 3:executor "fix all TypeScript errors"
 $plan "plan migration from v1 to v2"
-$visual-verdict "compare generated screenshot against refs"
+$analyze "investigate why workers stop claiming tasks"
+/prompts:critic "challenge this migration plan"
 $code-review "review current branch"
 $doctor</code></pre>
 

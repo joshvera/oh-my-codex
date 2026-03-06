@@ -1,21 +1,36 @@
 ---
 name: security-review
-description: Run a comprehensive security review on code
+description: Run a dedicated security audit on code (specialist compatibility lane)
 ---
 
-# Security Review Skill
+# Security Review Skill (Specialist Compatibility Lane)
 
-Conduct a thorough security audit checking for OWASP Top 10 vulnerabilities, hardcoded secrets, and unsafe patterns.
+Conduct a focused security audit checking trust boundaries, OWASP-style vulnerabilities, secrets exposure, and dependency risk. This remains available as a specialist compatibility entry rather than the default public review surface.
 
 ## When to Use
 
 This skill activates when:
 - User requests "security review", "security audit"
-- After writing code that handles user input
+- After writing code that handles untrusted input
 - After adding new API endpoints
 - After modifying authentication/authorization logic
 - Before deploying to production
 - After adding external dependencies
+
+## Boundary
+
+`security-review` stays distinct from `code-review`.
+
+It is **not** the primary public review entry; use it when the user explicitly requests a security audit or when `code-review` escalates due to trust-boundary risk.
+
+Use this skill for:
+- trust-boundary analysis
+- authentication / authorization review
+- untrusted input handling
+- secrets exposure and credential leakage
+- dependency CVEs and vulnerability posture
+
+Do **not** use it for generic maintainability, style, or API ergonomics feedback unless those issues directly affect security.
 
 ## What It Does
 
@@ -40,23 +55,22 @@ Delegates to the `security-reviewer` agent (THOROUGH tier) for deep security ana
    - Tokens and credentials
    - Connection strings with secrets
 
-3. **Input Validation**
-   - All user inputs sanitized
-   - SQL/NoSQL injection prevention
-   - Command injection prevention
-   - XSS prevention (output escaping)
-   - Path traversal prevention
+3. **Input Validation & Trust Boundaries**
+   - Untrusted input sanitized and validated
+   - Injection prevention
+   - Output encoding and XSS prevention
+   - Path traversal / SSRF / file handling concerns
 
 4. **Authentication/Authorization**
-   - Proper password hashing (bcrypt, argon2)
-   - Session management security
+   - Password hashing and credential handling
+   - Session/JWT security
    - Access control enforcement
-   - JWT implementation security
+   - Authn/authz bypass risk
 
 5. **Dependency Security**
-   - Run `npm audit` for known vulnerabilities
-   - Check for outdated dependencies
-   - Identify high-severity CVEs
+   - `npm audit` / ecosystem audit review
+   - High-severity CVE identification
+   - Outdated or risky dependency posture
 
 ## Agent Delegation
 
@@ -66,16 +80,20 @@ delegate(
   tier="THOROUGH",
   prompt="SECURITY REVIEW TASK
 
-Conduct comprehensive security audit of codebase.
+Conduct a dedicated security audit of the requested code.
 
 Scope: [specific files or entire codebase]
 
 Security Checklist:
 1. OWASP Top 10 scan
 2. Hardcoded secrets detection
-3. Input validation review
+3. Trust-boundary and input-validation review
 4. Authentication/authorization review
-5. Dependency vulnerability scan (npm audit)
+5. Dependency vulnerability scan
+
+Boundary:
+- Focus on security findings.
+- Do not spend review time on generic style/maintainability concerns unless they materially affect security.
 
 Output: Security review report with:
 - Summary of findings by severity (CRITICAL, HIGH, MEDIUM, LOW)
@@ -141,59 +159,12 @@ CRITICAL (2)
 
 HIGH (5)
 --------
-3. src/auth/password.ts:22 - Weak Password Hashing
-   Finding: Passwords hashed with MD5 (cryptographically broken)
-   Impact: Passwords can be reversed via rainbow tables
-   Remediation: Use bcrypt or argon2 with appropriate work factor
-   Reference: OWASP A02:2021 – Cryptographic Failures
-
-4. src/components/UserInput.tsx:67 - XSS Vulnerability
-   Finding: User input rendered with dangerouslySetInnerHTML
-   Impact: Cross-site scripting attack vector
-   Remediation: Sanitize HTML or use safe rendering
-   Reference: OWASP A03:2021 – Injection (XSS)
-
-5. src/api/upload.ts:34 - Path Traversal Vulnerability
-   Finding: User-controlled filename used without validation
-   Impact: Attacker can read/write arbitrary files
-   Remediation: Validate and sanitize filenames, use allowlist
-   Reference: OWASP A01:2021 – Broken Access Control
-
-...
-
-MEDIUM (8)
-----------
-...
-
-LOW (12)
---------
-...
-
-DEPENDENCY VULNERABILITIES
---------------------------
-Found 3 vulnerabilities via npm audit:
-
-CRITICAL: axios@0.21.0 - Server-Side Request Forgery (CVE-2021-3749)
-  Installed: axios@0.21.0
-  Fix: npm install axios@0.21.2
-
-HIGH: lodash@4.17.19 - Prototype Pollution (CVE-2020-8203)
-  Installed: lodash@4.17.19
-  Fix: npm install lodash@4.17.21
-
 ...
 
 OVERALL ASSESSMENT
 ------------------
-Security Posture: POOR (2 CRITICAL, 5 HIGH issues)
-
-Immediate Actions Required:
-1. Rotate exposed AWS API key
-2. Fix SQL injection in db/query.ts
-3. Upgrade password hashing to bcrypt
-4. Update vulnerable dependencies
-
-Recommendation: DO NOT DEPLOY until CRITICAL and HIGH issues resolved.
+Security Posture: POOR
+Recommendation: DO NOT DEPLOY until CRITICAL and HIGH issues are addressed.
 ```
 
 ## Security Checklist
@@ -204,81 +175,17 @@ The security-reviewer agent verifies:
 - [ ] Passwords hashed with strong algorithm (bcrypt/argon2)
 - [ ] Session tokens cryptographically random
 - [ ] JWT tokens properly signed and validated
-- [ ] Access control enforced on all protected resources
+- [ ] Access control enforced on protected resources
 - [ ] No authentication bypass vulnerabilities
 
 ### Input Validation
-- [ ] All user inputs validated and sanitized
-- [ ] SQL queries use parameterization (no string concatenation)
-- [ ] NoSQL queries prevent injection
-- [ ] File uploads validated (type, size, content)
-- [ ] URLs validated to prevent SSRF
+- [ ] All untrusted inputs validated and sanitized
+- [ ] Queries use safe parameterization
+- [ ] File and URL handling prevent traversal / SSRF
+- [ ] Output encoding blocks XSS
 
-### Output Encoding
-- [ ] HTML output escaped to prevent XSS
-- [ ] JSON responses properly encoded
-- [ ] No user data in error messages
-- [ ] Content-Security-Policy headers set
-
-### Secrets Management
-- [ ] No hardcoded API keys
-- [ ] No passwords in source code
-- [ ] No private keys in repo
-- [ ] Environment variables used for secrets
-- [ ] Secrets not logged or exposed in errors
-
-### Cryptography
-- [ ] Strong algorithms used (AES-256, RSA-2048+)
-- [ ] Proper key management
-- [ ] Random number generation cryptographically secure
-- [ ] TLS/HTTPS enforced for sensitive data
-
-### Dependencies
-- [ ] No known vulnerabilities in dependencies
-- [ ] Dependencies up to date
-- [ ] No CRITICAL or HIGH CVEs
-- [ ] Dependency sources verified
-
-## Severity Definitions
-
-**CRITICAL** - Exploitable vulnerability with severe impact (data breach, RCE, credential theft)
-**HIGH** - Vulnerability requiring specific conditions but serious impact
-**MEDIUM** - Security weakness with limited impact or difficult exploitation
-**LOW** - Best practice violation or minor security concern
-
-## Remediation Priority
-
-1. **Rotate exposed secrets** - Immediate (within 1 hour)
-2. **Fix CRITICAL** - Urgent (within 24 hours)
-3. **Fix HIGH** - Important (within 1 week)
-4. **Fix MEDIUM** - Planned (within 1 month)
-5. **Fix LOW** - Backlog (when convenient)
-
-## Use with Other Skills
-
-**With Team:**
-```
-/team "run security review on authentication module"
-```
-Uses: explore → security-reviewer → executor → security-reviewer (re-verify)
-
-**With Swarm:**
-```
-/swarm 4:security-reviewer "audit all API endpoints"
-```
-Parallel security review across multiple endpoints.
-
-**With Ralph:**
-```
-/ralph security-review then fix all issues
-```
-Review, fix, re-review until all issues resolved.
-
-## Best Practices
-
-- **Review early** - Security by design, not afterthought
-- **Review often** - Every major feature or API change
-- **Automate** - Run security scans in CI/CD pipeline
-- **Fix immediately** - Don't accumulate security debt
-- **Educate** - Learn from findings to prevent future issues
-- **Verify fixes** - Re-run security review after remediation
+### Secrets & Supply Chain
+- [ ] No hardcoded secrets in code or config
+- [ ] Vulnerable dependencies identified
+- [ ] Risky third-party integrations called out
+- [ ] Remediation guidance is concrete and prioritized

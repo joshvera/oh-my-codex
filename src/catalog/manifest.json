@@ -64,8 +64,7 @@
     {
       "name": "analyze",
       "category": "shortcut",
-      "status": "alias",
-      "canonical": "debugger"
+      "status": "active"
     },
     {
       "name": "deepsearch",
@@ -94,8 +93,8 @@
     {
       "name": "security-review",
       "category": "shortcut",
-      "status": "active",
-      "canonical": "security-reviewer"
+      "status": "deprecated",
+      "canonical": "code-review"
     },
     {
       "name": "visual-verdict",
@@ -124,7 +123,7 @@
     {
       "name": "review",
       "category": "shortcut",
-      "status": "alias",
+      "status": "deprecated",
       "canonical": "plan --review"
     },
     {
@@ -248,12 +247,12 @@
     {
       "name": "architect",
       "category": "build",
-      "status": "active"
+      "status": "internal"
     },
     {
       "name": "debugger",
       "category": "build",
-      "status": "active"
+      "status": "internal"
     },
     {
       "name": "executor",
@@ -286,7 +285,7 @@
     {
       "name": "security-reviewer",
       "category": "review",
-      "status": "active"
+      "status": "internal"
     },
     {
       "name": "performance-reviewer",
@@ -297,7 +296,7 @@
     {
       "name": "code-reviewer",
       "category": "review",
-      "status": "active"
+      "status": "internal"
     },
     {
       "name": "dependency-expert",

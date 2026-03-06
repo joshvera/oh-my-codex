@@ -20,32 +20,55 @@
 
     <main class="container">
       <h1>Agent Catalog</h1>
-      <p class="muted">Organized by lane with routing tier and usage examples.</p>
+      <p class="muted">Public task-intent surface plus the internal expert prompt catalog.</p>
+      <p>
+        The primary review/analysis surface is intentionally task-shaped: use <code>$analyze</code> for investigation,
+        <code>$code-review</code> for umbrella review, and <code>/prompts:critic</code> for direct plan/design critique.
+        This is a mixed invocation model by design: <code>$analyze</code> and <code>$code-review</code> are public skill
+        routers, while the prompt catalog below exposes the internal experts they route into.
+      </p>
 
-      <h2>Build & Analysis</h2>
+      <h2>Public Review/Analysis Entry Points</h2>
+      <table>
+        <thead><tr><th>Entry Point</th><th>Type</th><th>Routes To</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td><code>$analyze</code></td><td>skill</td><td><code>/prompts:architect</code> or <code>/prompts:debugger</code></td><td>Task-intent investigation entry that chooses structural diagnosis vs failure isolation.</td></tr>
+          <tr><td><code>$code-review</code></td><td>skill</td><td><code>/prompts:code-reviewer</code> with <code>/prompts:security-reviewer</code> escalation</td><td>Public umbrella review entry for quality, API, performance, style, and security-sensitive follow-up.</td></tr>
+          <tr><td><code>/prompts:critic</code></td><td>prompt</td><td>direct</td><td>Direct critique entry for plans and designs when critique itself is the task.</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Build &amp; Execution + Internal Analysis Experts</h2>
       <table>
         <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
         <tbody>
           <tr><td>/prompts:explore</td><td>low</td><td>Codebase discovery and symbol mapping.</td><td><code>/prompts:explore "map auth flow"</code></td></tr>
           <tr><td>/prompts:analyst</td><td>high</td><td>Clarifies requirements and acceptance criteria.</td><td><code>/prompts:analyst "define scope"</code></td></tr>
           <tr><td>/prompts:planner</td><td>high</td><td>Builds execution plans and sequencing.</td><td><code>/prompts:planner "plan migration"</code></td></tr>
-          <tr><td>/prompts:architect</td><td>high</td><td>System boundaries and architecture design.</td><td><code>/prompts:architect "review service boundaries"</code></td></tr>
-          <tr><td>/prompts:debugger</td><td>medium</td><td>Root-cause and regression diagnosis.</td><td><code>/prompts:debugger "investigate flaky test"</code></td></tr>
+          <tr><td>/prompts:architect <strong>(internal expert)</strong></td><td>high</td><td>System boundaries, interface tradeoffs, and structural diagnosis; not the generic catch-all for all code analysis.</td><td><code>/prompts:architect "review service boundaries"</code></td></tr>
+          <tr><td>/prompts:debugger <strong>(internal expert)</strong></td><td>medium</td><td>Root-cause analysis, regressions, and failure isolation.</td><td><code>/prompts:debugger "investigate flaky test"</code></td></tr>
           <tr><td>/prompts:executor</td><td>medium</td><td>Implementation and refactoring work.</td><td><code>/prompts:executor "add validation"</code></td></tr>
           <tr><td>/prompts:verifier</td><td>medium</td><td>Evidence-backed completion checks.</td><td><code>/prompts:verifier "verify release readiness"</code></td></tr>
         </tbody>
       </table>
 
-      <h2>Review</h2>
+      <h2>Internal Review Experts</h2>
       <table>
         <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
         <tbody>
-          <tr><td>/prompts:style-reviewer</td><td>low</td><td>Formatting and naming conventions.</td><td><code>/prompts:style-reviewer "check style"</code></td></tr>
-          <tr><td>/prompts:quality-reviewer</td><td>medium</td><td>Logic and maintainability defects.</td><td><code>/prompts:quality-reviewer "review PR"</code></td></tr>
-          <tr><td>/prompts:api-reviewer</td><td>medium</td><td>API contracts and compatibility.</td><td><code>/prompts:api-reviewer "audit API changes"</code></td></tr>
-          <tr><td>/prompts:security-reviewer</td><td>medium</td><td>Security boundaries and vulnerabilities.</td><td><code>/prompts:security-reviewer "security audit"</code></td></tr>
-          <tr><td>/prompts:performance-reviewer</td><td>medium</td><td>Performance and complexity bottlenecks.</td><td><code>/prompts:performance-reviewer "profile hotspots"</code></td></tr>
-          <tr><td>/prompts:code-reviewer</td><td>high</td><td>Comprehensive multi-axis code review.</td><td><code>/prompts:code-reviewer "comprehensive review"</code></td></tr>
+          <tr><td>/prompts:code-reviewer <strong>(internal expert)</strong></td><td>high</td><td>Default umbrella review engine behind <code>$code-review</code> for quality, API, performance, and style concerns.</td><td><code>/prompts:code-reviewer "comprehensive review"</code></td></tr>
+          <tr><td>/prompts:security-reviewer <strong>(internal expert)</strong></td><td>high</td><td>Dedicated security/trust-boundary reviewer used for escalation behind <code>$code-review</code> and compatibility security-review flows.</td><td><code>/prompts:security-reviewer "security audit"</code></td></tr>
+        </tbody>
+      </table>
+
+      <h2>Compatibility Review Prompts</h2>
+      <table>
+        <thead><tr><th>Prompt</th><th>Status</th><th>Canonical Target</th><th>Migration Guidance</th></tr></thead>
+        <tbody>
+          <tr><td>/prompts:style-reviewer</td><td>compatibility alias</td><td><code>/prompts:code-reviewer</code></td><td>Prefer the public <code>$code-review</code> entry point for new requests; keep this only for older instructions or scripts.</td></tr>
+          <tr><td>/prompts:quality-reviewer</td><td>compatibility alias</td><td><code>/prompts:code-reviewer</code></td><td>Prefer the public <code>$code-review</code> entry point unless you are preserving older prompt names.</td></tr>
+          <tr><td>/prompts:api-reviewer</td><td>compatibility alias</td><td><code>/prompts:code-reviewer</code></td><td>API compatibility checks now flow through the public <code>$code-review</code> entry point.</td></tr>
+          <tr><td>/prompts:performance-reviewer</td><td>compatibility alias</td><td><code>/prompts:code-reviewer</code></td><td>Performance heuristics are preserved, but the public entry point is <code>$code-review</code>.</td></tr>
         </tbody>
       </table>
 
@@ -81,7 +104,7 @@
       <table>
         <thead><tr><th>Agent</th><th>Model</th><th>Description</th><th>Example</th></tr></thead>
         <tbody>
-          <tr><td>/prompts:critic</td><td>high</td><td>Critical challenge for plans and designs.</td><td><code>/prompts:critic "challenge this plan"</code></td></tr>
+          <tr><td>/prompts:critic</td><td>high</td><td>Plan/design critique only; not generic code review or bug diagnosis.</td><td><code>/prompts:critic "challenge this plan"</code></td></tr>
           <tr><td>/prompts:vision</td><td>medium</td><td>Image/screenshot and diagram analysis.</td><td><code>/prompts:vision "review this screenshot"</code></td></tr>
         </tbody>
       </table>

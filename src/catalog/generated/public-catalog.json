@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-03-06T00:19:14.230Z",
+  "generatedAt": "2026-03-06T15:17:09.157Z",
   "version": "2026.02.28.1",
   "counts": {
     "skillCount": 38,
     "promptCount": 29,
     "activeSkillCount": 22,
-    "activeAgentCount": 18
+    "activeAgentCount": 14
   },
   "coreSkills": [
     "autopilot",
@@ -92,8 +92,7 @@
     {
       "name": "analyze",
       "category": "shortcut",
-      "status": "alias",
-      "canonical": "debugger",
+      "status": "active",
       "core": false,
       "internalRequired": false
     },
@@ -132,8 +131,8 @@
     {
       "name": "security-review",
       "category": "shortcut",
-      "status": "active",
-      "canonical": "security-reviewer",
+      "status": "deprecated",
+      "canonical": "code-review",
       "core": false,
       "internalRequired": false
     },
@@ -172,7 +171,7 @@
     {
       "name": "review",
       "category": "shortcut",
-      "status": "alias",
+      "status": "deprecated",
       "canonical": "plan --review",
       "core": false,
       "internalRequired": false
@@ -321,12 +320,12 @@
     {
       "name": "architect",
       "category": "build",
-      "status": "active"
+      "status": "internal"
     },
     {
       "name": "debugger",
       "category": "build",
-      "status": "active"
+      "status": "internal"
     },
     {
       "name": "executor",
@@ -359,7 +358,7 @@
     {
       "name": "security-reviewer",
       "category": "review",
-      "status": "active"
+      "status": "internal"
     },
     {
       "name": "performance-reviewer",
@@ -370,7 +369,7 @@
     {
       "name": "code-reviewer",
       "category": "review",
-      "status": "active"
+      "status": "internal"
     },
     {
       "name": "dependency-expert",
@@ -473,10 +472,6 @@
       "canonical": "team"
     },
     {
-      "name": "analyze",
-      "canonical": "debugger"
-    },
-    {
       "name": "deepsearch",
       "canonical": "explore"
     },
@@ -495,10 +490,6 @@
     {
       "name": "git-master",
       "canonical": "git-master"
-    },
-    {
-      "name": "review",
-      "canonical": "plan --review"
     },
     {
       "name": "configure-discord",

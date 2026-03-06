@@ -1,93 +1,97 @@
 ---
 name: analyze
-description: Deep analysis and investigation
+description: Investigation router for root-cause, architecture, and dependency analysis
 ---
 
 <Purpose>
-Analyze performs deep investigation of architecture, bugs, performance issues, and dependencies. It routes to the architect agent or Codex MCP for thorough analysis and returns structured findings with evidence.
+Analyze is a routing shortcut for investigation work. It defaults to the `debugger` lane for root-cause analysis and regressions, and escalates to `architect` when the job is primarily about system boundaries, structural tradeoffs, or dependency impact.
 </Purpose>
 
 <Use_When>
 - User says "analyze", "investigate", "debug", "why does", or "what's causing"
-- User needs to understand a system's architecture or behavior before making changes
-- User wants root cause analysis of a bug or performance issue
-- User needs dependency analysis or impact assessment for a proposed change
-- A complex question requires reading multiple files and reasoning across them
+- User needs root-cause analysis for a failure, regression, or confusing runtime behavior
+- User needs to understand architecture, dependency impact, or system boundaries before making changes
+- A complex question requires reading multiple files and returning evidence-backed findings
 </Use_When>
 
 <Do_Not_Use_When>
 - User wants code changes made -- use executor agents or `ralph` instead
 - User wants a full plan with acceptance criteria -- use `plan` skill instead
-- User wants a quick file lookup or symbol search -- use `explore` agent instead
-- User asks a simple factual question that can be answered from one file -- just read and answer directly
+- User wants a general code-quality review -- use `code-review` instead
+- User wants a dedicated trust-boundary / OWASP audit -- use `security-review` instead
+- User wants a quick file lookup or symbol search -- use `explore` instead
 </Do_Not_Use_When>
 
 <Why_This_Exists>
-Deep investigation requires a different approach than quick lookups or code changes. Analysis tasks need broad context gathering, cross-file reasoning, and structured findings. Routing these to the architect agent or Codex ensures the right level of depth without the overhead of a full planning or execution workflow.
+Investigation work is broader than a single role name. Some requests are bug/root-cause questions that belong with `debugger`; others are structural or dependency questions that belong with `architect`. Analyze keeps one user-facing shortcut while routing to the sharper canonical owner.
 </Why_This_Exists>
 
+<Routing_Defaults>
+- **Default owner: `debugger`** for failures, regressions, "why is this broken", stack traces, reproduction, and causal diagnosis.
+- **Route to `architect`** for architecture review, interface boundaries, dependency impact, system behavior across modules, and structural diagnosis.
+- **Use `explore` first** when the request is broad and you need a fast file/symbol map before deeper reasoning.
+</Routing_Defaults>
+
 <Execution_Policy>
-- Prefer Codex MCP for analysis when available (faster, lower cost)
-- Fall back to architect agent when Codex is unavailable
-- Always provide context files to the analysis tool for grounded reasoning
-- Return structured findings, not just raw observations
+- Treat Analyze as a router, not a standalone public specialist
+- Gather concrete context before delegating or reasoning deeply
+- Return structured findings with evidence, file references, and clear next actions
+- Distinguish confirmed facts from hypotheses
 </Execution_Policy>
 
 <Steps>
-1. **Identify the analysis type**: Architecture, bug investigation, performance, or dependency analysis
-2. **Gather relevant context**: Read or identify the key files involved
-3. **Route to analyzer**:
-   - Preferred: `ask_codex` with `agent_role: "architect"` and relevant `context_files`
-   - Fallback: delegate to the `architect` role at THOROUGH tier with the analysis request
-4. **Return structured findings**: Present the analysis with evidence, file references, and actionable recommendations
+1. **Classify the investigation**: root-cause/debugging vs architecture/dependency/structural analysis
+2. **Gather context**: read the key files or use `explore` to map relevant code paths
+3. **Route to the canonical owner**:
+   - `debugger` for failures, regressions, causality, and reproduction work
+   - `architect` for boundaries, tradeoffs, and structural/system analysis
+4. **Synthesize findings**: summarize the diagnosis, evidence, remaining uncertainty, and recommended next step
 </Steps>
 
 <Tool_Usage>
-- Before first MCP tool use, call `ToolSearch("mcp")` to discover deferred MCP tools
-- Use `ask_codex` with `agent_role: "architect"` as the preferred analysis route
-- Pass `context_files` with all relevant source files for grounded analysis
-- Use the `architect` role as fallback when ToolSearch finds no MCP tools or Codex is unavailable
-- For broad analysis, use `explore` agent first to identify relevant files before routing to architect
+- Prefer direct repo inspection or MCP code-intel tools for grounded analysis
+- Use `lsp_diagnostics`, `lsp_find_references`, and `ast_grep_search` when they sharpen the investigation
+- For broad requests, map the surface area first, then hand off to the appropriate canonical role
 </Tool_Usage>
 
 <Examples>
 <Good>
 User: "analyze why the WebSocket connections drop after 30 seconds"
-Action: Gather WebSocket-related files, route to architect with context, return root cause analysis with specific file:line references and a recommended fix.
-Why good: Clear investigation target, structured output with evidence.
+Action: Route to `debugger`, reproduce or inspect the failure path, and return a root-cause analysis with concrete evidence.
+Why good: This is a causal diagnosis request.
 </Good>
 
 <Good>
-User: "investigate the dependency chain from src/api/routes.ts"
-Action: Use explore agent to map the import graph, then route to architect for impact analysis.
-Why good: Uses explore for fact-gathering, architect for reasoning.
+User: "investigate the dependency impact of moving team state into a shared module"
+Action: Route to `architect`, inspect module boundaries and imports, and return tradeoffs plus impacted files.
+Why good: This is a structural/dependency analysis request.
 </Good>
 
 <Bad>
-User: "analyze the auth module"
-Action: Returning "The auth module handles authentication."
-Why bad: Shallow summary without investigation. Should examine the module's structure, patterns, potential issues, and provide specific findings with file references.
+User: "review this refactor for maintainability"
+Action: Running Analyze.
+Why bad: This is code-quality review work; use `code-review`.
 </Bad>
 
 <Bad>
-User: "fix the bug in the parser"
-Action: Running analysis skill.
-Why bad: This is a fix request, not an analysis request. Route to executor or ralph instead.
+User: "security review the auth changes"
+Action: Running Analyze.
+Why bad: Trust-boundary and OWASP review should go to `security-review`.
 </Bad>
 </Examples>
 
 <Escalation_And_Stop_Conditions>
-- If analysis reveals the issue requires code changes, report findings and recommend using `ralph` or executor for the fix
-- If the analysis scope is too broad ("analyze everything"), ask the user to narrow the focus
-- If Codex is unavailable and the architect agent also fails, report what context was gathered and suggest manual investigation paths
+- If analysis shows the real next step is implementation, report findings and recommend executor / `ralph`
+- If the request mixes debugging and architecture, lead with the dominant owner and call out the secondary handoff explicitly
+- If the scope is too broad ("analyze everything"), narrow it before proceeding
 </Escalation_And_Stop_Conditions>
 
 <Final_Checklist>
-- [ ] Analysis addresses the specific question or investigation target
-- [ ] Findings reference specific files and line numbers where applicable
-- [ ] Root causes are identified (not just symptoms) for bug investigations
-- [ ] Actionable recommendations are provided
-- [ ] Analysis distinguishes between confirmed facts and hypotheses
+- [ ] Investigation is routed to the right canonical owner (`debugger` by default, `architect` when structural)
+- [ ] Findings cite the relevant files and evidence where applicable
+- [ ] Root causes are separated from symptoms for bug investigations
+- [ ] Recommended next actions are explicit
+- [ ] Facts and hypotheses are clearly distinguished
 </Final_Checklist>
 
 Task: {{ARGUMENTS}}

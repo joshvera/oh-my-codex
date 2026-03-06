@@ -62,7 +62,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   },
   'architect': {
     name: 'architect',
-    description: 'System design, boundaries, interfaces, long-horizon tradeoffs',
+    description: 'Internal analysis expert for system boundaries, interface tradeoffs, architecture review, and structural diagnosis',
     reasoningEffort: 'high',
     posture: 'frontier-orchestrator',
     modelClass: 'frontier',
@@ -72,7 +72,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   },
   'debugger': {
     name: 'debugger',
-    description: 'Root-cause analysis, regression isolation, failure diagnosis',
+    description: 'Internal analysis expert for root-cause analysis, regression isolation, reproduction, and failure diagnosis',
     reasoningEffort: 'medium',
     posture: 'deep-worker',
     modelClass: 'standard',
@@ -95,7 +95,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   // Review Lane
   'style-reviewer': {
     name: 'style-reviewer',
-    description: 'Formatting, naming, idioms, lint conventions',
+    description: 'Compatibility alias to code-reviewer for style and conventions',
     reasoningEffort: 'low',
     posture: 'fast-lane',
     modelClass: 'fast',
@@ -105,7 +105,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   },
   'quality-reviewer': {
     name: 'quality-reviewer',
-    description: 'Logic defects, maintainability, anti-patterns',
+    description: 'Compatibility alias to code-reviewer for logic and maintainability review',
     reasoningEffort: 'medium',
     posture: 'frontier-orchestrator',
     modelClass: 'standard',
@@ -115,7 +115,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   },
   'api-reviewer': {
     name: 'api-reviewer',
-    description: 'API contracts, versioning, backward compatibility',
+    description: 'Compatibility alias to code-reviewer for API contract review',
     reasoningEffort: 'medium',
     posture: 'frontier-orchestrator',
     modelClass: 'standard',
@@ -125,7 +125,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   },
   'security-reviewer': {
     name: 'security-reviewer',
-    description: 'Vulnerabilities, trust boundaries, authn/authz',
+    description: 'Internal security review expert for trust boundaries, authn/authz, and exploitability',
     reasoningEffort: 'medium',
     posture: 'frontier-orchestrator',
     modelClass: 'standard',
@@ -135,7 +135,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   },
   'performance-reviewer': {
     name: 'performance-reviewer',
-    description: 'Hotspots, complexity, memory/latency optimization',
+    description: 'Compatibility alias to code-reviewer for performance and complexity review',
     reasoningEffort: 'medium',
     posture: 'frontier-orchestrator',
     modelClass: 'standard',
@@ -145,7 +145,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   },
   'code-reviewer': {
     name: 'code-reviewer',
-    description: 'Comprehensive review across all concerns',
+    description: 'Internal umbrella review expert for quality, API, style, and performance feedback',
     reasoningEffort: 'high',
     posture: 'frontier-orchestrator',
     modelClass: 'frontier',
@@ -301,7 +301,7 @@ export const AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   // Coordination
   'critic': {
     name: 'critic',
-    description: 'Plan/design critical challenge and review',
+    description: 'Public critique prompt for plan and design challenge before implementation',
     reasoningEffort: 'high',
     posture: 'frontier-orchestrator',
     modelClass: 'frontier',
