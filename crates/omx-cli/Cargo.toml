@@ -17,3 +17,6 @@ path = "src/lib.rs"
 
 [lints]
 workspace = true
+
+[dependencies]
+omx-process = { path = "../omx-process" }

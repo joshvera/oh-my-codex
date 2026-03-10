@@ -1,4 +1,5 @@
 pub mod ask;
+pub mod doctor;
 pub mod reasoning;
 
 use std::collections::BTreeMap;
@@ -67,6 +68,7 @@ pub enum CliAction {
     Version,
     Ask(Vec<String>),
     Reasoning(Vec<String>),
+    Doctor(Vec<String>),
     Unsupported,
 }
 
@@ -86,6 +88,7 @@ where
         Some("version" | "--version" | "-v") => CliAction::Version,
         Some("ask") => CliAction::Ask(values.into_iter().skip(2).collect()),
         Some("reasoning") => CliAction::Reasoning(values.into_iter().skip(2).collect()),
+        Some("doctor") => CliAction::Doctor(values.into_iter().skip(2).collect()),
         Some(_) => CliAction::Unsupported,
     }
 }
@@ -186,6 +189,14 @@ mod tests {
         assert_eq!(
             parse_args(["omx", "reasoning", "high"]),
             CliAction::Reasoning(vec!["high".into()])
+        );
+    }
+
+    #[test]
+    fn parses_doctor_subcommand_with_passthrough_args() {
+        assert_eq!(
+            parse_args(["omx", "doctor", "--team"]),
+            CliAction::Doctor(vec!["--team".into()])
         );
     }
 

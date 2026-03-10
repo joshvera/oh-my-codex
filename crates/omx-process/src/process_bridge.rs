@@ -80,6 +80,12 @@ pub struct ProcessResult {
     pub spawn_error_kind: Option<SpawnErrorKind>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbedCommand {
+    pub spec: PlatformCommandSpec,
+    pub result: ProcessResult,
+}
+
 impl ProcessResult {
     #[must_use]
     pub fn success(&self) -> bool {
@@ -112,7 +118,20 @@ impl ProcessBridge {
     }
 
     pub fn run(&self, spec: &CommandSpec) -> ProcessResult {
+        self.run_resolved(&self.resolve_spec(spec), spec)
+    }
+
+    #[must_use]
+    pub fn probe(&self, spec: &CommandSpec) -> ProbedCommand {
         let resolved = self.resolve_spec(spec);
+        let result = self.run_resolved(&resolved, spec);
+        ProbedCommand {
+            spec: resolved,
+            result,
+        }
+    }
+
+    fn run_resolved(&self, resolved: &PlatformCommandSpec, spec: &CommandSpec) -> ProcessResult {
         let mut command = Command::new(&resolved.command);
         command.args(&resolved.args);
         command.env_clear();
@@ -260,6 +279,40 @@ mod tests {
 
         assert_eq!(result.spawn_error_kind, Some(SpawnErrorKind::Missing));
         assert_eq!(result.status_code, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_returns_resolved_spec_and_result() {
+        let bridge = ProcessBridge::new(Platform::Unix, std::env::vars_os().collect());
+        let mut spec = CommandSpec::new("sh");
+        spec.args = vec![OsString::from("-c"), OsString::from("printf bridged")];
+
+        let probed = bridge.probe(&spec);
+
+        assert_eq!(probed.spec.command, OsString::from("sh"));
+        assert_eq!(probed.spec.args, spec.args);
+        assert_eq!(probed.result.stdout, b"bridged");
+        assert!(probed.result.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_preserves_spawn_failure_classification() {
+        let bridge = ProcessBridge::new(Platform::Unix, std::env::vars_os().collect());
+        let spec = CommandSpec::new("definitely-not-a-real-omx-command");
+
+        let probed = bridge.probe(&spec);
+
+        assert_eq!(
+            probed.spec.command,
+            OsString::from("definitely-not-a-real-omx-command")
+        );
+        assert_eq!(
+            probed.result.spawn_error_kind,
+            Some(SpawnErrorKind::Missing)
+        );
+        assert_eq!(probed.result.status_code, None);
     }
 
     #[test]
