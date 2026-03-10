@@ -596,6 +596,8 @@ exit 0
       assert.match(tmuxLog, /Team beta:/);
       assert.match(tmuxLog, /leader stale/);
       assert.match(tmuxLog, /pane\(s\) still active/);
+      assert.match(tmuxLog, /Check: omx team status beta/);
+      assert.match(tmuxLog, /keep polling/);
       assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should include injection marker');
     });
   });
@@ -714,6 +716,8 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /Team stalled-progress: leader stale, no team progress for 3m/);
+      assert.match(tmuxLog, /Check: omx team status stalled-progress/);
+      assert.match(tmuxLog, /keep polling/);
       assert.match(tmuxLog, /pending:1 in_progress:1 blocked:0/);
       assert.match(tmuxLog, /1 worker signal missing/);
 
@@ -839,6 +843,8 @@ exit 0
 
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /Team stalled-before-stale: worker panes stalled, no team progress for 3m/);
+      assert.match(tmuxLog, /Check: omx team status stalled-before-stale/);
+      assert.match(tmuxLog, /keep polling/);
       assert.doesNotMatch(tmuxLog, /leader stale/);
       assert.match(tmuxLog, /pending:1 in_progress:1 blocked:0/);
 
@@ -1407,6 +1413,8 @@ exit 0
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /leader stale/);
       assert.match(tmuxLog, /msg\(s\) pending/);
+      assert.match(tmuxLog, /Check: omx team status delta/);
+      assert.match(tmuxLog, /keep polling/);
       assert.match(tmuxLog, /\[OMX_TMUX_INJECT\]/, 'should include injection marker');
 
       // Verify event reason

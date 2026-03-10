@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { parseTeamStartArgs, teamCommand } from '../team.js';
+import { buildLeaderMonitoringHints, parseTeamStartArgs, teamCommand } from '../team.js';
 import { DEFAULT_MAX_WORKERS } from '../../team/state.js';
 import {
   appendTeamEvent,
@@ -77,6 +77,13 @@ describe('teamCommand shutdown --force parsing', () => {
 });
 
 describe('teamCommand api', () => {
+  it('builds leader monitoring hints that keep team status visible while ON', () => {
+    const hints = buildLeaderMonitoringHints('My Team');
+    assert.equal(hints[0], 'leader_check: omx team status my-team');
+    assert.match(hints[1] ?? '', /while ON, keep checking state/);
+    assert.match(hints[1] ?? '', /sleep 30 && omx team status my-team/);
+  });
+
   it('prints team-specific help for omx team --help', async () => {
     const logs: string[] = [];
     const originalLog = console.log;

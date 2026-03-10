@@ -587,6 +587,14 @@ async function ensureTeamModeState(
   });
 }
 
+export function buildLeaderMonitoringHints(teamName: string): string[] {
+  const sanitized = sanitizeTeamName(teamName);
+  return [
+    `leader_check: omx team status ${sanitized}`,
+    `leader_loop_hint: while ON, keep checking state (example: sleep 30 && omx team status ${sanitized})`,
+  ];
+}
+
 async function renderStartSummary(runtime: TeamRuntime, staffingPlan?: FollowupStaffingPlan): Promise<void> {
   console.log(`Team started: ${runtime.teamName}`);
   console.log(`tmux target: ${runtime.sessionName}`);
@@ -607,6 +615,9 @@ async function renderStartSummary(runtime: TeamRuntime, staffingPlan?: FollowupS
     console.log(
       `monitor_perf_ms: total=${snapshot.performance.total_ms} list=${snapshot.performance.list_tasks_ms} workers=${snapshot.performance.worker_scan_ms} mailbox=${snapshot.performance.mailbox_delivery_ms}`
     );
+  }
+  for (const hint of buildLeaderMonitoringHints(runtime.teamName)) {
+    console.log(hint);
   }
 }
 

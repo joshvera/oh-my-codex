@@ -53,6 +53,12 @@ export function resolveLeaderProgressStallThresholdMs() {
   return 120_000;
 }
 
+function buildStatusCheckReminder(teamName, { keepPolling = false } = {}) {
+  return keepPolling
+    ? `Check: omx team status ${teamName}; keep polling.`
+    : `Check: omx team status ${teamName}.`;
+}
+
 export async function checkWorkerPanesAlive(tmuxTarget, workerPaneIds = []) {
   const sessionName = tmuxTarget.split(':')[0];
   try {
@@ -562,7 +568,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       text =
         `Team ${teamName}: ${ackWithoutStartEvidence.worker} said "${ackWithoutStartEvidence.body}" `
         + `but has no work-start evidence yet (status: ${ackWithoutStartEvidence.statusState}, no owned in_progress task). `
-        + `Run: omx team status ${teamName}`;
+        + buildStatusCheckReminder(teamName);
     } else if (stalledTeamNudge) {
       nudgeReason = stalledTeamReason;
       const { pending, in_progress, blocked } = progressSnapshot.taskCounts;
@@ -571,18 +577,22 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
         : '';
       const stallPrefix = leaderStale ? 'leader stale, ' : 'worker panes stalled, ';
       text =
-        `Team ${teamName}: ${stallPrefix}no team progress for ${formatDurationMs(stalledForMs)} `
-        + `(pending:${pending} in_progress:${in_progress} blocked:${blocked}${missingSignals}). `
-        + `Run: omx team status ${teamName}`;
+        `Team ${teamName}: ${stallPrefix}no team progress for ${formatDurationMs(stalledForMs)}. `
+        + `${buildStatusCheckReminder(teamName, { keepPolling: true })} `
+        + `(pending:${pending} in_progress:${in_progress} blocked:${blocked}${missingSignals})`;
     } else if (stalePanesNudge && hasNewMessage) {
       nudgeReason = 'stale_leader_with_messages';
-      text = `Team ${teamName}: leader stale, ${paneStatus.paneCount} pane(s) active, ${messages.length} msg(s) pending. Run: omx team status ${teamName}`;
+      text =
+        `Team ${teamName}: leader stale, ${paneStatus.paneCount} pane(s) active, ${messages.length} msg(s) pending. `
+        + buildStatusCheckReminder(teamName, { keepPolling: true });
     } else if (staleFollowupDue) {
       nudgeReason = 'stale_leader_panes_alive';
-      text = `Team ${teamName}: leader stale, ${paneStatus.paneCount} worker pane(s) still active. Run: omx team status ${teamName}`;
+      text =
+        `Team ${teamName}: leader stale, ${paneStatus.paneCount} worker pane(s) still active. `
+        + buildStatusCheckReminder(teamName, { keepPolling: true });
     } else if (hasNewMessage) {
       nudgeReason = 'new_mailbox_message';
-      text = `Team ${teamName}: ${messages.length} msg(s) for leader. Run: omx team status ${teamName}`;
+      text = `Team ${teamName}: ${messages.length} msg(s) for leader. ${buildStatusCheckReminder(teamName)}`;
     } else {
       continue;
     }
