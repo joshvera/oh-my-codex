@@ -287,6 +287,14 @@ Current preview contract:
 - Summary mode uses the local Codex CLI via `codex exec` and prefers `OMX_SPARKSHELL_MODEL`, then `OMX_SPARK_MODEL`, then the spark default model.
 - `--spark` / `--madmax-spark` remain team-worker launch flags; sparkshell model routing is controlled by env vars instead.
 - Native binary lookup order is `OMX_SPARKSHELL_BIN`, then packaged `bin/native/<platform>-<arch>/omx-sparkshell[.exe]`, then repo-local `native/omx-sparkshell/target/release/omx-sparkshell[.exe]`.
+- Team/leader pane summarization is explicit opt-in via tmux pane mode, for example:
+
+```bash
+omx sparkshell --tmux-pane %12 --tail-lines 400
+```
+
+- tmux pane mode captures a larger pane tail (100-1000 lines) and applies the same raw-vs-summary behavior to worker/leader pane context.
+- sparkshell pane summarization is not always-on; it is enabled only when explicitly requested.
 
 Preview build helpers:
 

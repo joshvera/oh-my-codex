@@ -111,7 +111,8 @@ Usage:
   omx hooks     Manage hook plugins (init|status|validate|test)
   omx hud       Show HUD statusline (--watch, --json, --preset=NAME)
   omx sparkshell <command> [args...]
-                Run native sparkshell sidecar for direct command execution/summarization
+  omx sparkshell --tmux-pane <pane-id> [--tail-lines <100-1000>]
+                Run native sparkshell sidecar for direct command execution or explicit tmux-pane summarization
   omx help      Show this help message
   omx status    Show active modes and state
   omx cancel    Cancel active execution modes

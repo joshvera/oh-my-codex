@@ -113,6 +113,7 @@ describe('omx sparkshell', () => {
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.match(result.stdout, /omx sparkshell <command> \[args\.\.\.\]/);
+      assert.match(result.stdout, /omx sparkshell --tmux-pane <pane-id> \[--tail-lines <100-1000>\]/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -126,6 +127,7 @@ describe('omx sparkshell', () => {
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.match(result.stdout, /Usage: omx sparkshell <command> \[args\.\.\.\]/);
+      assert.match(result.stdout, /or: omx sparkshell --tmux-pane <pane-id> \[--tail-lines <100-1000>\]/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

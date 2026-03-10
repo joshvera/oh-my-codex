@@ -29,7 +29,7 @@ impl CommandOutput {
 pub fn execute_command(argv: &[String]) -> Result<CommandOutput, SparkshellError> {
     if argv.is_empty() {
         return Err(SparkshellError::InvalidArgs(
-            "usage: omx-sparkshell <command> [args...]",
+            "usage: omx-sparkshell <command> [args...]".to_string(),
         ));
     }
 

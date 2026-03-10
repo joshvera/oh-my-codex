@@ -3,7 +3,7 @@ use std::io;
 
 #[derive(Debug)]
 pub enum SparkshellError {
-    InvalidArgs(&'static str),
+    InvalidArgs(String),
     Io(io::Error),
     SummaryTimeout(u64),
     SummaryBridge(String),

@@ -157,3 +157,58 @@ fn summary_mode_preserves_child_exit_code() {
 
     let _ = fs::remove_dir_all(temp);
 }
+
+#[test]
+fn tmux_pane_mode_captures_large_tail_and_summarizes() {
+    let temp = unique_temp_dir("tmux-pane-summary");
+    let tmux = temp.join("tmux");
+    let codex = temp.join("codex");
+    let args_log = temp.join("tmux-args.log");
+    let prompt_log = temp.join("pane-prompt.log");
+
+    write_executable(
+        &tmux,
+        &format!(
+            "#!/bin/sh\nprintf '%s\n' \"$@\" > '{}'\nprintf 'line-1\nline-2\nline-3\nline-4\n'\n",
+            args_log.display()
+        ),
+    );
+    write_executable(
+        &codex,
+        &format!(
+            "#!/bin/sh\ncat > '{}'\nprintf '%s\n' '- summary: tmux pane summarized' '- warnings: tail captured'\n",
+            prompt_log.display()
+        ),
+    );
+
+    let path = format!(
+        "{}:{}",
+        temp.display(),
+        env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(sparkshell_bin())
+        .env("PATH", path)
+        .env("OMX_SPARKSHELL_LINES", "1")
+        .arg("--tmux-pane")
+        .arg("%17")
+        .arg("--tail-lines")
+        .arg("400")
+        .output()
+        .expect("run sparkshell");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("- summary: tmux pane summarized"));
+    assert!(stdout.contains("- warnings: tail captured"));
+
+    let tmux_args = fs::read_to_string(args_log).expect("tmux args");
+    assert!(tmux_args.contains("capture-pane"));
+    assert!(tmux_args.contains("%17"));
+    assert!(tmux_args.contains("-400"));
+
+    let prompt = fs::read_to_string(prompt_log).expect("prompt log");
+    assert!(prompt.contains("Command: tmux capture-pane"));
+    assert!(prompt.contains("line-1"));
+
+    let _ = fs::remove_dir_all(temp);
+}
