@@ -324,7 +324,7 @@ export function buildExploreHarnessArgs(
   return [
     '--cwd', cwd,
     '--prompt', prompt,
-    '--prompt-file', join(packageRoot, 'prompts', 'explore-harness.md'),
+    '--prompt-file', join(packageRoot, 'prompts', 'explore.md'),
     '--model-spark', sparkModel,
     '--model-fallback', DEFAULT_FRONTIER_MODEL,
   ];

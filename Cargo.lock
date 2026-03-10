@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "omx-cli"
+version = "0.8.11"
+dependencies = [
+ "omx-process",
+]
+
+[[package]]
 name = "omx-explore-harness"
 version = "0.8.15"
 

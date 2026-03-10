@@ -17,7 +17,6 @@ import { teamCommand } from './team.js';
 import { ralphCommand } from './ralph.js';
 import { askCommand } from './ask.js';
 import { exploreCommand } from './explore.js';
-import { sparkshellCommand } from './sparkshell.js';
 import { agentsInitCommand } from './agents-init.js';
 import { sessionCommand } from './session-search.js';
 import {
@@ -164,7 +163,7 @@ const ALLOWED_SHELLS = new Set([
 ]);
 const WINDOWS_DETACHED_BOOTSTRAP_DELAY_MS = 2500;
 
-type CliCommand = 'launch' | 'setup' | 'agents-init' | 'deepinit' | 'uninstall' | 'doctor' | 'ask' | 'explore' | 'sparkshell' | 'team' | 'session' | 'resume' | 'version' | 'tmux-hook' | 'hooks' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
+type CliCommand = 'launch' | 'setup' | 'agents-init' | 'deepinit' | 'uninstall' | 'doctor' | 'ask' | 'explore' | 'team' | 'session' | 'version' | 'tmux-hook' | 'hooks' | 'hud' | 'status' | 'cancel' | 'help' | 'reasoning' | string;
 
 const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   'ask',
@@ -425,7 +424,7 @@ export function buildHudPaneCleanupTargets(existingPaneIds: string[], createdPan
 
 export async function main(args: string[]): Promise<void> {
   const knownCommands = new Set([
-    'launch', 'setup', 'agents-init', 'deepinit', 'uninstall', 'doctor', 'ask', 'explore', 'sparkshell', 'team', 'ralph', 'session', 'resume', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
+    'launch', 'setup', 'agents-init', 'deepinit', 'uninstall', 'doctor', 'ask', 'explore', 'team', 'ralph', 'session', 'version', 'tmux-hook', 'hooks', 'hud', 'status', 'cancel', 'help', '--help', '-h',
   ]);
   const firstArg = args[0];
   const { command, launchArgs } = resolveCliInvocation(args);
@@ -483,9 +482,6 @@ export async function main(args: string[]): Promise<void> {
         break;
       case 'explore':
         await exploreCommand(args.slice(1));
-        break;
-      case 'sparkshell':
-        await sparkshellCommand(args.slice(1));
         break;
       case 'team':
         await teamCommand(args.slice(1), options);

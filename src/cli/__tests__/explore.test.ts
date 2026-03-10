@@ -21,7 +21,6 @@ import {
   resolveExploreSparkShellRoute,
   resolvePackagedExploreHarnessCommand,
 } from '../explore.js';
-import { withPackagedExploreHarnessHidden, withPackagedExploreHarnessLock } from './packaged-explore-harness-lock.js';
 
 function runOmx(
   cwd: string,
@@ -361,15 +360,20 @@ describe('resolveExploreHarnessCommand', () => {
   it('builds cargo fallback command otherwise', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-explore-fallback-'));
     try {
-      const crateDir = join(wd, 'crates', 'omx-explore');
-      await mkdir(crateDir, { recursive: true });
+      const binDir = join(wd, 'bin');
+      await mkdir(binDir, { recursive: true });
       await writeFile(join(wd, 'package.json'), '{}\n');
-      await writeFile(join(crateDir, 'Cargo.toml'), '[package]\nname = "omx-explore-harness"\nversion = "0.0.0"\n');
+      await writeFile(join(binDir, 'omx-explore-harness.meta.json'), JSON.stringify({
+        binaryName: packagedExploreHarnessBinaryName(),
+        platform: process.platform,
+        arch: process.arch,
+      }));
+      const nativePath = join(binDir, packagedExploreHarnessBinaryName());
+      await writeFile(nativePath, '#!/bin/sh\necho native\n');
+      await chmod(nativePath, 0o755);
 
       const resolved = resolveExploreHarnessCommand(wd, {} as NodeJS.ProcessEnv);
-      assert.equal(resolved.command, 'cargo');
-      assert.ok(resolved.args.includes('--manifest-path'));
-      assert.ok(resolved.args.includes(join(wd, 'crates', 'omx-explore', 'Cargo.toml')));
+      assert.deepEqual(resolved, { command: nativePath, args: [] });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -502,7 +506,7 @@ describe('buildExploreHarnessArgs', () => {
       '--prompt',
       'find auth',
       '--prompt-file',
-      '/pkg/prompts/explore-harness.md',
+      '/pkg/prompts/explore.md',
       '--model-spark',
       'spark-model',
       '--model-fallback',
