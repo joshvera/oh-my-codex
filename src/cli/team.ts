@@ -332,6 +332,12 @@ function readTeamPaneStatus(
   recommended_inspect_tasks: Record<string, string | null>;
   recommended_inspect_command: string | null;
   recommended_inspect_commands: string[];
+  recommended_inspect_items: Array<{
+    target: string;
+    reason: string;
+    task_id: string | null;
+    command: string;
+  }>;
 } {
   if (!config) {
     return {
@@ -345,6 +351,7 @@ function readTeamPaneStatus(
       recommended_inspect_tasks: {},
       recommended_inspect_command: null,
       recommended_inspect_commands: [],
+      recommended_inspect_items: [],
     };
   }
 
@@ -395,6 +402,23 @@ function readTeamPaneStatus(
   const recommendedInspectCommands = recommendedInspectTargets
     .map((target) => sparkshellCommands[target])
     .filter((command): command is string => typeof command === 'string' && command.length > 0);
+  const recommendedInspectItems = recommendedInspectTargets
+    .map((target) => {
+      const command = sparkshellCommands[target];
+      if (!command) return null;
+      return {
+        target,
+        reason: recommendedInspectReasons[target] ?? 'unknown',
+        task_id: recommendedInspectTasks[target] ?? null,
+        command,
+      };
+    })
+    .filter((item): item is {
+      target: string;
+      reason: string;
+      task_id: string | null;
+      command: string;
+    } => item !== null);
 
   return {
     leader_pane_id: leaderPaneId,
@@ -409,6 +433,7 @@ function readTeamPaneStatus(
     recommended_inspect_tasks: recommendedInspectTasks,
     recommended_inspect_command: recommendedInspectCommand,
     recommended_inspect_commands: recommendedInspectCommands,
+    recommended_inspect_items: recommendedInspectItems,
   };
 }
 
@@ -444,6 +469,10 @@ function renderTeamPaneStatus(
   }
   for (const [index, command] of paneStatus.recommended_inspect_commands.entries()) {
     console.log(`inspect_priority_${index + 1}: ${command}`);
+  }
+  for (const [index, item] of paneStatus.recommended_inspect_items.entries()) {
+    const taskPart = item.task_id ? ` task=${item.task_id}` : '';
+    console.log(`inspect_item_${index + 1}: target=${item.target} reason=${item.reason}${taskPart} command=${item.command}`);
   }
 
   for (const [target, command] of Object.entries(paneStatus.sparkshell_commands)) {
