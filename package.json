@@ -37,11 +37,8 @@
     "node": ">=20"
   },
   "files": [
-    "Cargo.toml",
-    "Cargo.lock",
     "bin/",
     "dist/",
-    "crates/",
     "agents/",
     "skills/",
     "prompts/",

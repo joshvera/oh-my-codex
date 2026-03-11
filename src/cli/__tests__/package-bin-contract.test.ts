@@ -5,9 +5,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 type PackageJson = {
-  files?: string[];
   bin?: string | Record<string, string>;
-  scripts?: Record<string, string>;
 };
 
 type NpmPackDryRunFile = {
