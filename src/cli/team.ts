@@ -333,6 +333,7 @@ function readTeamPaneStatus(
   recommended_inspect_reasons: Record<string, string>;
   recommended_inspect_clis: Record<string, TeamWorkerCli | null>;
   recommended_inspect_roles: Record<string, string | null>;
+  recommended_inspect_indexes: Record<string, number | null>;
   recommended_inspect_alive: Record<string, boolean | null>;
   recommended_inspect_turn_counts: Record<string, number | null>;
   recommended_inspect_turns_without_progress: Record<string, number | null>;
@@ -354,6 +355,7 @@ function readTeamPaneStatus(
     pane_id: string;
     worker_cli: TeamWorkerCli | null;
     role: string | null;
+    index: number | null;
     alive: boolean | null;
     turn_count: number | null;
     turns_without_progress: number | null;
@@ -381,6 +383,7 @@ function readTeamPaneStatus(
       recommended_inspect_reasons: {},
       recommended_inspect_clis: {},
       recommended_inspect_roles: {},
+      recommended_inspect_indexes: {},
       recommended_inspect_alive: {},
       recommended_inspect_turn_counts: {},
       recommended_inspect_turns_without_progress: {},
@@ -446,6 +449,12 @@ function readTeamPaneStatus(
     recommendedInspectTargets.map((target) => {
       const worker = config.workers.find((candidate) => candidate.name === target);
       return [target, worker?.role ?? null];
+    }),
+  );
+  const recommendedInspectIndexes = Object.fromEntries(
+    recommendedInspectTargets.map((target) => {
+      const worker = config.workers.find((candidate) => candidate.name === target);
+      return [target, worker?.index ?? null];
     }),
   );
   const recommendedInspectAlive = Object.fromEntries(
@@ -560,6 +569,7 @@ function readTeamPaneStatus(
         pane_id: paneId,
         worker_cli: recommendedInspectClis[target] ?? null,
         role: recommendedInspectRoles[target] ?? null,
+        index: recommendedInspectIndexes[target] ?? null,
         alive: recommendedInspectAlive[target] ?? null,
         turn_count: recommendedInspectTurnCounts[target] ?? null,
         turns_without_progress: recommendedInspectTurnsWithoutProgress[target] ?? null,
@@ -581,6 +591,7 @@ function readTeamPaneStatus(
       pane_id: string;
       worker_cli: TeamWorkerCli | null;
       role: string | null;
+      index: number | null;
       alive: boolean | null;
       turn_count: number | null;
       turns_without_progress: number | null;
@@ -609,6 +620,7 @@ function readTeamPaneStatus(
     recommended_inspect_reasons: recommendedInspectReasons,
     recommended_inspect_clis: recommendedInspectClis,
     recommended_inspect_roles: recommendedInspectRoles,
+    recommended_inspect_indexes: recommendedInspectIndexes,
     recommended_inspect_alive: recommendedInspectAlive,
     recommended_inspect_turn_counts: recommendedInspectTurnCounts,
     recommended_inspect_turns_without_progress: recommendedInspectTurnsWithoutProgress,
@@ -659,6 +671,11 @@ function renderTeamPaneStatus(
   for (const [target, role] of Object.entries(paneStatus.recommended_inspect_roles)) {
     if (role) {
       console.log(`inspect_role_${target}: ${role}`);
+    }
+  }
+  for (const [target, index] of Object.entries(paneStatus.recommended_inspect_indexes)) {
+    if (typeof index === 'number') {
+      console.log(`inspect_index_${target}: ${index}`);
     }
   }
   for (const [target, alive] of Object.entries(paneStatus.recommended_inspect_alive)) {
@@ -739,6 +756,7 @@ function renderTeamPaneStatus(
     const panePart = item.pane_id ? ` pane=${item.pane_id}` : '';
     const cliPart = item.worker_cli ? ` cli=${item.worker_cli}` : '';
     const rolePart = item.role ? ` role=${item.role}` : '';
+    const indexPart = typeof item.index === 'number' ? ` index=${item.index}` : '';
     const alivePart = typeof item.alive === 'boolean' ? ` alive=${item.alive}` : '';
     const turnCountPart = typeof item.turn_count === 'number' ? ` turn_count=${item.turn_count}` : '';
     const turnsWithoutProgressPart = typeof item.turns_without_progress === 'number'
@@ -753,7 +771,7 @@ function renderTeamPaneStatus(
     const statePart = item.state ? ` state=${item.state}` : '';
     const taskPart = item.task_id ? ` task=${item.task_id}` : '';
     const subjectPart = item.task_subject ? ` subject=${item.task_subject}` : '';
-    console.log(`inspect_item_${index + 1}: target=${item.target}${panePart}${cliPart}${rolePart}${alivePart}${turnCountPart}${turnsWithoutProgressPart}${lastTurnPart}${statusUpdatedPart}${pidPart}${worktreePathPart}${worktreeBranchPart}${workdirPart} reason=${item.reason}${statePart}${taskPart}${subjectPart} command=${item.command}`);
+    console.log(`inspect_item_${index + 1}: target=${item.target}${panePart}${cliPart}${rolePart}${indexPart}${alivePart}${turnCountPart}${turnsWithoutProgressPart}${lastTurnPart}${statusUpdatedPart}${pidPart}${worktreePathPart}${worktreeBranchPart}${workdirPart} reason=${item.reason}${statePart}${taskPart}${subjectPart} command=${item.command}`);
   }
 
   for (const [target, command] of Object.entries(paneStatus.sparkshell_commands)) {
