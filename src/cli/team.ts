@@ -293,12 +293,14 @@ function buildDeadWorkerAwaitEvent(teamName: string, snapshot: TeamSnapshot): Te
 
 function readTeamPaneStatus(
   config: Awaited<ReturnType<typeof readTeamConfig>>,
+  snapshot?: Pick<TeamSnapshot, 'deadWorkers' | 'nonReportingWorkers'>,
 ): {
   leader_pane_id: string | null;
   hud_pane_id: string | null;
   worker_panes: Record<string, string>;
   sparkshell_hint: string | null;
   sparkshell_commands: Record<string, string>;
+  recommended_inspect_targets: string[];
 } {
   if (!config) {
     return {
@@ -307,6 +309,7 @@ function readTeamPaneStatus(
       worker_panes: {},
       sparkshell_hint: null,
       sparkshell_commands: {},
+      recommended_inspect_targets: [],
     };
   }
 
@@ -333,6 +336,13 @@ function readTeamPaneStatus(
     ].filter((entry): entry is [string, string] => entry !== null),
   );
 
+  const recommendedInspectTargets = [
+    ...(snapshot?.deadWorkers ?? []),
+    ...(snapshot?.nonReportingWorkers ?? []),
+  ].filter((workerName, index, values) => (
+    Object.hasOwn(workerPanes, workerName) && values.indexOf(workerName) === index
+  ));
+
   return {
     leader_pane_id: leaderPaneId,
     hud_pane_id: hudPaneId,
@@ -341,6 +351,7 @@ function readTeamPaneStatus(
       ? 'omx sparkshell --tmux-pane <pane-id> --tail-lines 400'
       : null,
     sparkshell_commands: sparkshellCommands,
+    recommended_inspect_targets: recommendedInspectTargets,
   };
 }
 
@@ -358,6 +369,10 @@ function renderTeamPaneStatus(
 
   if (paneStatus.sparkshell_hint) {
     console.log('sparkshell_hint: omx sparkshell --tmux-pane <pane-id> --tail-lines 400');
+  }
+
+  if (paneStatus.recommended_inspect_targets.length > 0) {
+    console.log(`recommended_inspect_targets: ${paneStatus.recommended_inspect_targets.join(' ')}`);
   }
 
   for (const [target, command] of Object.entries(paneStatus.sparkshell_commands)) {
@@ -826,7 +841,7 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
       console.log(`No team state found for ${name}`);
       return;
     }
-    const paneStatus = readTeamPaneStatus(await readTeamConfig(name, cwd));
+    const paneStatus = readTeamPaneStatus(await readTeamConfig(name, cwd), snapshot);
     if (wantsJson) {
       console.log(JSON.stringify({
         ...buildJsonBase(),
