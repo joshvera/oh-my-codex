@@ -342,6 +342,7 @@ function readTeamPaneStatus(
   recommended_inspect_panes: Record<string, string | null>;
   recommended_inspect_command: string | null;
   recommended_inspect_commands: string[];
+  recommended_inspect_summary: string | null;
   recommended_inspect_items: Array<{
     target: string;
     pane_id: string;
@@ -377,6 +378,7 @@ function readTeamPaneStatus(
       recommended_inspect_panes: {},
       recommended_inspect_command: null,
       recommended_inspect_commands: [],
+      recommended_inspect_summary: null,
       recommended_inspect_items: [],
     };
   }
@@ -474,6 +476,23 @@ function readTeamPaneStatus(
   const recommendedInspectCommands = recommendedInspectTargets
     .map((target) => sparkshellCommands[target])
     .filter((command): command is string => typeof command === 'string' && command.length > 0);
+  const recommendedInspectSummary = recommendedInspectTargets.length > 0
+    ? [
+      `target=${recommendedInspectTargets[0]}`,
+      recommendedInspectPanes[recommendedInspectTargets[0]!] ? `pane=${recommendedInspectPanes[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectClis[recommendedInspectTargets[0]!] ? `cli=${recommendedInspectClis[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectRoles[recommendedInspectTargets[0]!] ? `role=${recommendedInspectRoles[recommendedInspectTargets[0]!]}` : '',
+      typeof recommendedInspectAlive[recommendedInspectTargets[0]!] === 'boolean' ? `alive=${recommendedInspectAlive[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectReasons[recommendedInspectTargets[0]!] ? `reason=${recommendedInspectReasons[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectStates[recommendedInspectTargets[0]!] ? `state=${recommendedInspectStates[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectTasks[recommendedInspectTargets[0]!] ? `task=${recommendedInspectTasks[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectSubjects[recommendedInspectTargets[0]!] ? `subject=${recommendedInspectSubjects[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectCommand ? `command=${recommendedInspectCommand}` : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .trim()
+    : null;
   const recommendedInspectItems = recommendedInspectTargets
     .map((target) => {
       const command = sparkshellCommands[target];
@@ -530,6 +549,7 @@ function readTeamPaneStatus(
     recommended_inspect_panes: recommendedInspectPanes,
     recommended_inspect_command: recommendedInspectCommand,
     recommended_inspect_commands: recommendedInspectCommands,
+    recommended_inspect_summary: recommendedInspectSummary,
     recommended_inspect_items: recommendedInspectItems,
   };
 }
@@ -603,6 +623,9 @@ function renderTeamPaneStatus(
   }
   if (paneStatus.recommended_inspect_command) {
     console.log(`inspect_next: ${paneStatus.recommended_inspect_command}`);
+  }
+  if (paneStatus.recommended_inspect_summary) {
+    console.log(`inspect_summary: ${paneStatus.recommended_inspect_summary}`);
   }
   for (const [index, command] of paneStatus.recommended_inspect_commands.entries()) {
     console.log(`inspect_priority_${index + 1}: ${command}`);

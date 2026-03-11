@@ -703,6 +703,7 @@ describe('teamCommand status', () => {
       assert.match(output, /inspect_pane_worker-1: %21/);
       assert.match(output, /inspect_pane_worker-2: %22/);
       assert.match(output, /inspect_next: omx sparkshell --tmux-pane %21 --tail-lines 400/);
+      assert.match(output, /inspect_summary: target=worker-1 pane=%21 cli=codex role=executor alive=false reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx sparkshell --tmux-pane %21 --tail-lines 400/);
       assert.match(output, /inspect_priority_1: omx sparkshell --tmux-pane %21 --tail-lines 400/);
       assert.match(output, /inspect_priority_2: omx sparkshell --tmux-pane %22 --tail-lines 400/);
       assert.match(output, /inspect_item_1: target=worker-1 pane=%21 cli=codex role=executor alive=false last_turn_at=2026-03-11T00:01:00.000Z status_updated_at=2026-03-11T00:00:00.000Z reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx sparkshell --tmux-pane %21 --tail-lines 400/);
@@ -800,6 +801,7 @@ describe('teamCommand status', () => {
           recommended_inspect_panes?: Record<string, string | null>;
           recommended_inspect_command?: string | null;
           recommended_inspect_commands?: string[];
+          recommended_inspect_summary?: string | null;
           recommended_inspect_items?: Array<{
             target?: string;
             pane_id?: string;
@@ -836,6 +838,7 @@ describe('teamCommand status', () => {
       assert.deepEqual(payload.panes?.recommended_inspect_panes, { 'worker-1': '%41' });
       assert.equal(payload.panes?.recommended_inspect_command, 'omx sparkshell --tmux-pane %41 --tail-lines 400');
       assert.deepEqual(payload.panes?.recommended_inspect_commands, ['omx sparkshell --tmux-pane %41 --tail-lines 400']);
+      assert.equal(payload.panes?.recommended_inspect_summary, 'target=worker-1 pane=%41 cli=claude role=executor alive=false reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx sparkshell --tmux-pane %41 --tail-lines 400');
       assert.deepEqual(payload.panes?.recommended_inspect_items, [{
         target: 'worker-1',
         pane_id: '%41',
