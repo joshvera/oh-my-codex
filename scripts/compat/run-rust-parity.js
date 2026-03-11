@@ -13,7 +13,7 @@ function printUsage() {
     '',
     'Config format:',
     '  {',
-    '    "baseline_command": ["node", "bin/omx.js"],',
+    '    "baseline_command": ["./bin/omx"],',
     '    "candidate_command": ["${OMX_RUST_BIN:-./target/debug/omx}"],',
     '    "defaults": { "mode": "byte-exact", "timeout_ms": 20000 },',
     '    "cases": [{ "id": "help", "argv": ["--help"] }]',

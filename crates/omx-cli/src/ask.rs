@@ -18,6 +18,7 @@ const ASK_ORIGINAL_TASK_ENV: &str = "OMX_ASK_ORIGINAL_TASK";
 const OMX_LEADER_NODE_PATH_ENV: &str = "OMX_LEADER_NODE_PATH";
 const NPM_NODE_EXECPATH_ENV: &str = "npm_node_execpath";
 const ASK_AGENT_PROMPT_FLAG: &str = "--agent-prompt";
+const SAFE_ROLE_PATTERN: &str = "abcdefghijklmnopqrstuvwxyz0123456789-";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskProvider {
@@ -222,13 +223,21 @@ pub fn run_ask(
 ) -> Result<AskExecution, AskError> {
     let parsed = parse_ask_args(args.iter().map(String::as_str))?;
     let runtime = resolve_ask_runtime(cwd, env)?;
+    let prompts_dir = resolve_ask_prompts_dir(cwd, env);
+    let final_prompt = match parsed.agent_prompt_role.as_deref() {
+        Some(role) => {
+            let prompt_prefix = resolve_agent_prompt_content(role, &prompts_dir)?;
+            format!("{prompt_prefix}\n\n{}", parsed.prompt)
+        }
+        None => parsed.prompt.clone(),
+    };
 
     let mut command = Command::new(&runtime.node_program);
     command
         .current_dir(cwd)
         .arg(&runtime.advisor_script_path)
         .arg(parsed.provider.as_str())
-        .arg(&parsed.prompt)
+        .arg(&final_prompt)
         .envs(env.iter())
         .env(ASK_ORIGINAL_TASK_ENV, &parsed.prompt);
 
@@ -241,6 +250,96 @@ pub fn run_ask(
         stderr: output.stderr,
         exit_code: exit_code_from_status(output.status),
     })
+}
+
+fn resolve_ask_prompts_dir(cwd: &Path, env: &BTreeMap<OsString, OsString>) -> PathBuf {
+    if let Some(codex_home) = env.get(OsStr::new("CODEX_HOME")).filter(|value| !value.is_empty()) {
+        return PathBuf::from(codex_home).join("prompts");
+    }
+
+    let scope_path = cwd.join(".omx").join("setup-scope.json");
+    if let Ok(raw) = std::fs::read_to_string(&scope_path)
+        && matches!(
+            crate::install_paths::extract_json_string_field(&raw, "scope").as_deref(),
+            Some("project" | "project-local")
+        )
+    {
+        return cwd.join(".codex").join("prompts");
+    }
+
+    let home = env
+        .get(OsStr::new("HOME"))
+        .or_else(|| env.get(OsStr::new("USERPROFILE")))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cwd.to_path_buf());
+    home.join(".codex").join("prompts")
+}
+
+fn resolve_agent_prompt_content(role: &str, prompts_dir: &Path) -> Result<String, AskError> {
+    let normalized = role.trim().to_ascii_lowercase();
+    if normalized.is_empty()
+        || !normalized
+            .chars()
+            .all(|ch| SAFE_ROLE_PATTERN.contains(ch))
+        || !normalized
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_lowercase())
+    {
+        return Err(AskError::runtime(format!(
+            "[ask] invalid --agent-prompt role \"{role}\". Expected lowercase role names like \"executor\" or \"test-engineer\"."
+        )));
+    }
+
+    if !prompts_dir.is_dir() {
+        return Err(AskError::runtime(format!(
+            "[ask] prompts directory not found: {}. Run \"omx setup\" to install prompts.",
+            prompts_dir.display()
+        )));
+    }
+
+    let prompt_path = prompts_dir.join(format!("{normalized}.md"));
+    if !prompt_path.is_file() {
+        let mut available_roles = std::fs::read_dir(prompts_dir)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.filter_map(Result::ok))
+            .filter_map(|entry| {
+                entry
+                    .path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_suffix(".md"))
+                    .map(ToOwned::to_owned)
+            })
+            .collect::<Vec<_>>();
+        available_roles.sort();
+        let suffix = if available_roles.is_empty() {
+            String::new()
+        } else {
+            format!(" Available roles: {}.", available_roles.join(", "))
+        };
+        return Err(AskError::runtime(format!(
+            "[ask] --agent-prompt role \"{normalized}\" not found in {}.{suffix}",
+            prompts_dir.display()
+        )));
+    }
+
+    let content = std::fs::read_to_string(&prompt_path).map_err(|error| {
+        AskError::runtime(format!(
+            "[ask] failed to read agent prompt {}: {error}",
+            prompt_path.display()
+        ))
+    })?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err(AskError::runtime(format!(
+            "[ask] --agent-prompt role \"{normalized}\" is empty: {}",
+            prompt_path.display()
+        )));
+    }
+
+    Ok(trimmed.to_string())
 }
 
 fn resolve_node_program(env: &BTreeMap<OsString, OsString>) -> OsString {

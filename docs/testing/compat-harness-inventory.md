@@ -4,7 +4,7 @@
 
 | Asset | Current state | Evidence |
 | --- | --- | --- |
-| Launcher under test | Baseline harness targets the Node launcher by default, with an override for future Rust binaries via `OMX_COMPAT_TARGET`. | `bin/omx.js:1-20`, `src/compat/__tests__/cli-baseline-contract.test.ts:15-39` |
+| Launcher under test | Baseline harness targets the native launcher shim by default, with an override for future Rust binaries via `OMX_COMPAT_TARGET`. | `bin/omx:1-40`, `src/compat/__tests__/cli-baseline-contract.test.ts:15-39` |
 | Harness entrypoint | One black-box test file executes the target and compares exact stdout/stderr/exit code. | `src/compat/__tests__/cli-baseline-contract.test.ts:41-88` |
 | Golden fixtures | Five checked-in fixtures back the current byte-exact baseline: help, version, and ask passthrough stdout/stderr/exit-code. | `src/compat/fixtures/help.stdout.txt`, `src/compat/fixtures/version.stdout.txt`, `src/compat/fixtures/ask/pass-through.*` |
 | Stub dependency | The ask passthrough check already uses a deterministic advisor stub instead of a live provider CLI. | `scripts/fixtures/ask-advisor-stub.js:1-12` |
@@ -38,7 +38,7 @@
 | Baseline capture for help/version/reasoning/setup/doctor/failure cases | Partial | Only help, version, and ask passthrough are fixture-backed today. |
 | Binary-targetable command-family parity suites | Partial | The harness can swap targets, but only one low-flake command slice exists. |
 | Platform matrix coverage (Linux/macOS/Windows native/WSL) | Missing | No explicit harness inventory maps current checks to platform-specific acceptance yet. |
-| Native release artifact checks | Missing | Current packaging contract still centers `bin/omx.js` + `dist/cli/index.js`. |
+| Native release artifact checks | Partial | Packaging now centers a native launcher shim, but full native-bundle-only distribution still needs explicit cutover verification. |
 | Semantic parity harnesses for team/MCP/hooks/setup | Missing | Existing tests are source-oriented rather than black-box diff suites. |
 
 ## Artifact constraints for this lane

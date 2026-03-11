@@ -2,23 +2,12 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::process::Command;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SetupScope {
-    User,
-    Project,
-}
+use crate::install_paths::{InstallPaths, InstallScope, ScopeSource, resolve_install_paths};
 
-impl SetupScope {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::Project => "project",
-        }
-    }
-}
+pub type SetupScope = InstallScope;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SetupOptions {
@@ -53,26 +42,12 @@ impl std::fmt::Display for SetupError {
 impl std::error::Error for SetupError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScopeSource {
-    Cli,
-    Persisted,
-    Default,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ResolvedScope {
     scope: SetupScope,
     source: ScopeSource,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScopeDirectories {
-    pub codex_config_file: PathBuf,
-    pub codex_home_dir: PathBuf,
-    pub native_agents_dir: PathBuf,
-    pub prompts_dir: PathBuf,
-    pub skills_dir: PathBuf,
-}
+pub type ScopeDirectories = InstallPaths;
 
 const PROJECT_AGENTS_TEMPLATE: &str = "# oh-my-codex - Intelligent Multi-Agent Orchestration\n\nPrompts: ./.codex/prompts\nSkills: ./.agents/skills\n";
 
@@ -122,7 +97,7 @@ pub fn run_setup(
     let options = parse_setup_args(args)?;
     let mut stderr = String::new();
     let resolved = resolve_setup_scope(cwd, &options, &mut stderr)?;
-    let dirs = resolve_scope_directories(cwd, env, resolved.scope);
+    let dirs = resolve_install_paths(cwd, env, resolved.scope);
 
     if !options.dry_run {
         fs::create_dir_all(cwd.join(".omx")).map_err(|error| {
@@ -170,7 +145,23 @@ pub fn run_setup(
     stdout.push_str("  native_agents: updated=1, unchanged=0, backed_up=0, skipped=0, removed=0\n");
     stdout.push_str("  agents_md: updated=1, unchanged=0, backed_up=0, skipped=0, removed=0\n");
     stdout.push_str("  config: updated=1, unchanged=0, backed_up=0, skipped=0, removed=0\n");
+    if options.force {
+        stdout.push_str(
+            "Force mode: enabled additional destructive maintenance (for example stale deprecated skill cleanup).\n",
+        );
+    }
     stdout.push_str("Setup complete! Run \"omx doctor\" to verify installation.\n");
+    stdout.push_str("\nNext steps:\n");
+    stdout.push_str("  1. Start Codex CLI in your project directory\n");
+    stdout.push_str(
+        "  2. Use /prompts:architect, /prompts:executor, /prompts:planner as slash commands\n",
+    );
+    stdout.push_str("  3. Skills are available via /skills or implicit matching\n");
+    stdout.push_str("  4. The AGENTS.md orchestration brain is loaded automatically\n");
+    stdout.push_str("  5. Native agent roles registered in config.toml [agents.*]\n");
+    if is_github_cli_configured(env) {
+        stdout.push_str("\nSupport the project: gh repo star Yeachan-Heo/oh-my-codex\n");
+    }
 
     Ok(SetupExecution {
         stdout: stdout.into_bytes(),
@@ -257,6 +248,16 @@ fn persist_setup_scope(cwd: &Path, scope: SetupScope) -> Result<(), SetupError> 
     })
 }
 
+fn is_github_cli_configured(env: &BTreeMap<OsString, OsString>) -> bool {
+    let mut command = Command::new("gh");
+    command.arg("auth").arg("status");
+    command.env_clear();
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.status().is_ok_and(|status| status.success())
+}
+
 fn materialize_setup_artifacts(
     cwd: &Path,
     dirs: &ScopeDirectories,
@@ -283,13 +284,18 @@ fn materialize_setup_artifacts(
 
     write_file(dirs.prompts_dir.join("executor.md"), "# executor\n")?;
     write_file(dirs.skills_dir.join("omx-setup/SKILL.md"), "# omx-setup\n")?;
+    write_file(dirs.skills_dir.join("ask-claude/SKILL.md"), "# ask-claude\n")?;
+    write_file(dirs.skills_dir.join("ask-gemini/SKILL.md"), "# ask-gemini\n")?;
     write_file(
         dirs.native_agents_dir.join("executor.toml"),
         "name = \"executor\"\n",
     )?;
     write_file(
         &dirs.codex_config_file,
-        "omx_enabled = true\n[mcp_servers.omx_state]\ncommand = \"node\"\n",
+        &format!(
+            "omx_enabled = true\n[agents.executor]\nconfig_file = \"{}\"\n[mcp_servers.omx_state]\ncommand = \"node\"\n",
+            dirs.native_agents_dir.join("executor.toml").display()
+        ),
     )?;
 
     if scope == SetupScope::Project {
@@ -314,45 +320,10 @@ fn write_file(path: impl AsRef<Path>, contents: &str) -> Result<(), SetupError> 
     })
 }
 
-fn resolve_scope_directories(
-    cwd: &Path,
-    env: &BTreeMap<OsString, OsString>,
-    scope: SetupScope,
-) -> ScopeDirectories {
-    if scope == SetupScope::Project {
-        let codex_home_dir = cwd.join(".codex");
-        return ScopeDirectories {
-            codex_config_file: codex_home_dir.join("config.toml"),
-            codex_home_dir: codex_home_dir.clone(),
-            native_agents_dir: cwd.join(".omx/agents"),
-            prompts_dir: codex_home_dir.join("prompts"),
-            skills_dir: cwd.join(".agents/skills"),
-        };
-    }
-
-    let home_dir = env
-        .get(&OsString::from("HOME"))
-        .or_else(|| env.get(&OsString::from("USERPROFILE")))
-        .map_or_else(|| cwd.to_path_buf(), PathBuf::from);
-    let codex_home_dir = env
-        .get(&OsString::from("CODEX_HOME"))
-        .map_or_else(|| home_dir.join(".codex"), PathBuf::from);
-
-    ScopeDirectories {
-        codex_config_file: codex_home_dir.join("config.toml"),
-        codex_home_dir: codex_home_dir.clone(),
-        native_agents_dir: home_dir.join(".omx/agents"),
-        prompts_dir: codex_home_dir.join("prompts"),
-        skills_dir: home_dir.join(".agents/skills"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        SetupOptions, SetupScope, extract_json_scope, parse_setup_args, resolve_scope_directories,
-        run_setup,
-    };
+    use super::{SetupOptions, SetupScope, parse_setup_args, run_setup};
+    use crate::install_paths::resolve_install_paths;
     use std::collections::BTreeMap;
     use std::ffi::OsString;
     use std::fs;
@@ -445,7 +416,7 @@ mod tests {
         env.insert(OsString::from("HOME"), OsString::from("/home/tester"));
         env.insert(OsString::from("CODEX_HOME"), OsString::from("/alt/codex"));
 
-        let project = resolve_scope_directories(&cwd, &env, SetupScope::Project);
+        let project = resolve_install_paths(&cwd, &env, SetupScope::Project);
         assert_eq!(
             project.codex_home_dir,
             PathBuf::from("/repo/project/.codex")
@@ -455,20 +426,11 @@ mod tests {
             PathBuf::from("/repo/project/.agents/skills")
         );
 
-        let user = resolve_scope_directories(&cwd, &env, SetupScope::User);
+        let user = resolve_install_paths(&cwd, &env, SetupScope::User);
         assert_eq!(user.codex_home_dir, PathBuf::from("/alt/codex"));
         assert_eq!(
             user.skills_dir,
             PathBuf::from("/home/tester/.agents/skills")
         );
-    }
-
-    #[test]
-    fn extracts_json_scope() {
-        assert_eq!(
-            extract_json_scope("{\"scope\":\"user\"}").as_deref(),
-            Some("user")
-        );
-        assert_eq!(extract_json_scope("{}"), None);
     }
 }

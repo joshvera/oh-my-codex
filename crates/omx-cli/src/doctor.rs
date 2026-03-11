@@ -4,6 +4,10 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::install_paths::{
+    InstallScope, ScopeSource, resolve_install_paths, resolve_scope_from_persisted,
+};
+
 use omx_process::{CommandSpec, Platform, ProcessBridge, SpawnErrorKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,30 +63,9 @@ enum CheckStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DoctorSetupScope {
-    User,
-    Project,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DoctorScopeSource {
-    Persisted,
-    Default,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DoctorScopeResolution {
-    scope: DoctorSetupScope,
-    source: DoctorScopeSource,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DoctorPaths {
-    codex_home_dir: PathBuf,
-    config_path: PathBuf,
-    prompts_dir: PathBuf,
-    skills_dir: PathBuf,
-    state_dir: PathBuf,
+    scope: InstallScope,
+    source: ScopeSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,7 +119,7 @@ fn run_install_doctor(
     env: &BTreeMap<OsString, OsString>,
 ) -> Result<DoctorExecution, DoctorError> {
     let scope_resolution = resolve_doctor_scope(cwd);
-    let paths = resolve_doctor_paths(cwd, env, scope_resolution.scope);
+    let paths = resolve_install_paths(cwd, env, scope_resolution.scope);
     let catalog = get_catalog_expectations();
 
     let mut output = String::new();
@@ -146,7 +129,7 @@ fn run_install_doctor(
         output,
         "Resolved setup scope: {}{}\n",
         scope_resolution.scope.as_str(),
-        if scope_resolution.source == DoctorScopeSource::Persisted {
+        if scope_resolution.source == ScopeSource::Persisted {
             " (from .omx/setup-scope.json)"
         } else {
             ""
@@ -157,12 +140,12 @@ fn run_install_doctor(
         check_codex_cli(env),
         check_node_version(env),
         check_directory("Codex home", &paths.codex_home_dir),
-        check_config(&paths.config_path)?,
+        check_config(&paths.codex_config_file)?,
         check_prompts(&paths.prompts_dir, catalog.prompt_min)?,
         check_skills(&paths.skills_dir, catalog.skill_min)?,
         check_agents_md(cwd, scope_resolution.scope),
         check_directory("State dir", &paths.state_dir),
-        check_mcp_servers(&paths.config_path)?,
+        check_mcp_servers(&paths.codex_config_file)?,
     ];
 
     let mut pass_count = 0;
@@ -248,65 +231,10 @@ fn run_team_doctor(
 }
 
 fn resolve_doctor_scope(cwd: &Path) -> DoctorScopeResolution {
-    let scope_path = cwd.join(".omx/setup-scope.json");
-    if !scope_path.exists() {
-        return DoctorScopeResolution {
-            scope: DoctorSetupScope::User,
-            source: DoctorScopeSource::Default,
-        };
-    }
-
-    let Ok(raw) = fs::read_to_string(&scope_path) else {
-        return DoctorScopeResolution {
-            scope: DoctorSetupScope::User,
-            source: DoctorScopeSource::Default,
-        };
-    };
-
-    let scope = extract_json_string_field(&raw, "scope")
-        .and_then(|value| match value.as_str() {
-            "user" => Some(DoctorSetupScope::User),
-            "project" | "project-local" => Some(DoctorSetupScope::Project),
-            _ => None,
-        })
-        .unwrap_or(DoctorSetupScope::User);
-
+    let resolved = resolve_scope_from_persisted(cwd, None);
     DoctorScopeResolution {
-        scope,
-        source: if raw.contains("\"scope\"") {
-            DoctorScopeSource::Persisted
-        } else {
-            DoctorScopeSource::Default
-        },
-    }
-}
-
-fn resolve_doctor_paths(
-    cwd: &Path,
-    env: &BTreeMap<OsString, OsString>,
-    scope: DoctorSetupScope,
-) -> DoctorPaths {
-    if scope == DoctorSetupScope::Project {
-        let codex_home_dir = cwd.join(".codex");
-        return DoctorPaths {
-            config_path: codex_home_dir.join("config.toml"),
-            prompts_dir: codex_home_dir.join("prompts"),
-            skills_dir: cwd.join(".agents/skills"),
-            state_dir: cwd.join(".omx/state"),
-            codex_home_dir,
-        };
-    }
-
-    let home = env_home_dir(env).unwrap_or_else(|| cwd.to_path_buf());
-    let codex_home_dir = env
-        .get(&OsString::from("CODEX_HOME"))
-        .map_or_else(|| home.join(".codex"), PathBuf::from);
-    DoctorPaths {
-        config_path: codex_home_dir.join("config.toml"),
-        prompts_dir: codex_home_dir.join("prompts"),
-        skills_dir: home.join(".agents/skills"),
-        state_dir: cwd.join(".omx/state"),
-        codex_home_dir,
+        scope: resolved.scope,
+        source: resolved.source,
     }
 }
 
@@ -529,7 +457,7 @@ fn check_skills(dir: &Path, skill_min: usize) -> Result<Check, DoctorError> {
     }
 }
 
-fn check_agents_md(cwd: &Path, scope: DoctorSetupScope) -> Check {
+fn check_agents_md(cwd: &Path, scope: InstallScope) -> Check {
     let agents_md = cwd.join("AGENTS.md");
     if agents_md.exists() {
         return Check {
@@ -539,7 +467,7 @@ fn check_agents_md(cwd: &Path, scope: DoctorSetupScope) -> Check {
         };
     }
 
-    if scope == DoctorSetupScope::User {
+    if scope == InstallScope::User {
         return Check {
             name: "AGENTS.md",
             status: CheckStatus::Pass,
@@ -809,10 +737,6 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn env_home_dir(env: &BTreeMap<OsString, OsString>) -> Option<PathBuf> {
-    env.get(&OsString::from("HOME")).map(PathBuf::from)
-}
-
 fn count_installable_entries(raw: &str, section: &str) -> usize {
     let Some(section_idx) = raw.find(&format!("\"{section}\"")) else {
         return 0;
@@ -977,15 +901,6 @@ fn now_millis() -> u64 {
             .as_millis(),
     )
     .unwrap_or(u64::MAX)
-}
-
-impl DoctorSetupScope {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::Project => "project",
-        }
-    }
 }
 
 #[cfg(test)]

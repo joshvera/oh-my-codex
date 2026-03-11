@@ -12,10 +12,10 @@ This lane adds a merge-ready parity runner in `scripts/compat/run-rust-parity.js
 
 ## Default commands
 
-- baseline: `node bin/omx.js`
+- baseline: `./bin/omx`
 - candidate: `${OMX_RUST_BIN:-./target/debug/omx}`
 
-The default baseline intentionally exercises the shipped CLI wrapper, so `npm run build` must happen before parity capture.
+The default baseline intentionally exercises the shipped native launcher shim, so the Rust binary must be present before parity capture.
 
 ## Initial suite purpose
 

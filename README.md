@@ -97,6 +97,19 @@ OMX features like `omx team` require **tmux**:
 
 ## Quickstart (3 minutes)
 
+### Rust-native release path (cutover target)
+
+For the Rust-native cutover release, install the platform bundle from the release artifacts, add the extracted `omx` binary to your `PATH`, then run:
+
+```bash
+omx setup
+omx doctor
+```
+
+If an npm package is still published during the transition, treat it as a **launcher/downloader shim only**. Normal CLI execution should come from the native `omx` binary, not `dist/cli/index.js`.
+
+### Current source / pre-cutover npm flow
+
 ```bash
 npm install -g oh-my-codex
 omx setup
@@ -176,7 +189,7 @@ npm run build
 2. Reinstall native agent configs:
 
 ```bash
-node bin/omx.js setup
+./bin/omx setup
 ```
 
 3. Inspect generated native agent configs in `~/.omx/agents/` and confirm they now include:
@@ -505,7 +518,7 @@ Use `$visual-verdict` when a task depends on visual fidelity (reference image(s)
 
 ```text
 oh-my-codex/
-  bin/omx.js
+  bin/omx
   src/
     cli/
     team/

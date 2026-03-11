@@ -14,7 +14,7 @@ interface CompatRunResult {
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(testDir, '..', '..', '..');
-const defaultTarget = join(repoRoot, 'bin', 'omx.js');
+const defaultTarget = join(repoRoot, 'bin', process.platform === 'win32' ? 'omx.cmd' : 'omx');
 const fixturesRoot = join(repoRoot, 'src', 'compat', 'fixtures');
 
 function readFixture(relativePath: string): string {

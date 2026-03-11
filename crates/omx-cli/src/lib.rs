@@ -1,7 +1,20 @@
+pub mod agents_init;
 pub mod ask;
+pub mod cancel;
 pub mod doctor;
+pub mod hooks;
+pub mod hud;
+pub mod install_paths;
+pub mod launch;
+pub mod ralph;
 pub mod reasoning;
+pub mod session;
+pub mod session_state;
 pub mod setup;
+pub mod status;
+pub mod team;
+pub mod tmux_hook;
+pub mod uninstall;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -64,15 +77,168 @@ Options:
 
 "#;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandTarget {
+    Launch,
+    Setup,
+    AgentsInit,
+    DeepInit,
+    Uninstall,
+    Doctor,
+    Ask,
+    Session,
+    Team,
+    Ralph,
+    Version,
+    TmuxHook,
+    Hooks,
+    Hud,
+    Status,
+    Cancel,
+    Reasoning,
+    Help,
+}
+
+impl CommandTarget {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Launch => "launch",
+            Self::Setup => "setup",
+            Self::AgentsInit => "agents-init",
+            Self::DeepInit => "deepinit",
+            Self::Uninstall => "uninstall",
+            Self::Doctor => "doctor",
+            Self::Ask => "ask",
+            Self::Session => "session",
+            Self::Team => "team",
+            Self::Ralph => "ralph",
+            Self::Version => "version",
+            Self::TmuxHook => "tmux-hook",
+            Self::Hooks => "hooks",
+            Self::Hud => "hud",
+            Self::Status => "status",
+            Self::Cancel => "cancel",
+            Self::Reasoning => "reasoning",
+            Self::Help => "help",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliAction {
-    Help,
-    Version,
-    Ask(Vec<String>),
-    Reasoning(Vec<String>),
-    Doctor(Vec<String>),
-    Setup(Vec<String>),
-    Unsupported,
+    Command {
+        target: CommandTarget,
+        args: Vec<String>,
+    },
+    Unknown {
+        command: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandMatrixEntry {
+    pub command: CommandTarget,
+    pub dispatch_target: &'static str,
+    pub verification_owner: &'static str,
+}
+
+const COMMAND_MATRIX: &[CommandMatrixEntry] = &[
+    CommandMatrixEntry {
+        command: CommandTarget::Launch,
+        dispatch_target: "launch::run_launch",
+        verification_owner: "lane D",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Setup,
+        dispatch_target: "setup::run_setup",
+        verification_owner: "lane A",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::AgentsInit,
+        dispatch_target: "agents_init::run_agents_init",
+        verification_owner: "lane B",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::DeepInit,
+        dispatch_target: "agents_init::run_agents_init",
+        verification_owner: "lane B",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Uninstall,
+        dispatch_target: "uninstall::run_uninstall",
+        verification_owner: "lane B",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Doctor,
+        dispatch_target: "doctor::run_doctor",
+        verification_owner: "lane A",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Ask,
+        dispatch_target: "ask::run_ask",
+        verification_owner: "lane A",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Session,
+        dispatch_target: "session::run_session",
+        verification_owner: "lane B",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Team,
+        dispatch_target: "team::run_team",
+        verification_owner: "lane D",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Ralph,
+        dispatch_target: "ralph::run_ralph",
+        verification_owner: "lane D",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Version,
+        dispatch_target: "lib::version_output",
+        verification_owner: "lane C",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::TmuxHook,
+        dispatch_target: "tmux_hook::run_tmux_hook",
+        verification_owner: "lane D",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Hooks,
+        dispatch_target: "hooks::run_hooks",
+        verification_owner: "lane D",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Hud,
+        dispatch_target: "hud::run_hud",
+        verification_owner: "lane D",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Help,
+        dispatch_target: "lib::help_output",
+        verification_owner: "lane C",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Status,
+        dispatch_target: "status::run_status",
+        verification_owner: "lane A",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Cancel,
+        dispatch_target: "cancel::run_cancel",
+        verification_owner: "lane A",
+    },
+    CommandMatrixEntry {
+        command: CommandTarget::Reasoning,
+        dispatch_target: "reasoning::run_reasoning_command",
+        verification_owner: "lane B",
+    },
+];
+
+#[must_use]
+pub fn command_matrix() -> &'static [CommandMatrixEntry] {
+    COMMAND_MATRIX
 }
 
 #[must_use]
@@ -86,14 +252,44 @@ where
         .map(|value| value.as_ref().to_owned())
         .collect::<Vec<_>>();
 
-    match values.get(1).map(String::as_str) {
-        None | Some("help" | "--help" | "-h") => CliAction::Help,
-        Some("version" | "--version" | "-v") => CliAction::Version,
-        Some("ask") => CliAction::Ask(values.into_iter().skip(2).collect()),
-        Some("reasoning") => CliAction::Reasoning(values.into_iter().skip(2).collect()),
-        Some("doctor") => CliAction::Doctor(values.into_iter().skip(2).collect()),
-        Some("setup") => CliAction::Setup(values.into_iter().skip(2).collect()),
-        Some(_) => CliAction::Unsupported,
+    let first_arg = values.get(1).map(String::as_str);
+    match first_arg {
+        Some("--help" | "-h" | "help") => command(CommandTarget::Help, &values, 2),
+        Some("--version" | "-v" | "version") => command(CommandTarget::Version, &values, 2),
+        None => CliAction::Command {
+            target: CommandTarget::Launch,
+            args: Vec::new(),
+        },
+        Some(flag) if flag.starts_with("--") => CliAction::Command {
+            target: CommandTarget::Launch,
+            args: values.into_iter().skip(1).collect(),
+        },
+        Some("launch") => command(CommandTarget::Launch, &values, 2),
+        Some("setup") => command(CommandTarget::Setup, &values, 2),
+        Some("agents-init") => command(CommandTarget::AgentsInit, &values, 2),
+        Some("deepinit") => command(CommandTarget::DeepInit, &values, 2),
+        Some("uninstall") => command(CommandTarget::Uninstall, &values, 2),
+        Some("doctor") => command(CommandTarget::Doctor, &values, 2),
+        Some("ask") => command(CommandTarget::Ask, &values, 2),
+        Some("session") => command(CommandTarget::Session, &values, 2),
+        Some("team") => command(CommandTarget::Team, &values, 2),
+        Some("ralph") => command(CommandTarget::Ralph, &values, 2),
+        Some("tmux-hook") => command(CommandTarget::TmuxHook, &values, 2),
+        Some("hooks") => command(CommandTarget::Hooks, &values, 2),
+        Some("hud") => command(CommandTarget::Hud, &values, 2),
+        Some("status") => command(CommandTarget::Status, &values, 2),
+        Some("cancel") => command(CommandTarget::Cancel, &values, 2),
+        Some("reasoning") => command(CommandTarget::Reasoning, &values, 2),
+        Some(other) => CliAction::Unknown {
+            command: other.to_string(),
+        },
+    }
+}
+
+fn command(target: CommandTarget, values: &[String], skip: usize) -> CliAction {
+    CliAction::Command {
+        target,
+        args: values.iter().skip(skip).cloned().collect(),
     }
 }
 
@@ -150,7 +346,10 @@ fn detect_node_version() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BINARY_NAME, CliAction, help_output, parse_args, version_output};
+    use super::{
+        BINARY_NAME, CliAction, CommandTarget, command_matrix, help_output, parse_args,
+        version_output,
+    };
 
     fn normalize_version_output(text: &str) -> String {
         text.replace(
@@ -175,55 +374,194 @@ mod tests {
     }
 
     #[test]
+    fn command_matrix_covers_help_advertised_commands() {
+        let advertised = [
+            CommandTarget::Launch,
+            CommandTarget::Setup,
+            CommandTarget::AgentsInit,
+            CommandTarget::DeepInit,
+            CommandTarget::Uninstall,
+            CommandTarget::Doctor,
+            CommandTarget::Ask,
+            CommandTarget::Session,
+            CommandTarget::Team,
+            CommandTarget::Ralph,
+            CommandTarget::Version,
+            CommandTarget::TmuxHook,
+            CommandTarget::Hooks,
+            CommandTarget::Hud,
+            CommandTarget::Help,
+            CommandTarget::Status,
+            CommandTarget::Cancel,
+            CommandTarget::Reasoning,
+        ];
+        let mapped = command_matrix()
+            .iter()
+            .map(|entry| entry.command)
+            .collect::<Vec<_>>();
+        assert_eq!(mapped, advertised);
+        assert!(
+            command_matrix()
+                .iter()
+                .all(|entry| !entry.dispatch_target.is_empty())
+        );
+        assert!(
+            command_matrix()
+                .iter()
+                .all(|entry| !entry.verification_owner.is_empty())
+        );
+    }
+
+    #[test]
     fn parses_help_variants() {
-        assert_eq!(parse_args(["omx"]), CliAction::Help);
-        assert_eq!(parse_args(["omx", "help"]), CliAction::Help);
-        assert_eq!(parse_args(["omx", "--help"]), CliAction::Help);
-        assert_eq!(parse_args(["omx", "-h"]), CliAction::Help);
+        assert_eq!(
+            parse_args(["omx", "help"]),
+            CliAction::Command {
+                target: CommandTarget::Help,
+                args: vec![]
+            }
+        );
+        assert_eq!(
+            parse_args(["omx", "--help"]),
+            CliAction::Command {
+                target: CommandTarget::Help,
+                args: vec![]
+            }
+        );
+        assert_eq!(
+            parse_args(["omx", "-h"]),
+            CliAction::Command {
+                target: CommandTarget::Help,
+                args: vec![]
+            }
+        );
     }
 
     #[test]
     fn parses_version_variants() {
-        assert_eq!(parse_args(["omx", "version"]), CliAction::Version);
-        assert_eq!(parse_args(["omx", "--version"]), CliAction::Version);
-        assert_eq!(parse_args(["omx", "-v"]), CliAction::Version);
+        assert_eq!(
+            parse_args(["omx", "version"]),
+            CliAction::Command {
+                target: CommandTarget::Version,
+                args: vec![]
+            }
+        );
+        assert_eq!(
+            parse_args(["omx", "--version"]),
+            CliAction::Command {
+                target: CommandTarget::Version,
+                args: vec![]
+            }
+        );
+        assert_eq!(
+            parse_args(["omx", "-v"]),
+            CliAction::Command {
+                target: CommandTarget::Version,
+                args: vec![]
+            }
+        );
     }
 
     #[test]
-    fn parses_ask_subcommand_with_passthrough_args() {
+    fn parses_launch_variants() {
+        assert_eq!(
+            parse_args(["omx"]),
+            CliAction::Command {
+                target: CommandTarget::Launch,
+                args: vec![]
+            }
+        );
+        assert_eq!(
+            parse_args(["omx", "launch", "--yolo"]),
+            CliAction::Command {
+                target: CommandTarget::Launch,
+                args: vec!["--yolo".into()]
+            }
+        );
+        assert_eq!(
+            parse_args(["omx", "--model", "gpt-5"]),
+            CliAction::Command {
+                target: CommandTarget::Launch,
+                args: vec!["--model".into(), "gpt-5".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn parses_known_subcommands_with_passthrough_args() {
         assert_eq!(
             parse_args(["omx", "ask", "claude", "review", "this"]),
-            CliAction::Ask(vec!["claude".into(), "review".into(), "this".into()])
+            CliAction::Command {
+                target: CommandTarget::Ask,
+                args: vec!["claude".into(), "review".into(), "this".into()]
+            }
         );
-    }
-
-    #[test]
-    fn parses_reasoning_subcommand_with_passthrough_args() {
         assert_eq!(
             parse_args(["omx", "reasoning", "high"]),
-            CliAction::Reasoning(vec!["high".into()])
+            CliAction::Command {
+                target: CommandTarget::Reasoning,
+                args: vec!["high".into()]
+            }
         );
-    }
-
-    #[test]
-    fn parses_doctor_subcommand_with_passthrough_args() {
         assert_eq!(
             parse_args(["omx", "doctor", "--team"]),
-            CliAction::Doctor(vec!["--team".into()])
+            CliAction::Command {
+                target: CommandTarget::Doctor,
+                args: vec!["--team".into()]
+            }
         );
-    }
-
-    #[test]
-    fn parses_setup_subcommand_with_passthrough_args() {
         assert_eq!(
             parse_args(["omx", "setup", "--scope", "project"]),
-            CliAction::Setup(vec!["--scope".into(), "project".into()])
+            CliAction::Command {
+                target: CommandTarget::Setup,
+                args: vec!["--scope".into(), "project".into()]
+            }
+        );
+        assert_eq!(
+            parse_args(["omx", "uninstall", "--dry-run"]),
+            CliAction::Command {
+                target: CommandTarget::Uninstall,
+                args: vec!["--dry-run".into()]
+            }
+        );
+        assert_eq!(
+            parse_args(["omx", "agents-init", "src", "--dry-run"]),
+            CliAction::Command {
+                target: CommandTarget::AgentsInit,
+                args: vec!["src".into(), "--dry-run".into()]
+            }
+        );
+        assert_eq!(
+            parse_args(["omx", "deepinit", "src"]),
+            CliAction::Command {
+                target: CommandTarget::DeepInit,
+                args: vec!["src".into()]
+            }
+        );
+        assert_eq!(
+            parse_args(["omx", "status"]),
+            CliAction::Command {
+                target: CommandTarget::Status,
+                args: vec![]
+            }
+        );
+        assert_eq!(
+            parse_args(["omx", "cancel"]),
+            CliAction::Command {
+                target: CommandTarget::Cancel,
+                args: vec![]
+            }
         );
     }
 
     #[test]
-    fn marks_other_commands_as_unsupported() {
-        assert_eq!(parse_args(["omx", "team"]), CliAction::Unsupported);
+    fn preserves_unknown_commands_for_helpful_errors() {
+        assert_eq!(
+            parse_args(["omx", "bogus"]),
+            CliAction::Unknown {
+                command: "bogus".into()
+            }
+        );
     }
 
     #[test]
