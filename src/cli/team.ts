@@ -334,6 +334,8 @@ function readTeamPaneStatus(
   recommended_inspect_clis: Record<string, TeamWorkerCli | null>;
   recommended_inspect_roles: Record<string, string | null>;
   recommended_inspect_alive: Record<string, boolean | null>;
+  recommended_inspect_last_turn_at: Record<string, string | null>;
+  recommended_inspect_status_updated_at: Record<string, string | null>;
   recommended_inspect_states: Record<string, WorkerStatus['state'] | null>;
   recommended_inspect_tasks: Record<string, string | null>;
   recommended_inspect_subjects: Record<string, string | null>;
@@ -346,6 +348,8 @@ function readTeamPaneStatus(
     worker_cli: TeamWorkerCli | null;
     role: string | null;
     alive: boolean | null;
+    last_turn_at: string | null;
+    status_updated_at: string | null;
     reason: string;
     state: WorkerStatus['state'] | null;
     task_id: string | null;
@@ -365,6 +369,8 @@ function readTeamPaneStatus(
       recommended_inspect_clis: {},
       recommended_inspect_roles: {},
       recommended_inspect_alive: {},
+      recommended_inspect_last_turn_at: {},
+      recommended_inspect_status_updated_at: {},
       recommended_inspect_states: {},
       recommended_inspect_tasks: {},
       recommended_inspect_subjects: {},
@@ -428,6 +434,18 @@ function readTeamPaneStatus(
       return [target, worker?.alive ?? null];
     }),
   );
+  const recommendedInspectLastTurnAt = Object.fromEntries(
+    recommendedInspectTargets.map((target) => {
+      const worker = snapshot?.workers.find((candidate) => candidate.name === target);
+      return [target, worker?.heartbeat?.last_turn_at ?? null];
+    }),
+  );
+  const recommendedInspectStatusUpdatedAt = Object.fromEntries(
+    recommendedInspectTargets.map((target) => {
+      const worker = snapshot?.workers.find((candidate) => candidate.name === target);
+      return [target, worker?.status.updated_at ?? null];
+    }),
+  );
   const recommendedInspectTasks = Object.fromEntries(
     recommendedInspectTargets.map((target) => {
       const worker = snapshot?.workers.find((candidate) => candidate.name === target);
@@ -467,6 +485,8 @@ function readTeamPaneStatus(
         worker_cli: recommendedInspectClis[target] ?? null,
         role: recommendedInspectRoles[target] ?? null,
         alive: recommendedInspectAlive[target] ?? null,
+        last_turn_at: recommendedInspectLastTurnAt[target] ?? null,
+        status_updated_at: recommendedInspectStatusUpdatedAt[target] ?? null,
         reason: recommendedInspectReasons[target] ?? 'unknown',
         state: recommendedInspectStates[target] ?? null,
         task_id: recommendedInspectTasks[target] ?? null,
@@ -480,6 +500,8 @@ function readTeamPaneStatus(
       worker_cli: TeamWorkerCli | null;
       role: string | null;
       alive: boolean | null;
+      last_turn_at: string | null;
+      status_updated_at: string | null;
       reason: string;
       state: WorkerStatus['state'] | null;
       task_id: string | null;
@@ -500,6 +522,8 @@ function readTeamPaneStatus(
     recommended_inspect_clis: recommendedInspectClis,
     recommended_inspect_roles: recommendedInspectRoles,
     recommended_inspect_alive: recommendedInspectAlive,
+    recommended_inspect_last_turn_at: recommendedInspectLastTurnAt,
+    recommended_inspect_status_updated_at: recommendedInspectStatusUpdatedAt,
     recommended_inspect_states: recommendedInspectStates,
     recommended_inspect_tasks: recommendedInspectTasks,
     recommended_inspect_subjects: recommendedInspectSubjects,
@@ -547,6 +571,16 @@ function renderTeamPaneStatus(
       console.log(`inspect_alive_${target}: ${alive}`);
     }
   }
+  for (const [target, lastTurnAt] of Object.entries(paneStatus.recommended_inspect_last_turn_at)) {
+    if (lastTurnAt) {
+      console.log(`inspect_last_turn_at_${target}: ${lastTurnAt}`);
+    }
+  }
+  for (const [target, statusUpdatedAt] of Object.entries(paneStatus.recommended_inspect_status_updated_at)) {
+    if (statusUpdatedAt) {
+      console.log(`inspect_status_updated_at_${target}: ${statusUpdatedAt}`);
+    }
+  }
   for (const [target, state] of Object.entries(paneStatus.recommended_inspect_states)) {
     if (state) {
       console.log(`inspect_state_${target}: ${state}`);
@@ -578,10 +612,12 @@ function renderTeamPaneStatus(
     const cliPart = item.worker_cli ? ` cli=${item.worker_cli}` : '';
     const rolePart = item.role ? ` role=${item.role}` : '';
     const alivePart = typeof item.alive === 'boolean' ? ` alive=${item.alive}` : '';
+    const lastTurnPart = item.last_turn_at ? ` last_turn_at=${item.last_turn_at}` : '';
+    const statusUpdatedPart = item.status_updated_at ? ` status_updated_at=${item.status_updated_at}` : '';
     const statePart = item.state ? ` state=${item.state}` : '';
     const taskPart = item.task_id ? ` task=${item.task_id}` : '';
     const subjectPart = item.task_subject ? ` subject=${item.task_subject}` : '';
-    console.log(`inspect_item_${index + 1}: target=${item.target}${panePart}${cliPart}${rolePart}${alivePart} reason=${item.reason}${statePart}${taskPart}${subjectPart} command=${item.command}`);
+    console.log(`inspect_item_${index + 1}: target=${item.target}${panePart}${cliPart}${rolePart}${alivePart}${lastTurnPart}${statusUpdatedPart} reason=${item.reason}${statePart}${taskPart}${subjectPart} command=${item.command}`);
   }
 
   for (const [target, command] of Object.entries(paneStatus.sparkshell_commands)) {

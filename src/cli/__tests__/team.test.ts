@@ -643,6 +643,18 @@ describe('teamCommand status', () => {
         current_task_id: '2',
         updated_at: '2026-03-11T00:00:00.000Z',
       }, wd);
+      await updateWorkerHeartbeat('pane-team', 'worker-1', {
+        pid: 101,
+        last_turn_at: '2026-03-11T00:01:00.000Z',
+        turn_count: 3,
+        alive: false,
+      }, wd);
+      await updateWorkerHeartbeat('pane-team', 'worker-2', {
+        pid: 102,
+        last_turn_at: '2026-03-11T00:02:00.000Z',
+        turn_count: 4,
+        alive: false,
+      }, wd);
       const manifestPath = join(wd, '.omx', 'state', 'team', 'pane-team', 'manifest.v2.json');
       const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
         leader_pane_id?: string | null;
@@ -678,6 +690,10 @@ describe('teamCommand status', () => {
       assert.match(output, /inspect_role_worker-2: executor/);
       assert.match(output, /inspect_alive_worker-1: false/);
       assert.match(output, /inspect_alive_worker-2: false/);
+      assert.match(output, /inspect_last_turn_at_worker-1: 2026-03-11T00:01:00.000Z/);
+      assert.match(output, /inspect_last_turn_at_worker-2: 2026-03-11T00:02:00.000Z/);
+      assert.match(output, /inspect_status_updated_at_worker-1: 2026-03-11T00:00:00.000Z/);
+      assert.match(output, /inspect_status_updated_at_worker-2: 2026-03-11T00:00:00.000Z/);
       assert.match(output, /inspect_state_worker-1: working/);
       assert.match(output, /inspect_state_worker-2: blocked/);
       assert.match(output, /inspect_task_worker-1: 1/);
@@ -689,8 +705,8 @@ describe('teamCommand status', () => {
       assert.match(output, /inspect_next: omx sparkshell --tmux-pane %21 --tail-lines 400/);
       assert.match(output, /inspect_priority_1: omx sparkshell --tmux-pane %21 --tail-lines 400/);
       assert.match(output, /inspect_priority_2: omx sparkshell --tmux-pane %22 --tail-lines 400/);
-      assert.match(output, /inspect_item_1: target=worker-1 pane=%21 cli=codex role=executor alive=false reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx sparkshell --tmux-pane %21 --tail-lines 400/);
-      assert.match(output, /inspect_item_2: target=worker-2 pane=%22 cli=gemini role=executor alive=false reason=dead_worker state=blocked task=2 subject=Recover worker-2 progress command=omx sparkshell --tmux-pane %22 --tail-lines 400/);
+      assert.match(output, /inspect_item_1: target=worker-1 pane=%21 cli=codex role=executor alive=false last_turn_at=2026-03-11T00:01:00.000Z status_updated_at=2026-03-11T00:00:00.000Z reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx sparkshell --tmux-pane %21 --tail-lines 400/);
+      assert.match(output, /inspect_item_2: target=worker-2 pane=%22 cli=gemini role=executor alive=false last_turn_at=2026-03-11T00:02:00.000Z status_updated_at=2026-03-11T00:00:00.000Z reason=dead_worker state=blocked task=2 subject=Recover worker-2 progress command=omx sparkshell --tmux-pane %22 --tail-lines 400/);
       assert.match(output, /panes: leader=%10 hud=%11/);
       assert.match(output, /worker_panes: worker-1=%21 worker-2=%22/);
       assert.match(output, /sparkshell_hint: omx sparkshell --tmux-pane <pane-id> --tail-lines 400/);
@@ -726,6 +742,12 @@ describe('teamCommand status', () => {
         state: 'working',
         current_task_id: '1',
         updated_at: '2026-03-11T00:00:00.000Z',
+      }, wd);
+      await updateWorkerHeartbeat('pane-json-team', 'worker-1', {
+        pid: 201,
+        last_turn_at: '2026-03-11T00:03:00.000Z',
+        turn_count: 5,
+        alive: false,
       }, wd);
       const manifestPath = join(wd, '.omx', 'state', 'team', 'pane-json-team', 'manifest.v2.json');
       const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
@@ -770,6 +792,8 @@ describe('teamCommand status', () => {
           recommended_inspect_clis?: Record<string, string | null>;
           recommended_inspect_roles?: Record<string, string | null>;
           recommended_inspect_alive?: Record<string, boolean | null>;
+          recommended_inspect_last_turn_at?: Record<string, string | null>;
+          recommended_inspect_status_updated_at?: Record<string, string | null>;
           recommended_inspect_states?: Record<string, string | null>;
           recommended_inspect_tasks?: Record<string, string | null>;
           recommended_inspect_subjects?: Record<string, string | null>;
@@ -782,6 +806,8 @@ describe('teamCommand status', () => {
             worker_cli?: string | null;
             role?: string | null;
             alive?: boolean | null;
+            last_turn_at?: string | null;
+            status_updated_at?: string | null;
             reason?: string;
             state?: string | null;
             task_id?: string | null;
@@ -802,6 +828,8 @@ describe('teamCommand status', () => {
       assert.deepEqual(payload.panes?.recommended_inspect_clis, { 'worker-1': 'claude' });
       assert.deepEqual(payload.panes?.recommended_inspect_roles, { 'worker-1': 'executor' });
       assert.deepEqual(payload.panes?.recommended_inspect_alive, { 'worker-1': false });
+      assert.deepEqual(payload.panes?.recommended_inspect_last_turn_at, { 'worker-1': '2026-03-11T00:03:00.000Z' });
+      assert.deepEqual(payload.panes?.recommended_inspect_status_updated_at, { 'worker-1': '2026-03-11T00:00:00.000Z' });
       assert.deepEqual(payload.panes?.recommended_inspect_states, { 'worker-1': 'working' });
       assert.deepEqual(payload.panes?.recommended_inspect_tasks, { 'worker-1': '1' });
       assert.deepEqual(payload.panes?.recommended_inspect_subjects, { 'worker-1': 'Recover worker-1 progress' });
@@ -814,6 +842,8 @@ describe('teamCommand status', () => {
         worker_cli: 'claude',
         role: 'executor',
         alive: false,
+        last_turn_at: '2026-03-11T00:03:00.000Z',
+        status_updated_at: '2026-03-11T00:00:00.000Z',
         reason: 'dead_worker',
         state: 'working',
         task_id: '1',
