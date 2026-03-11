@@ -302,6 +302,7 @@ function readTeamPaneStatus(
   sparkshell_commands: Record<string, string>;
   recommended_inspect_targets: string[];
   recommended_inspect_command: string | null;
+  recommended_inspect_commands: string[];
 } {
   if (!config) {
     return {
@@ -312,6 +313,7 @@ function readTeamPaneStatus(
       sparkshell_commands: {},
       recommended_inspect_targets: [],
       recommended_inspect_command: null,
+      recommended_inspect_commands: [],
     };
   }
 
@@ -347,6 +349,9 @@ function readTeamPaneStatus(
   const recommendedInspectCommand = recommendedInspectTargets.length > 0
     ? sparkshellCommands[recommendedInspectTargets[0]!] ?? null
     : null;
+  const recommendedInspectCommands = recommendedInspectTargets
+    .map((target) => sparkshellCommands[target])
+    .filter((command): command is string => typeof command === 'string' && command.length > 0);
 
   return {
     leader_pane_id: leaderPaneId,
@@ -358,6 +363,7 @@ function readTeamPaneStatus(
     sparkshell_commands: sparkshellCommands,
     recommended_inspect_targets: recommendedInspectTargets,
     recommended_inspect_command: recommendedInspectCommand,
+    recommended_inspect_commands: recommendedInspectCommands,
   };
 }
 
@@ -382,6 +388,9 @@ function renderTeamPaneStatus(
   }
   if (paneStatus.recommended_inspect_command) {
     console.log(`inspect_next: ${paneStatus.recommended_inspect_command}`);
+  }
+  for (const [index, command] of paneStatus.recommended_inspect_commands.entries()) {
+    console.log(`inspect_priority_${index + 1}: ${command}`);
   }
 
   for (const [target, command] of Object.entries(paneStatus.sparkshell_commands)) {
