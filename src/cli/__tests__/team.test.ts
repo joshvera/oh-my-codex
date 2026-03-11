@@ -670,15 +670,21 @@ describe('teamCommand status', () => {
       assert.match(output, /recommended_inspect_targets: worker-1 worker-2/);
       assert.match(output, /inspect_reason_worker-1: dead_worker/);
       assert.match(output, /inspect_reason_worker-2: dead_worker/);
+      assert.match(output, /inspect_role_worker-1: executor/);
+      assert.match(output, /inspect_role_worker-2: executor/);
+      assert.match(output, /inspect_state_worker-1: working/);
+      assert.match(output, /inspect_state_worker-2: blocked/);
       assert.match(output, /inspect_task_worker-1: 1/);
       assert.match(output, /inspect_task_worker-2: 2/);
       assert.match(output, /inspect_subject_worker-1: Recover worker-1 progress/);
       assert.match(output, /inspect_subject_worker-2: Recover worker-2 progress/);
+      assert.match(output, /inspect_pane_worker-1: %21/);
+      assert.match(output, /inspect_pane_worker-2: %22/);
       assert.match(output, /inspect_next: omx sparkshell --tmux-pane %21 --tail-lines 400/);
       assert.match(output, /inspect_priority_1: omx sparkshell --tmux-pane %21 --tail-lines 400/);
       assert.match(output, /inspect_priority_2: omx sparkshell --tmux-pane %22 --tail-lines 400/);
-      assert.match(output, /inspect_item_1: target=worker-1 pane=%21 reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx sparkshell --tmux-pane %21 --tail-lines 400/);
-      assert.match(output, /inspect_item_2: target=worker-2 pane=%22 reason=dead_worker state=blocked task=2 subject=Recover worker-2 progress command=omx sparkshell --tmux-pane %22 --tail-lines 400/);
+      assert.match(output, /inspect_item_1: target=worker-1 pane=%21 role=executor reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx sparkshell --tmux-pane %21 --tail-lines 400/);
+      assert.match(output, /inspect_item_2: target=worker-2 pane=%22 role=executor reason=dead_worker state=blocked task=2 subject=Recover worker-2 progress command=omx sparkshell --tmux-pane %22 --tail-lines 400/);
       assert.match(output, /panes: leader=%10 hud=%11/);
       assert.match(output, /worker_panes: worker-1=%21 worker-2=%22/);
       assert.match(output, /sparkshell_hint: omx sparkshell --tmux-pane <pane-id> --tail-lines 400/);
@@ -754,13 +760,17 @@ describe('teamCommand status', () => {
           sparkshell_commands?: Record<string, string>;
           recommended_inspect_targets?: string[];
           recommended_inspect_reasons?: Record<string, string>;
+          recommended_inspect_roles?: Record<string, string | null>;
+          recommended_inspect_states?: Record<string, string | null>;
           recommended_inspect_tasks?: Record<string, string | null>;
           recommended_inspect_subjects?: Record<string, string | null>;
+          recommended_inspect_panes?: Record<string, string | null>;
           recommended_inspect_command?: string | null;
           recommended_inspect_commands?: string[];
           recommended_inspect_items?: Array<{
             target?: string;
             pane_id?: string;
+            role?: string | null;
             reason?: string;
             state?: string | null;
             task_id?: string | null;
@@ -778,13 +788,17 @@ describe('teamCommand status', () => {
       assert.deepEqual(payload.non_reporting_workers, []);
       assert.deepEqual(payload.panes?.recommended_inspect_targets, ['worker-1']);
       assert.deepEqual(payload.panes?.recommended_inspect_reasons, { 'worker-1': 'dead_worker' });
+      assert.deepEqual(payload.panes?.recommended_inspect_roles, { 'worker-1': 'executor' });
+      assert.deepEqual(payload.panes?.recommended_inspect_states, { 'worker-1': 'working' });
       assert.deepEqual(payload.panes?.recommended_inspect_tasks, { 'worker-1': '1' });
       assert.deepEqual(payload.panes?.recommended_inspect_subjects, { 'worker-1': 'Recover worker-1 progress' });
+      assert.deepEqual(payload.panes?.recommended_inspect_panes, { 'worker-1': '%41' });
       assert.equal(payload.panes?.recommended_inspect_command, 'omx sparkshell --tmux-pane %41 --tail-lines 400');
       assert.deepEqual(payload.panes?.recommended_inspect_commands, ['omx sparkshell --tmux-pane %41 --tail-lines 400']);
       assert.deepEqual(payload.panes?.recommended_inspect_items, [{
         target: 'worker-1',
         pane_id: '%41',
+        role: 'executor',
         reason: 'dead_worker',
         state: 'working',
         task_id: '1',

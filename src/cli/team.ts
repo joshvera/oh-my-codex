@@ -329,6 +329,7 @@ function readTeamPaneStatus(
   sparkshell_commands: Record<string, string>;
   recommended_inspect_targets: string[];
   recommended_inspect_reasons: Record<string, string>;
+  recommended_inspect_roles: Record<string, string | null>;
   recommended_inspect_states: Record<string, WorkerStatus['state'] | null>;
   recommended_inspect_tasks: Record<string, string | null>;
   recommended_inspect_subjects: Record<string, string | null>;
@@ -338,6 +339,7 @@ function readTeamPaneStatus(
   recommended_inspect_items: Array<{
     target: string;
     pane_id: string;
+    role: string | null;
     reason: string;
     state: WorkerStatus['state'] | null;
     task_id: string | null;
@@ -354,6 +356,7 @@ function readTeamPaneStatus(
       sparkshell_commands: {},
       recommended_inspect_targets: [],
       recommended_inspect_reasons: {},
+      recommended_inspect_roles: {},
       recommended_inspect_states: {},
       recommended_inspect_tasks: {},
       recommended_inspect_subjects: {},
@@ -399,6 +402,12 @@ function readTeamPaneStatus(
       (snapshot?.deadWorkers ?? []).includes(target) ? 'dead_worker' : 'non_reporting_worker',
     ]),
   );
+  const recommendedInspectRoles = Object.fromEntries(
+    recommendedInspectTargets.map((target) => {
+      const worker = config.workers.find((candidate) => candidate.name === target);
+      return [target, worker?.role ?? null];
+    }),
+  );
   const recommendedInspectTasks = Object.fromEntries(
     recommendedInspectTargets.map((target) => {
       const worker = snapshot?.workers.find((candidate) => candidate.name === target);
@@ -435,6 +444,7 @@ function readTeamPaneStatus(
       return {
         target,
         pane_id: paneId,
+        role: recommendedInspectRoles[target] ?? null,
         reason: recommendedInspectReasons[target] ?? 'unknown',
         state: recommendedInspectStates[target] ?? null,
         task_id: recommendedInspectTasks[target] ?? null,
@@ -445,6 +455,7 @@ function readTeamPaneStatus(
     .filter((item): item is {
       target: string;
       pane_id: string;
+      role: string | null;
       reason: string;
       state: WorkerStatus['state'] | null;
       task_id: string | null;
@@ -462,6 +473,7 @@ function readTeamPaneStatus(
     sparkshell_commands: sparkshellCommands,
     recommended_inspect_targets: recommendedInspectTargets,
     recommended_inspect_reasons: recommendedInspectReasons,
+    recommended_inspect_roles: recommendedInspectRoles,
     recommended_inspect_states: recommendedInspectStates,
     recommended_inspect_tasks: recommendedInspectTasks,
     recommended_inspect_subjects: recommendedInspectSubjects,
@@ -494,6 +506,11 @@ function renderTeamPaneStatus(
   for (const [target, reason] of Object.entries(paneStatus.recommended_inspect_reasons)) {
     console.log(`inspect_reason_${target}: ${reason}`);
   }
+  for (const [target, role] of Object.entries(paneStatus.recommended_inspect_roles)) {
+    if (role) {
+      console.log(`inspect_role_${target}: ${role}`);
+    }
+  }
   for (const [target, state] of Object.entries(paneStatus.recommended_inspect_states)) {
     if (state) {
       console.log(`inspect_state_${target}: ${state}`);
@@ -522,10 +539,11 @@ function renderTeamPaneStatus(
   }
   for (const [index, item] of paneStatus.recommended_inspect_items.entries()) {
     const panePart = item.pane_id ? ` pane=${item.pane_id}` : '';
+    const rolePart = item.role ? ` role=${item.role}` : '';
     const statePart = item.state ? ` state=${item.state}` : '';
     const taskPart = item.task_id ? ` task=${item.task_id}` : '';
     const subjectPart = item.task_subject ? ` subject=${item.task_subject}` : '';
-    console.log(`inspect_item_${index + 1}: target=${item.target}${panePart} reason=${item.reason}${statePart}${taskPart}${subjectPart} command=${item.command}`);
+    console.log(`inspect_item_${index + 1}: target=${item.target}${panePart}${rolePart} reason=${item.reason}${statePart}${taskPart}${subjectPart} command=${item.command}`);
   }
 
   for (const [target, command] of Object.entries(paneStatus.sparkshell_commands)) {
