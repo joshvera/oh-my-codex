@@ -571,6 +571,9 @@ async function ensureTeamModeState(
       staffing_summary: staffingPlan.staffingSummary,
       staffing_allocations: staffingPlan.allocations,
     });
+    if (parsed.ralph) {
+      await ensureLinkedRalphModeState(parsed);
+    }
     return;
   }
 
@@ -584,6 +587,35 @@ async function ensureTeamModeState(
     available_agent_types: availableAgentTypes,
     staffing_summary: staffingPlan.staffingSummary,
     staffing_allocations: staffingPlan.allocations,
+  });
+
+  if (parsed.ralph) {
+    await ensureLinkedRalphModeState(parsed);
+  }
+}
+
+async function ensureLinkedRalphModeState(parsed: ParsedTeamArgs): Promise<void> {
+  const existing = await readModeState('ralph').catch(() => null);
+  const nextPhase = existing?.active === true
+    && typeof existing.current_phase === 'string'
+    && !['complete', 'failed', 'cancelled'].includes(existing.current_phase)
+    ? existing.current_phase
+    : 'executing';
+
+  if (!existing?.active) {
+    await startMode('ralph', parsed.task, 50);
+  }
+
+  await updateModeState('ralph', {
+    active: true,
+    task_description: parsed.task,
+    current_phase: nextPhase,
+    completed_at: undefined,
+    linked_team: true,
+    linked_mode: 'team',
+    team_name: parsed.teamName,
+    linked_team_terminal_phase: undefined,
+    linked_team_terminal_at: undefined,
   });
 }
 

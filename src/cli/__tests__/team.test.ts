@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildLeaderMonitoringHints, parseTeamStartArgs, teamCommand } from '../team.js';
@@ -713,6 +713,64 @@ process.on('SIGTERM', () => process.exit(0));
     } finally {
       console.log = originalLog;
       process.stderr.write = originalStderrWrite;
+      process.chdir(previousCwd);
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+      else delete process.env.TMUX;
+      if (typeof previousLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = previousLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof previousWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = previousWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('establishes Ralph-side linked state for real omx team ralph launches', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-team-ralph-link-'));
+    const binDir = join(wd, 'bin');
+    const fakeCodexPath = join(binDir, 'codex');
+    const previousCwd = process.cwd();
+    const previousPath = process.env.PATH;
+    const previousTmux = process.env.TMUX;
+    const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+
+    await mkdir(binDir, { recursive: true });
+    await writeFile(
+      fakeCodexPath,
+      `#!/usr/bin/env node
+setTimeout(() => process.exit(0), 150);
+process.stdin.resume();
+process.on('SIGTERM', () => process.exit(0));
+`,
+    );
+    await chmod(fakeCodexPath, 0o755);
+
+    try {
+      process.chdir(wd);
+      process.env.PATH = `${binDir}:${previousPath ?? ''}`;
+      delete process.env.TMUX;
+      process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
+      process.env.OMX_TEAM_WORKER_CLI = 'codex';
+
+      const teamTask = 'issue 742 linked ralph launch';
+      const teamName = parseTeamStartArgs(['ralph', '1:executor', teamTask]).parsed.teamName;
+      await teamCommand(['ralph', '1:executor', teamTask]);
+
+      const teamState = JSON.parse(await readFile(join(wd, '.omx', 'state', 'team-state.json'), 'utf-8')) as Record<string, unknown>;
+      const ralphState = JSON.parse(await readFile(join(wd, '.omx', 'state', 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
+
+      assert.equal(teamState.linked_ralph, true);
+      assert.equal(teamState.team_name, teamName);
+      assert.equal(ralphState.active, true);
+      assert.equal(ralphState.current_phase, 'executing');
+      assert.equal(ralphState.linked_team, true);
+      assert.equal(ralphState.linked_mode, 'team');
+      assert.equal(ralphState.team_name, teamName);
+      assert.equal(ralphState.linked_team_terminal_phase, undefined);
+      assert.equal(ralphState.linked_team_terminal_at, undefined);
+    } finally {
       process.chdir(previousCwd);
       if (typeof previousPath === 'string') process.env.PATH = previousPath;
       else delete process.env.PATH;
