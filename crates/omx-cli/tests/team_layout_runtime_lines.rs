@@ -1,4 +1,4 @@
-use omx_cli::team_layout::{sync_prompt_layout_from_state, HudModeOverride};
+use omx_cli::team_layout::{HudModeOverride, sync_prompt_layout_from_state};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
@@ -57,4 +57,3 @@ fn proof_and_runtime_lines_include_no_tmux_and_expected_fields() {
     assert!(runtime.contains("no_tmux=true"), "{runtime}");
     assert!(runtime.contains("hud_mode=inline"), "{runtime}");
 }
-

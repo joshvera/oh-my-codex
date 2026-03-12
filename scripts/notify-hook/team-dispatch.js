@@ -289,6 +289,12 @@ const INJECT_VERIFY_DELAY_MS = 250;
 const INJECT_VERIFY_ROUNDS = 3;
 
 async function injectDispatchRequest(request, config, cwd) {
+  // Compatibility fence: require explicit opt-in for tmux-backed dispatch.
+  const compat = String(process.env.OMX_COMPAT_TMUX || '').toLowerCase();
+  const compatEnabled = compat === '1' || compat === 'true' || compat === 'yes';
+  if (!compatEnabled || process.env.OMX_NO_TMUX === '1') {
+    return { ok: false, reason: compatEnabled ? 'env_no_tmux' : 'compat_disabled' };
+  }
   const target = defaultInjectTarget(request, config);
   if (!target) {
     return { ok: false, reason: 'missing_tmux_target' };

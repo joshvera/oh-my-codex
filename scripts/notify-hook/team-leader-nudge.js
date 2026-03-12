@@ -433,6 +433,24 @@ async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmu
 }
 
 export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderStale }) {
+  // Compatibility fence: require explicit opt-in for any tmux-backed leader nudge.
+  const compat = String(process.env.OMX_COMPAT_TMUX || '').toLowerCase();
+  const compatEnabled = compat === '1' || compat === 'true' || compat === 'yes';
+  if (!compatEnabled || process.env.OMX_NO_TMUX === '1') {
+    try {
+      await logTmuxHookEvent(logsDir, {
+        timestamp: new Date().toISOString(),
+        type: LEADER_NOTIFICATION_DEFERRED_TYPE,
+        team: 'unknown',
+        worker: 'leader-fixed',
+        to_worker: 'leader-fixed',
+        reason: compatEnabled ? 'env_no_tmux' : 'compat_disabled',
+        tmux_injection_attempted: false,
+        source_type: 'leader_nudge',
+      });
+    } catch { /* best effort */ }
+    return;
+  }
   const intervalMs = resolveLeaderNudgeIntervalMs();
   const idleCooldownMs = resolveLeaderAllIdleNudgeCooldownMs();
   const progressStallThresholdMs = resolveLeaderProgressStallThresholdMs();

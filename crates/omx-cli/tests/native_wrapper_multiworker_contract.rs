@@ -96,8 +96,11 @@ fn bin_wrapper_team_prompt_multiworker_bootstraps_distinct_lane_state_without_tm
     assert!(start.status.success(), "{start_stderr}{start_stdout}");
     assert!(start_stdout.contains("Team started: bootstrap-native-team"));
     assert!(start_stdout.contains("runtime target: prompt-bootstrap-native-team"));
-    assert!(start_stdout
-        .contains("tmux: required=false session=null hud_pane=null resize_hook=none no_tmux=true"));
+    assert!(
+        start_stdout.contains(
+            "tmux: required=false session=null hud_pane=null resize_hook=none no_tmux=true"
+        )
+    );
 
     let worker_one_capture = capture_dir.join("bootstrap-native-team_worker-1.txt");
     let worker_two_capture = capture_dir.join("bootstrap-native-team_worker-2.txt");

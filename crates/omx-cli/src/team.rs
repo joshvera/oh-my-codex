@@ -425,7 +425,9 @@ fn spawn_prompt_worker_process(
     command.envs(env.iter());
     command.env("OMX_TEAM_WORKER", format!("{team_name}/{worker_name}"));
     command.env("OMX_TEAM_STATE_ROOT", team_state_root.display().to_string());
-    command.env("OMX_TEAM_LEADER_CWD", cwd.display().to_string());
+    if !env.contains_key(&OsString::from("OMX_TEAM_LEADER_CWD")) {
+        command.env("OMX_TEAM_LEADER_CWD", cwd.display().to_string());
+    }
     command.env("OMX_TEAM_WORKER_INDEX", worker_index.to_string());
     command.env("OMX_TEAM_TASK", task);
     command.env("OMX_TEAM_WORKER_CLI", &worker_cli);
@@ -3000,10 +3002,7 @@ fn transition_team_task_status(
     to: &str,
     claim_token: &str,
 ) -> Result<String, TeamError> {
-    if !matches!(
-        (from, to),
-        ("in_progress", "completed" | "failed")
-    ) {
+    if !matches!((from, to), ("in_progress", "completed" | "failed")) {
         return Ok("{\"ok\":false,\"error\":\"invalid_transition\"}".to_string());
     }
     let Some(mut task) = read_task_record(team_root, task_id)? else {
@@ -4341,7 +4340,9 @@ fn write_atomic_text(path: &Path, text: &str) -> Result<(), TeamError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TEAM_API_HELP, TEAM_HELP, extract_json_value, run_team};
+    use super::{
+        TEAM_API_HELP, TEAM_HELP, extract_json_value, run_team, spawn_prompt_worker_process,
+    };
     use std::collections::BTreeMap;
     use std::ffi::OsString;
     use std::fs;
@@ -4708,6 +4709,70 @@ mod tests {
         let events = fs::read_to_string(cwd.join(".omx/state/team/fix-all/events/events.ndjson"))
             .expect("read events");
         assert!(events.contains("linked_ralph_bootstrap"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prompt_worker_preserves_explicit_leader_cwd_env() {
+        let cwd = temp_dir("prompt-worker-leader-cwd");
+        let leader_cwd = cwd.join("leader");
+        let worker_cwd = cwd.join("worker");
+        let team_root = cwd.join(".omx/state/team/fixture-team");
+        let team_state_root = cwd.join(".omx/state");
+        fs::create_dir_all(team_root.join("workers/worker-1")).expect("create worker dir");
+        fs::create_dir_all(&leader_cwd).expect("create leader cwd");
+        fs::create_dir_all(&worker_cwd).expect("create worker cwd");
+        fs::create_dir_all(&team_state_root).expect("create team state root");
+
+        let capture_path = cwd.join("leader-cwd-capture.txt");
+        let worker_cli = cwd.join("capture-worker.sh");
+        fs::write(
+            &worker_cli,
+            format!(
+                concat!(
+                    "#!/bin/sh\n",
+                    "printf 'leader_cwd=%s\\npwd=%s\\n' \"$OMX_TEAM_LEADER_CWD\" \"$PWD\" > \"{}\"\n"
+                ),
+                capture_path.display()
+            ),
+        )
+        .expect("write worker cli");
+        let mut perms = fs::metadata(&worker_cli).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&worker_cli, perms).expect("chmod");
+
+        let env = BTreeMap::from([
+            (
+                OsString::from("OMX_TEAM_WORKER_CLI"),
+                worker_cli.as_os_str().to_os_string(),
+            ),
+            (
+                OsString::from("OMX_TEAM_LEADER_CWD"),
+                leader_cwd.as_os_str().to_os_string(),
+            ),
+        ]);
+
+        let spawned = spawn_prompt_worker_process(
+            &team_root,
+            "fixture-team",
+            "worker-1",
+            1,
+            "fixture task",
+            "1",
+            &worker_cwd,
+            &team_state_root,
+            &env,
+        )
+        .expect("spawn prompt worker");
+        assert!(spawned.pid > 0);
+
+        let deadline = Instant::now() + Duration::from_millis(2000);
+        while Instant::now() < deadline && !capture_path.exists() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let capture = fs::read_to_string(&capture_path).expect("capture env");
+        assert!(capture.contains(&format!("leader_cwd={}", leader_cwd.display())));
+        assert!(capture.contains(&format!("pwd={}", worker_cwd.display())));
     }
 
     #[test]
