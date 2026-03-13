@@ -20,6 +20,7 @@ import { killWorkerPanes } from '../team/tmux-session.js';
 import { teamReadConfig as readTeamConfig } from '../team/team-ops.js';
 import { NudgeTracker } from '../team/idle-nudge.js';
 import { getLatestTeamEventCursor, waitForTeamEvent } from '../team/state/events.js';
+import { resolveRuntimeBinaryPath } from '../cli/runtime-native.js';
 import { autoStartStdioMcpServer } from './bootstrap.js';
 
 // ---------------------------------------------------------------------------
@@ -324,12 +325,12 @@ export async function handleTeamToolCall(request: {
         const { teamName, agentTypes, tasks, cwd: inputCwd } = startSchema.parse(a);
 
         const jobId = `omx-${Date.now().toString(36)}`;
-        const runtimeCliPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'team', 'runtime-cli.js');
+        const runtimeBinaryPath = resolveRuntimeBinaryPath({ cwd: inputCwd, env: process.env });
 
         const job: OmxTeamJob = { status: 'running', startedAt: Date.now(), teamName, cwd: inputCwd };
         omxTeamJobs.set(jobId, job);
 
-        const child = spawn('node', [runtimeCliPath], {
+        const child = spawn(runtimeBinaryPath, ['runtime-run'], {
           env: { ...process.env, OMX_JOB_ID: jobId, OMX_JOBS_DIR: getOmxJobsDir() },
           stdio: ['pipe', 'pipe', 'pipe'],
         });

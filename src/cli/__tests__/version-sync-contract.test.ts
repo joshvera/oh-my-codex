@@ -13,13 +13,17 @@ describe('version sync contract', () => {
     const explore = TOML.parse(readFileSync(join(process.cwd(), 'crates', 'omx-explore', 'Cargo.toml'), 'utf-8')) as {
       package?: { version?: string | { workspace?: boolean } };
     };
-    const sparkshell = TOML.parse(readFileSync(join(process.cwd(), 'native', 'omx-sparkshell', 'Cargo.toml'), 'utf-8')) as {
+    const runtime = TOML.parse(readFileSync(join(process.cwd(), 'crates', 'omx-runtime', 'Cargo.toml'), 'utf-8')) as {
+      package?: { version?: string | { workspace?: boolean } };
+    };
+    const sparkshell = TOML.parse(readFileSync(join(process.cwd(), 'crates', 'omx-sparkshell', 'Cargo.toml'), 'utf-8')) as {
       package?: { version?: string | { workspace?: boolean } };
     };
 
     assert.equal(workspace.workspace?.package?.version, pkg.version);
-    assert.deepEqual(workspace.workspace?.members, ['crates/omx-explore', 'native/omx-sparkshell']);
+    assert.deepEqual(workspace.workspace?.members, ['crates/omx-explore', 'crates/omx-runtime', 'crates/omx-sparkshell']);
     assert.deepEqual(explore.package?.version, { workspace: true });
+    assert.deepEqual(runtime.package?.version, { workspace: true });
     assert.deepEqual(sparkshell.package?.version, { workspace: true });
   });
 });

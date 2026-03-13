@@ -12,11 +12,11 @@ It adds the native Rust-backed `omx sparkshell <command> [args...]` flow, plus a
 ### `omx sparkshell`
 - adds CLI dispatch/help for `omx sparkshell`
 - adds `src/cli/sparkshell.ts` for native binary discovery and launch
-- adds the Rust crate under `native/omx-sparkshell/`
+- adds the Rust crate under `crates/omx-sparkshell/`
 - adds packaging/build helpers:
   - `scripts/build-sparkshell.mjs`
   - `scripts/test-sparkshell.mjs`
-- stages the packaged native binary under `bin/native/linux-x64/omx-sparkshell`
+- stages the packaged native binary under `bin/rust/linux-x64/omx-sparkshell`
 - adds focused CLI + packaging tests
 
 ### `omx team status` inspection improvements
@@ -32,7 +32,7 @@ It adds the native Rust-backed `omx sparkshell <command> [args...]` flow, plus a
 
 ## Rebase / integration fixes included
 - merged `experimental/dev` CLI/explore surfaces with sparkshell command routing
-- excluded `native/omx-sparkshell` from the root Cargo workspace so manifest-path cargo commands work again
+- excluded `crates/omx-sparkshell` from the root Cargo workspace so manifest-path cargo commands work again
 - refreshed/added missing compat doctor fixtures after the rebase
 - hardened MCP team-job cleanup to resolve the jobs directory from the current home directory dynamically
 - updated tests for newly surfaced claim-lock inspection metadata
@@ -41,7 +41,7 @@ It adds the native Rust-backed `omx sparkshell <command> [args...]` flow, plus a
 - `npm run lint`
 - `npm run check:no-unused`
 - `npm run build:full`
-- `cargo test --manifest-path native/omx-sparkshell/Cargo.toml`
+- `cargo test --manifest-path crates/omx-sparkshell/Cargo.toml`
 - `node scripts/build-sparkshell.mjs`
 - `node scripts/test-sparkshell.mjs`
 - `node bin/omx.js sparkshell cargo --version`
@@ -51,4 +51,4 @@ It adds the native Rust-backed `omx sparkshell <command> [args...]` flow, plus a
 
 ## Notes
 - `npm test` removes the staged packaged sparkshell binary as part of packaging cleanup; I restored the tracked binary afterward.
-- Native Rust build artifacts under `native/omx-sparkshell/target/` were removed after verification.
+- Native Rust build artifacts under `crates/omx-sparkshell/target/` were removed after verification.

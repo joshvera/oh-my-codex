@@ -403,18 +403,12 @@ function resolveTeamWorkingDirectoryFromMetadata(
 function resolveTeamWorkingDirectory(teamName: string, preferredCwd: string): string {
   const normalizedTeamName = String(teamName || '').trim();
   if (!normalizedTeamName) return preferredCwd;
-  const envTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
-  if (typeof envTeamStateRoot === 'string' && envTeamStateRoot.trim() !== '') {
-    return stateRootToWorkingDirectory(envTeamStateRoot.trim());
-  }
-
-  const seeds: string[] = [];
-  for (const seed of [preferredCwd, process.cwd()]) {
-    if (typeof seed !== 'string' || seed.trim() === '') continue;
-    if (!seeds.includes(seed)) seeds.push(seed);
-  }
 
   const workerContext = parseTeamWorkerEnv(process.env.OMX_TEAM_WORKER);
+  const seeds = typeof preferredCwd === 'string' && preferredCwd.trim() !== ''
+    ? [preferredCwd]
+    : [];
+
   for (const seed of seeds) {
     let cursor = seed;
     while (cursor) {
@@ -426,6 +420,7 @@ function resolveTeamWorkingDirectory(teamName: string, preferredCwd: string): st
       cursor = parent;
     }
   }
+
   return preferredCwd;
 }
 

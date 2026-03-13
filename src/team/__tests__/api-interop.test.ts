@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -23,6 +23,26 @@ import {
   writeMonitorSnapshot,
   writeWorkerStatus,
 } from '../state.js';
+
+
+const TEAM_ENV_KEYS = ['OMX_TEAM_STATE_ROOT', 'OMX_TEAM_LEADER_CWD', 'OMX_TEAM_WORKER'] as const;
+const previousTeamEnv = new Map<(typeof TEAM_ENV_KEYS)[number], string | undefined>();
+
+beforeEach(() => {
+  for (const key of TEAM_ENV_KEYS) {
+    previousTeamEnv.set(key, process.env[key]);
+    delete process.env[key];
+  }
+});
+
+afterEach(() => {
+  for (const key of TEAM_ENV_KEYS) {
+    const previous = previousTeamEnv.get(key);
+    if (typeof previous === 'string') process.env[key] = previous;
+    else delete process.env[key];
+  }
+  previousTeamEnv.clear();
+});
 
 async function setupTeam(name: string): Promise<{ cwd: string; cleanup: () => Promise<void> }> {
   const cwd = await mkdtemp(join(tmpdir(), `omx-interop-${name}-`));

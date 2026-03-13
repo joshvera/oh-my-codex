@@ -127,10 +127,10 @@ describe('buildTmuxSplitArgs – shell injection hardening', () => {
 
     // The single quote must be escaped, not a raw breakout.
     assert.ok(
-      cmd.includes("'\\''"),
+      cmd.includes(`'"'"'`),
       `Expected escaped single quote in: ${cmd}`,
     );
-    assert.equal(cmd, "node '/tmp/it'\\''s/omx.js' hud --watch");
+    assert.equal(cmd, `node '/tmp/it'"'"'s/omx.js' hud --watch`);
   });
 
   it('omxBin with $() is neutralised by single-quote wrapping', () => {
@@ -159,15 +159,15 @@ describe('buildTmuxSplitArgs – shell injection hardening', () => {
     // quotes escaped as '\''.  In a POSIX shell the result is a single word;
     // the semicolons never act as command separators.
     //
-    // Raw expected value: node '/tmp/x'\'';touch /tmp/pwned;echo '\''/omx.js' hud --watch
+    // Raw expected value: node '/tmp/x'"'"';touch /tmp/pwned;echo '"'"'/omx.js' hud --watch
     assert.equal(
       cmd,
-      "node '/tmp/x'\\'';touch /tmp/pwned;echo '\\''/omx.js' hud --watch",
+      `node '/tmp/x'"'"';touch /tmp/pwned;echo '"'"'/omx.js' hud --watch`,
     );
 
-    // Both original single quotes are escaped (two '\'' sequences).
-    // Each '\'' is: end-quote, backslash-escaped-quote, start-quote
-    const escapeCount = (cmd.match(/'\\''/g) || []).length;
+    // Both original single quotes are escaped (two '"'"' sequences).
+    // Each '"'"' is: end-quote, double-quoted single-quote, start-quote
+    const escapeCount = (cmd.match(/'"'"'/g) || []).length;
     assert.equal(escapeCount, 2, `Expected 2 escape sequences, got ${escapeCount}`);
   });
 

@@ -175,4 +175,42 @@ describe('team-server wait semantics', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('fails deterministically when the tracked runtime pid is gone (Phase 1 restart contract)', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-wait-dead-pid-'));
+    const jobId = `omx-${Date.now().toString(36)}`;
+    try {
+      await initTeamState('wait-dead-pid', 'task', 'executor', 1, cwd);
+      await writeJobFiles(jobId, {
+        status: 'running',
+        startedAt: Date.now() - 1000,
+        teamName: 'wait-dead-pid',
+        cwd,
+        pid: 999999,
+      }, {
+        paneIds: [],
+        leaderPaneId: '%1',
+      });
+
+      const { handleTeamToolCall } = await loadTeamServer();
+      const response = await handleTeamToolCall({
+        params: {
+          name: 'omx_run_team_wait',
+          arguments: { job_id: jobId, timeout_ms: 100 },
+        },
+      });
+
+      const payload = JSON.parse(response.content[0]?.text ?? '{}') as {
+        jobId?: string;
+        status?: string;
+        error?: string;
+      };
+      assert.equal(payload.jobId, jobId);
+      assert.equal(payload.status, 'failed');
+      assert.equal(payload.error, 'Process no longer alive (MCP restart?)');
+    } finally {
+      await cleanupJobFiles(jobId);
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

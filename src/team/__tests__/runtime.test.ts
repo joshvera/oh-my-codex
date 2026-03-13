@@ -34,6 +34,7 @@ import {
   TEAM_LOW_COMPLEXITY_DEFAULT_MODEL,
   type TeamRuntime,
 } from '../runtime.js';
+import { createTeamSession } from '../tmux-session.js';
 import { resolveTeamLowComplexityDefaultModel } from '../model-contract.js';
 
 async function initRepo(): Promise<string> {
@@ -2135,6 +2136,10 @@ case "$1" in
     ;;
 esac
 `,
+          env: {
+            OMX_RUNTIME_HUD_NATIVE: '1',
+            OMX_RUNTIME_BIN: '/tmp/rust/omx-runtime',
+          },
         },
         async ({ tmuxLogPath }) => {
           await initTeamState('team-shutdown-restore-hud', 'shutdown restore hud test', 'executor', 2, cwd);
@@ -2156,11 +2161,91 @@ esac
           assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\{pane_id\}`));
           assert.match(tmuxLog, /run-shell -b sleep \d+; tmux resize-pane -t %44 -y \d+ >/);
           assert.match(tmuxLog, /run-shell tmux resize-pane -t %44 -y \d+ >/);
-          assert.match(tmuxLog, /hud --watch/);
+          assert.match(tmuxLog, /'\/tmp\/native\/omx-runtime' hud-watch/);
+          assert.doesNotMatch(tmuxLog, /node .*hud --watch/);
           assert.match(tmuxLog, /select-pane -t %11/);
         },
       );
     } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('startTeam prefers the native HUD command when the runtime binary resolves even without tmux env propagation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-team-native-hud-'));
+    const previousRuntimeHudNative = process.env.OMX_RUNTIME_HUD_NATIVE;
+    const previousRuntimeBin = process.env.OMX_RUNTIME_BIN;
+    const previousTmux = process.env.TMUX;
+    const previousTmuxPane = process.env.TMUX_PANE;
+    try {
+      delete process.env.OMX_RUNTIME_HUD_NATIVE;
+      process.env.OMX_RUNTIME_BIN = '/tmp/rust/omx-runtime';
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-team-native-hud-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  list-panes)
+    if [ "$4" = "#S:#I" ]; then
+      printf 'leader:0\\n'
+      exit 0
+    fi
+    printf '%%1\\tzsh\\tleader\\n'
+    exit 0
+    ;;
+  split-window)
+    if [ "$9" = "%1" ]; then
+      printf '%%2\\n'
+    else
+      printf '%%3\\n'
+    fi
+    exit 0
+    ;;
+  display-message)
+    if [ "\${5:-}" = "#S:#I #{pane_id}" ]; then
+      printf 'leader:0 %%1\\n'
+    else
+      printf '120\\n'
+    fi
+    exit 0
+    ;;
+  has-session|new-session|set-window-option|select-layout|set-hook|run-shell|select-pane|send-keys|kill-pane|kill-session)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+          binaries: [{
+            name: 'codex',
+            content: '#!/bin/sh\nexit 0\n',
+          }],
+        },
+        async ({ tmuxLogPath }) => {
+          process.env.TMUX = 'leader-session,stub,0';
+          process.env.TMUX_PANE = '%1';
+          createTeamSession('team-native-hud-start', 1, cwd);
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.match(tmuxLog, /'\/tmp\/native\/omx-runtime' hud-watch/);
+          assert.doesNotMatch(tmuxLog, /node .*hud --watch/);
+        },
+      );
+    } finally {
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+      else delete process.env.TMUX;
+      if (typeof previousTmuxPane === 'string') process.env.TMUX_PANE = previousTmuxPane;
+      else delete process.env.TMUX_PANE;
+      if (typeof previousRuntimeHudNative === 'string') process.env.OMX_RUNTIME_HUD_NATIVE = previousRuntimeHudNative;
+      else delete process.env.OMX_RUNTIME_HUD_NATIVE;
+      if (typeof previousRuntimeBin === 'string') process.env.OMX_RUNTIME_BIN = previousRuntimeBin;
+      else delete process.env.OMX_RUNTIME_BIN;
       await rm(cwd, { recursive: true, force: true });
     }
   });

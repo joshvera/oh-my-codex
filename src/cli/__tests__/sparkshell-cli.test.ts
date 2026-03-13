@@ -62,7 +62,7 @@ describe('resolveSparkShellBinaryPath', () => {
 
   it('falls back from packaged binary to repo-local build artifact', () => {
     const packageRoot = '/repo';
-    const packaged = join(packageRoot, 'bin', 'native', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'omx-sparkshell.exe' : 'omx-sparkshell');
+    const packaged = join(packageRoot, 'bin', 'rust', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'omx-sparkshell.exe' : 'omx-sparkshell');
     const repoLocal = repoLocalSparkShellBinaryPath(packageRoot);
 
     assert.equal(

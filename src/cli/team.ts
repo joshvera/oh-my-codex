@@ -21,6 +21,7 @@ import {
   type TeamApiOperation,
 } from '../team/api-interop.js';
 import { teamReadConfig as readTeamConfig, teamReadTaskApproval as readTaskApproval } from '../team/team-ops.js';
+import { buildRuntimeCapturePaneCommand } from './runtime-native.js';
 
 type TeamWorkerCli = Exclude<WorkerInfo['worker_cli'], undefined>;
 
@@ -337,6 +338,8 @@ async function readTeamPaneStatus(
   leader_pane_id: string | null;
   hud_pane_id: string | null;
   worker_panes: Record<string, string>;
+  runtime_hint: string | null;
+  runtime_commands: Record<string, string>;
   sparkshell_hint: string | null;
   sparkshell_commands: Record<string, string>;
   recommended_inspect_targets: string[];
@@ -404,6 +407,9 @@ async function readTeamPaneStatus(
   recommended_inspect_team_monitor_snapshot_paths: Record<string, string | null>;
   recommended_inspect_team_summary_snapshot_paths: Record<string, string | null>;
   recommended_inspect_panes: Record<string, string | null>;
+  recommended_native_inspect_command: string | null;
+  recommended_native_inspect_commands: string[];
+  recommended_native_inspect_summary: string | null;
   recommended_inspect_command: string | null;
   recommended_inspect_commands: string[];
   recommended_inspect_summary: string | null;
@@ -474,6 +480,7 @@ async function readTeamPaneStatus(
     team_monitor_snapshot_path: string | null;
     team_summary_snapshot_path: string | null;
     command: string;
+    native_command: string;
   }>;
 }> {
   if (!config) {
@@ -481,6 +488,8 @@ async function readTeamPaneStatus(
       leader_pane_id: null,
       hud_pane_id: null,
       worker_panes: {},
+      runtime_hint: null,
+      runtime_commands: {},
       sparkshell_hint: null,
       sparkshell_commands: {},
       recommended_inspect_targets: [],
@@ -548,6 +557,9 @@ async function readTeamPaneStatus(
       recommended_inspect_team_monitor_snapshot_paths: {},
       recommended_inspect_team_summary_snapshot_paths: {},
       recommended_inspect_panes: {},
+      recommended_native_inspect_command: null,
+      recommended_native_inspect_commands: [],
+      recommended_native_inspect_summary: null,
       recommended_inspect_command: null,
       recommended_inspect_commands: [],
       recommended_inspect_summary: null,
@@ -574,6 +586,16 @@ async function readTeamPaneStatus(
       ...Object.entries(workerPanes).map(([workerName, paneId]) => [
         workerName,
         `omx sparkshell --tmux-pane ${paneId} --tail-lines ${tailLines}`,
+      ] as const),
+    ].filter((entry): entry is [string, string] => entry !== null),
+  );
+  const runtimeCommands = Object.fromEntries(
+    [
+      leaderPaneId ? ['leader', buildRuntimeCapturePaneCommand(leaderPaneId, tailLines)] : null,
+      hudPaneId ? ['hud', buildRuntimeCapturePaneCommand(hudPaneId, tailLines)] : null,
+      ...Object.entries(workerPanes).map(([workerName, paneId]) => [
+        workerName,
+        buildRuntimeCapturePaneCommand(paneId, tailLines),
       ] as const),
     ].filter((entry): entry is [string, string] => entry !== null),
   );
@@ -989,8 +1011,14 @@ async function readTeamPaneStatus(
   const recommendedInspectCommand = recommendedInspectTargets.length > 0
     ? sparkshellCommands[recommendedInspectTargets[0]!] ?? null
     : null;
+  const recommendedNativeInspectCommand = recommendedInspectTargets.length > 0
+    ? runtimeCommands[recommendedInspectTargets[0]!] ?? null
+    : null;
   const recommendedInspectCommands = recommendedInspectTargets
     .map((target) => sparkshellCommands[target])
+    .filter((command): command is string => typeof command === 'string' && command.length > 0);
+  const recommendedNativeInspectCommands = recommendedInspectTargets
+    .map((target) => runtimeCommands[target])
     .filter((command): command is string => typeof command === 'string' && command.length > 0);
   const recommendedInspectSummary = recommendedInspectTargets.length > 0
     ? [
@@ -1012,11 +1040,32 @@ async function readTeamPaneStatus(
       .join(' ')
       .trim()
     : null;
+  const recommendedNativeInspectSummary = recommendedInspectTargets.length > 0
+    ? [
+      `target=${recommendedInspectTargets[0]}`,
+      recommendedInspectPanes[recommendedInspectTargets[0]!] ? `pane=${recommendedInspectPanes[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectClis[recommendedInspectTargets[0]!] ? `cli=${recommendedInspectClis[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectRoles[recommendedInspectTargets[0]!] ? `role=${recommendedInspectRoles[recommendedInspectTargets[0]!]}` : '',
+      typeof recommendedInspectAlive[recommendedInspectTargets[0]!] === 'boolean' ? `alive=${recommendedInspectAlive[recommendedInspectTargets[0]!]}` : '',
+      typeof recommendedInspectTurnCounts[recommendedInspectTargets[0]!] === 'number' ? `turn_count=${recommendedInspectTurnCounts[recommendedInspectTargets[0]!]}` : '',
+      typeof recommendedInspectTurnsWithoutProgress[recommendedInspectTargets[0]!] === 'number'
+        ? `turns_without_progress=${recommendedInspectTurnsWithoutProgress[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectReasons[recommendedInspectTargets[0]!] ? `reason=${recommendedInspectReasons[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectStates[recommendedInspectTargets[0]!] ? `state=${recommendedInspectStates[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectTasks[recommendedInspectTargets[0]!] ? `task=${recommendedInspectTasks[recommendedInspectTargets[0]!]}` : '',
+      recommendedInspectSubjects[recommendedInspectTargets[0]!] ? `subject=${recommendedInspectSubjects[recommendedInspectTargets[0]!]}` : '',
+      recommendedNativeInspectCommand ? `command=${recommendedNativeInspectCommand}` : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .trim()
+    : null;
   const recommendedInspectItems = recommendedInspectTargets
     .map((target) => {
       const command = sparkshellCommands[target];
+      const nativeCommand = runtimeCommands[target];
       const paneId = recommendedInspectPanes[target];
-      if (!command || !paneId) return null;
+      if (!command || !nativeCommand || !paneId) return null;
       return {
         target,
         pane_id: paneId,
@@ -1084,6 +1133,7 @@ async function readTeamPaneStatus(
         team_monitor_snapshot_path: recommendedInspectTeamMonitorSnapshotPaths[target] ?? null,
         team_summary_snapshot_path: recommendedInspectTeamSummarySnapshotPaths[target] ?? null,
         command,
+        native_command: nativeCommand,
       };
     })
     .filter((item): item is Exclude<typeof item, null> => item !== null);
@@ -1092,6 +1142,10 @@ async function readTeamPaneStatus(
     leader_pane_id: leaderPaneId,
     hud_pane_id: hudPaneId,
     worker_panes: workerPanes,
+    runtime_hint: Object.keys(workerPanes).length > 0
+      ? 'omx-runtime capture-pane --pane-id <pane-id> --tail-lines 400'
+      : null,
+    runtime_commands: runtimeCommands,
     sparkshell_hint: Object.keys(workerPanes).length > 0
       ? 'omx sparkshell --tmux-pane <pane-id> --tail-lines 400'
       : null,
@@ -1161,6 +1215,9 @@ async function readTeamPaneStatus(
     recommended_inspect_team_monitor_snapshot_paths: recommendedInspectTeamMonitorSnapshotPaths,
     recommended_inspect_team_summary_snapshot_paths: recommendedInspectTeamSummarySnapshotPaths,
     recommended_inspect_panes: recommendedInspectPanes,
+    recommended_native_inspect_command: recommendedNativeInspectCommand,
+    recommended_native_inspect_commands: recommendedNativeInspectCommands,
+    recommended_native_inspect_summary: recommendedNativeInspectSummary,
     recommended_inspect_command: recommendedInspectCommand,
     recommended_inspect_commands: recommendedInspectCommands,
     recommended_inspect_summary: recommendedInspectSummary,
@@ -1182,6 +1239,9 @@ function renderTeamPaneStatus(
 
   if (paneStatus.sparkshell_hint) {
     console.log('sparkshell_hint: omx sparkshell --tmux-pane <pane-id> --tail-lines 400');
+  }
+  if (paneStatus.runtime_hint) {
+    console.log('runtime_hint: omx-runtime capture-pane --pane-id <pane-id> --tail-lines 400');
   }
 
   if (paneStatus.recommended_inspect_targets.length > 0) {
@@ -1508,11 +1568,20 @@ function renderTeamPaneStatus(
   if (paneStatus.recommended_inspect_command) {
     console.log(`inspect_next: ${paneStatus.recommended_inspect_command}`);
   }
+  if (paneStatus.recommended_native_inspect_command) {
+    console.log(`inspect_next_native: ${paneStatus.recommended_native_inspect_command}`);
+  }
   if (paneStatus.recommended_inspect_summary) {
     console.log(`inspect_summary: ${paneStatus.recommended_inspect_summary}`);
   }
+  if (paneStatus.recommended_native_inspect_summary) {
+    console.log(`inspect_summary_native: ${paneStatus.recommended_native_inspect_summary}`);
+  }
   for (const [index, command] of paneStatus.recommended_inspect_commands.entries()) {
     console.log(`inspect_priority_${index + 1}: ${command}`);
+  }
+  for (const [index, command] of paneStatus.recommended_native_inspect_commands.entries()) {
+    console.log(`inspect_priority_native_${index + 1}: ${command}`);
   }
   for (const [index, item] of paneStatus.recommended_inspect_items.entries()) {
     const panePart = item.pane_id ? ` pane=${item.pane_id}` : '';
@@ -1590,11 +1659,14 @@ function renderTeamPaneStatus(
     const teamPhasePathPart = item.team_phase_path ? ` team_phase_path=${item.team_phase_path}` : '';
     const teamMonitorSnapshotPathPart = item.team_monitor_snapshot_path ? ` team_monitor_snapshot_path=${item.team_monitor_snapshot_path}` : '';
     const teamSummarySnapshotPathPart = item.team_summary_snapshot_path ? ` team_summary_snapshot_path=${item.team_summary_snapshot_path}` : '';
-    console.log(`inspect_item_${index + 1}: target=${item.target}${panePart}${cliPart}${rolePart}${indexPart}${alivePart}${turnCountPart}${turnsWithoutProgressPart}${lastTurnPart}${statusUpdatedPart}${pidPart}${worktreeRepoRootPart}${worktreePathPart}${worktreeBranchPart}${worktreeDetachedPart}${worktreeCreatedPart}${teamStateRootPart}${workdirPart}${assignedTasksPart}${taskStatusPart}${taskResultPart}${taskErrorPart}${taskVersionPart}${taskCreatedAtPart}${taskCompletedAtPart}${taskDependsOnPart}${taskClaimPresentPart}${taskClaimOwnerPart}${taskClaimTokenPart}${taskClaimLeasePart}${taskClaimLockPathPart}${approvalRequiredPart}${requiresCodeChangePart}${taskDescriptionPart}${blockedByPart}${taskRolePart}${taskOwnerPart}${approvalStatusPart}${approvalReviewerPart}${approvalReasonPart}${approvalDecidedAtPart}${approvalRecordPresentPart}${stateReasonPart}${taskPart}${subjectPart}${taskPathPart}${approvalPathPart}${workerStateDirPart}${workerStatusPathPart}${workerHeartbeatPathPart}${workerIdentityPathPart}${workerInboxPathPart}${workerMailboxPathPart}${workerShutdownRequestPathPart}${workerShutdownAckPathPart}${teamDirPathPart}${teamConfigPathPart}${teamManifestPathPart}${teamEventsPathPart}${teamDispatchPathPart}${teamPhasePathPart}${teamMonitorSnapshotPathPart}${teamSummarySnapshotPathPart} reason=${item.reason}${statePart} command=${item.command}`);
+    console.log(`inspect_item_${index + 1}: target=${item.target}${panePart}${cliPart}${rolePart}${indexPart}${alivePart}${turnCountPart}${turnsWithoutProgressPart}${lastTurnPart}${statusUpdatedPart}${pidPart}${worktreeRepoRootPart}${worktreePathPart}${worktreeBranchPart}${worktreeDetachedPart}${worktreeCreatedPart}${teamStateRootPart}${workdirPart}${assignedTasksPart}${taskStatusPart}${taskResultPart}${taskErrorPart}${taskVersionPart}${taskCreatedAtPart}${taskCompletedAtPart}${taskDependsOnPart}${taskClaimPresentPart}${taskClaimOwnerPart}${taskClaimTokenPart}${taskClaimLeasePart}${taskClaimLockPathPart}${approvalRequiredPart}${requiresCodeChangePart}${taskDescriptionPart}${blockedByPart}${taskRolePart}${taskOwnerPart}${approvalStatusPart}${approvalReviewerPart}${approvalReasonPart}${approvalDecidedAtPart}${approvalRecordPresentPart}${stateReasonPart}${taskPart}${subjectPart}${taskPathPart}${approvalPathPart}${workerStateDirPart}${workerStatusPathPart}${workerHeartbeatPathPart}${workerIdentityPathPart}${workerInboxPathPart}${workerMailboxPathPart}${workerShutdownRequestPathPart}${workerShutdownAckPathPart}${teamDirPathPart}${teamConfigPathPart}${teamManifestPathPart}${teamEventsPathPart}${teamDispatchPathPart}${teamPhasePathPart}${teamMonitorSnapshotPathPart}${teamSummarySnapshotPathPart} reason=${item.reason}${statePart} command=${item.command} native_command=${item.native_command}`);
   }
 
   for (const [target, command] of Object.entries(paneStatus.sparkshell_commands)) {
     console.log(`inspect_${target}: ${command}`);
+  }
+  for (const [target, command] of Object.entries(paneStatus.runtime_commands)) {
+    console.log(`inspect_native_${target}: ${command}`);
   }
 }
 

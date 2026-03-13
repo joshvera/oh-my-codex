@@ -638,9 +638,12 @@ describe('teamCommand api', () => {
 
 
 describe('teamCommand status', () => {
-  it('prints pane ids and sparkshell hint when tmux panes are recorded', async () => {
+  it('prints pane ids and sparkshell hint when tmux panes are recorded', { concurrency: false }, async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-panes-'));
     const previousCwd = process.cwd();
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousTeamLeaderCwd = process.env.OMX_TEAM_LEADER_CWD;
+    const previousTeamWorker = process.env.OMX_TEAM_WORKER;
     const logs: string[] = [];
     const originalLog = console.log;
     try {
@@ -876,28 +879,46 @@ describe('teamCommand status', () => {
       assert.match(output, /inspect_pane_worker-1: %21/);
       assert.match(output, /inspect_pane_worker-2: %22/);
       assert.match(output, /inspect_next: omx sparkshell --tmux-pane %21 --tail-lines 400/);
+      assert.match(output, /inspect_next_native: omx-runtime capture-pane --pane-id %21 --tail-lines 400/);
       assert.match(output, /inspect_summary: target=worker-1 pane=%21 cli=codex role=executor alive=false turn_count=3 turns_without_progress=0 reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx sparkshell --tmux-pane %21 --tail-lines 400/);
+      assert.match(output, /inspect_summary_native: target=worker-1 pane=%21 cli=codex role=executor alive=false turn_count=3 turns_without_progress=0 reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx-runtime capture-pane --pane-id %21 --tail-lines 400/);
       assert.match(output, /inspect_priority_1: omx sparkshell --tmux-pane %21 --tail-lines 400/);
       assert.match(output, /inspect_priority_2: omx sparkshell --tmux-pane %22 --tail-lines 400/);
-      assert.match(output, /inspect_item_1: .*team_dir_path=.*\/\.omx\/state\/team\/pane-team .*team_config_path=.*\/\.omx\/state\/team\/pane-team\/config\.json .*team_manifest_path=.*\/\.omx\/state\/team\/pane-team\/manifest\.v2\.json .*command=omx sparkshell --tmux-pane %21 --tail-lines 400/);
-      assert.match(output, /inspect_item_2: .*team_dir_path=.*\/\.omx\/state\/team\/pane-team .*team_config_path=.*\/\.omx\/state\/team\/pane-team\/config\.json .*team_manifest_path=.*\/\.omx\/state\/team\/pane-team\/manifest\.v2\.json .*command=omx sparkshell --tmux-pane %22 --tail-lines 400/);
+      assert.match(output, /inspect_priority_native_1: omx-runtime capture-pane --pane-id %21 --tail-lines 400/);
+      assert.match(output, /inspect_priority_native_2: omx-runtime capture-pane --pane-id %22 --tail-lines 400/);
+      assert.match(output, /inspect_item_1: .*team_dir_path=.*\/\.omx\/state\/team\/pane-team .*team_config_path=.*\/\.omx\/state\/team\/pane-team\/config\.json .*team_manifest_path=.*\/\.omx\/state\/team\/pane-team\/manifest\.v2\.json .*command=omx sparkshell --tmux-pane %21 --tail-lines 400 .*native_command=omx-runtime capture-pane --pane-id %21 --tail-lines 400/);
+      assert.match(output, /inspect_item_2: .*team_dir_path=.*\/\.omx\/state\/team\/pane-team .*team_config_path=.*\/\.omx\/state\/team\/pane-team\/config\.json .*team_manifest_path=.*\/\.omx\/state\/team\/pane-team\/manifest\.v2\.json .*command=omx sparkshell --tmux-pane %22 --tail-lines 400 .*native_command=omx-runtime capture-pane --pane-id %22 --tail-lines 400/);
       assert.match(output, /panes: leader=%10 hud=%11/);
       assert.match(output, /worker_panes: worker-1=%21 worker-2=%22/);
       assert.match(output, /sparkshell_hint: omx sparkshell --tmux-pane <pane-id> --tail-lines 400/);
+      assert.match(output, /runtime_hint: omx-runtime capture-pane --pane-id <pane-id> --tail-lines 400/);
       assert.match(output, /inspect_leader: omx sparkshell --tmux-pane %10 --tail-lines 400/);
       assert.match(output, /inspect_hud: omx sparkshell --tmux-pane %11 --tail-lines 400/);
       assert.match(output, /inspect_worker-1: omx sparkshell --tmux-pane %21 --tail-lines 400/);
       assert.match(output, /inspect_worker-2: omx sparkshell --tmux-pane %22 --tail-lines 400/);
+      assert.match(output, /inspect_native_leader: omx-runtime capture-pane --pane-id %10 --tail-lines 400/);
+      assert.match(output, /inspect_native_hud: omx-runtime capture-pane --pane-id %11 --tail-lines 400/);
+      assert.match(output, /inspect_native_worker-1: omx-runtime capture-pane --pane-id %21 --tail-lines 400/);
+      assert.match(output, /inspect_native_worker-2: omx-runtime capture-pane --pane-id %22 --tail-lines 400/);
     } finally {
       console.log = originalLog;
       process.chdir(previousCwd);
+      if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof previousTeamLeaderCwd === 'string') process.env.OMX_TEAM_LEADER_CWD = previousTeamLeaderCwd;
+      else delete process.env.OMX_TEAM_LEADER_CWD;
+      if (typeof previousTeamWorker === 'string') process.env.OMX_TEAM_WORKER = previousTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('returns pane ids and sparkshell hint in JSON mode', async () => {
+  it('returns pane ids and sparkshell hint in JSON mode', { concurrency: false }, async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-json-'));
     const previousCwd = process.cwd();
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousTeamLeaderCwd = process.env.OMX_TEAM_LEADER_CWD;
+    const previousTeamWorker = process.env.OMX_TEAM_WORKER;
     const logs: string[] = [];
     const originalLog = console.log;
     try {
@@ -993,6 +1014,8 @@ describe('teamCommand status', () => {
           leader_pane_id?: string | null;
           hud_pane_id?: string | null;
           worker_panes?: Record<string, string>;
+          runtime_hint?: string | null;
+          runtime_commands?: Record<string, string>;
           sparkshell_hint?: string | null;
           sparkshell_commands?: Record<string, string>;
           recommended_inspect_targets?: string[];
@@ -1059,6 +1082,9 @@ describe('teamCommand status', () => {
           recommended_inspect_team_monitor_snapshot_paths?: Record<string, string | null>;
           recommended_inspect_team_summary_snapshot_paths?: Record<string, string | null>;
           recommended_inspect_panes?: Record<string, string | null>;
+          recommended_native_inspect_command?: string | null;
+          recommended_native_inspect_commands?: string[];
+          recommended_native_inspect_summary?: string | null;
           recommended_inspect_command?: string | null;
           recommended_inspect_commands?: string[];
           recommended_inspect_summary?: string | null;
@@ -1128,6 +1154,7 @@ describe('teamCommand status', () => {
             team_monitor_snapshot_path?: string | null;
             team_summary_snapshot_path?: string | null;
             command?: string;
+            native_command?: string;
           }>;
         };
       };
@@ -1202,6 +1229,9 @@ describe('teamCommand status', () => {
       assert.deepEqual(payload.panes?.recommended_inspect_team_monitor_snapshot_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/monitor-snapshot.json` });
       assert.deepEqual(payload.panes?.recommended_inspect_team_summary_snapshot_paths, { 'worker-1': `${wd}/.omx/state/team/pane-json-team/summary-snapshot.json` });
       assert.deepEqual(payload.panes?.recommended_inspect_panes, { 'worker-1': '%41' });
+      assert.equal(payload.panes?.recommended_native_inspect_command, 'omx-runtime capture-pane --pane-id %41 --tail-lines 400');
+      assert.deepEqual(payload.panes?.recommended_native_inspect_commands, ['omx-runtime capture-pane --pane-id %41 --tail-lines 400']);
+      assert.equal(payload.panes?.recommended_native_inspect_summary, 'target=worker-1 pane=%41 cli=claude role=executor alive=false turn_count=5 turns_without_progress=0 reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx-runtime capture-pane --pane-id %41 --tail-lines 400');
       assert.equal(payload.panes?.recommended_inspect_command, 'omx sparkshell --tmux-pane %41 --tail-lines 400');
       assert.deepEqual(payload.panes?.recommended_inspect_commands, ['omx sparkshell --tmux-pane %41 --tail-lines 400']);
       assert.equal(payload.panes?.recommended_inspect_summary, 'target=worker-1 pane=%41 cli=claude role=executor alive=false turn_count=5 turns_without_progress=0 reason=dead_worker state=working task=1 subject=Recover worker-1 progress command=omx sparkshell --tmux-pane %41 --tail-lines 400');
@@ -1272,10 +1302,17 @@ describe('teamCommand status', () => {
         team_monitor_snapshot_path: `${wd}/.omx/state/team/pane-json-team/monitor-snapshot.json`,
         team_summary_snapshot_path: `${wd}/.omx/state/team/pane-json-team/summary-snapshot.json`,
         command: 'omx sparkshell --tmux-pane %41 --tail-lines 400',
+        native_command: 'omx-runtime capture-pane --pane-id %41 --tail-lines 400',
       }]);
       assert.equal(payload.panes?.leader_pane_id, '%30');
       assert.equal(payload.panes?.hud_pane_id, '%31');
       assert.deepEqual(payload.panes?.worker_panes, { 'worker-1': '%41' });
+      assert.equal(payload.panes?.runtime_hint, 'omx-runtime capture-pane --pane-id <pane-id> --tail-lines 400');
+      assert.deepEqual(payload.panes?.runtime_commands, {
+        leader: 'omx-runtime capture-pane --pane-id %30 --tail-lines 400',
+        hud: 'omx-runtime capture-pane --pane-id %31 --tail-lines 400',
+        'worker-1': 'omx-runtime capture-pane --pane-id %41 --tail-lines 400',
+      });
       assert.equal(payload.panes?.sparkshell_hint, 'omx sparkshell --tmux-pane <pane-id> --tail-lines 400');
       assert.deepEqual(payload.panes?.sparkshell_commands, {
         leader: 'omx sparkshell --tmux-pane %30 --tail-lines 400',
@@ -1285,6 +1322,12 @@ describe('teamCommand status', () => {
     } finally {
       console.log = originalLog;
       process.chdir(previousCwd);
+      if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof previousTeamLeaderCwd === 'string') process.env.OMX_TEAM_LEADER_CWD = previousTeamLeaderCwd;
+      else delete process.env.OMX_TEAM_LEADER_CWD;
+      if (typeof previousTeamWorker === 'string') process.env.OMX_TEAM_WORKER = previousTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
       await rm(wd, { recursive: true, force: true });
     }
   });
@@ -1318,9 +1361,12 @@ describe('teamCommand status', () => {
     }
   });
 
-  it('supports custom tail lines for generated sparkshell commands', async () => {
+  it('supports custom tail lines for generated sparkshell commands', { concurrency: false }, async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-status-tail-lines-'));
     const previousCwd = process.cwd();
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousTeamLeaderCwd = process.env.OMX_TEAM_LEADER_CWD;
+    const previousTeamWorker = process.env.OMX_TEAM_WORKER;
     const logs: string[] = [];
     const originalLog = console.log;
     try {
@@ -1347,18 +1393,26 @@ describe('teamCommand status', () => {
       console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
       await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'pane-tail-team', '--tail-lines', '600']));
       assert.match(logs.join('\n'), /inspect_worker-1: omx sparkshell --tmux-pane %51 --tail-lines 600/);
+      assert.match(logs.join('\n'), /inspect_native_worker-1: omx-runtime capture-pane --pane-id %51 --tail-lines 600/);
 
       logs.length = 0;
       await withoutTeamTestWorkerEnv(() => teamCommand(['status', 'pane-tail-team', '--json', '--tail-lines=550']));
       const payload = JSON.parse(logs.at(-1) ?? '{}') as {
         tail_lines?: number;
-        panes?: { sparkshell_commands?: Record<string, string> };
+        panes?: { sparkshell_commands?: Record<string, string>; runtime_commands?: Record<string, string> };
       };
       assert.equal(payload.tail_lines, 550);
       assert.equal(payload.panes?.sparkshell_commands?.['worker-1'], 'omx sparkshell --tmux-pane %51 --tail-lines 550');
+      assert.equal(payload.panes?.runtime_commands?.['worker-1'], 'omx-runtime capture-pane --pane-id %51 --tail-lines 550');
     } finally {
       console.log = originalLog;
       process.chdir(previousCwd);
+      if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof previousTeamLeaderCwd === 'string') process.env.OMX_TEAM_LEADER_CWD = previousTeamLeaderCwd;
+      else delete process.env.OMX_TEAM_LEADER_CWD;
+      if (typeof previousTeamWorker === 'string') process.env.OMX_TEAM_WORKER = previousTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
       await rm(wd, { recursive: true, force: true });
     }
   });
@@ -1407,7 +1461,7 @@ describe('teamCommand await', () => {
     }
   });
 
-  it('returns a dead-worker event for the prompt-launch smoke path instead of timing out', async () => {
+  it('returns a dead-worker event for the prompt-launch smoke path instead of timing out', { concurrency: false }, async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-await-prompt-dead-'));
     const binDir = join(wd, 'bin');
     const fakeCodexPath = join(binDir, 'codex');
@@ -1416,6 +1470,9 @@ describe('teamCommand await', () => {
     const previousTmux = process.env.TMUX;
     const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
     const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousTeamLeaderCwd = process.env.OMX_TEAM_LEADER_CWD;
+    const previousTeamWorker = process.env.OMX_TEAM_WORKER;
     const logs: string[] = [];
     const stderr: string[] = [];
     const originalLog = console.log;
@@ -1437,6 +1494,9 @@ process.on('SIGTERM', () => process.exit(0));
     try {
       process.chdir(wd);
       process.env.PATH = `${binDir}:${previousPath ?? ''}`;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      delete process.env.OMX_TEAM_LEADER_CWD;
+      delete process.env.OMX_TEAM_WORKER;
       delete process.env.TMUX;
       process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
       process.env.OMX_TEAM_WORKER_CLI = 'codex';
@@ -1478,11 +1538,17 @@ process.on('SIGTERM', () => process.exit(0));
       else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
       if (typeof previousWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = previousWorkerCli;
       else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof previousTeamLeaderCwd === 'string') process.env.OMX_TEAM_LEADER_CWD = previousTeamLeaderCwd;
+      else delete process.env.OMX_TEAM_LEADER_CWD;
+      if (typeof previousTeamWorker === 'string') process.env.OMX_TEAM_WORKER = previousTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('establishes Ralph-side linked state for real omx team ralph launches', async () => {
+  it('establishes Ralph-side linked state for real omx team ralph launches', { concurrency: false }, async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-team-ralph-link-'));
     const binDir = join(wd, 'bin');
     const fakeCodexPath = join(binDir, 'codex');
@@ -1491,6 +1557,9 @@ process.on('SIGTERM', () => process.exit(0));
     const previousTmux = process.env.TMUX;
     const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
     const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    const previousTeamLeaderCwd = process.env.OMX_TEAM_LEADER_CWD;
+    const previousTeamWorker = process.env.OMX_TEAM_WORKER;
 
     await mkdir(binDir, { recursive: true });
     await writeFile(
@@ -1506,6 +1575,9 @@ process.on('SIGTERM', () => process.exit(0));
     try {
       process.chdir(wd);
       process.env.PATH = `${binDir}:${previousPath ?? ''}`;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+      delete process.env.OMX_TEAM_LEADER_CWD;
+      delete process.env.OMX_TEAM_WORKER;
       delete process.env.TMUX;
       process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
       process.env.OMX_TEAM_WORKER_CLI = 'codex';
@@ -1544,6 +1616,12 @@ process.on('SIGTERM', () => process.exit(0));
       else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
       if (typeof previousWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = previousWorkerCli;
       else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof previousTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      if (typeof previousTeamLeaderCwd === 'string') process.env.OMX_TEAM_LEADER_CWD = previousTeamLeaderCwd;
+      else delete process.env.OMX_TEAM_LEADER_CWD;
+      if (typeof previousTeamWorker === 'string') process.env.OMX_TEAM_WORKER = previousTeamWorker;
+      else delete process.env.OMX_TEAM_WORKER;
       await rm(wd, { recursive: true, force: true });
     }
   });

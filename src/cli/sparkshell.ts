@@ -59,7 +59,7 @@ export function packagedSparkShellBinaryPath(
   platform: NodeJS.Platform = process.platform,
   arch: string = osArch(),
 ): string {
-  return join(packageRoot, 'bin', 'native', `${platform}-${arch}`, sparkshellBinaryName(platform));
+  return join(packageRoot, 'bin', 'rust', `${platform}-${arch}`, sparkshellBinaryName(platform));
 }
 
 export function repoLocalSparkShellBinaryPath(
@@ -73,7 +73,7 @@ export function nestedRepoLocalSparkShellBinaryPath(
   packageRoot = getPackageRoot(),
   platform: NodeJS.Platform = process.platform,
 ): string {
-  return join(packageRoot, 'native', 'omx-sparkshell', 'target', 'release', sparkshellBinaryName(platform));
+  return join(packageRoot, 'crates', 'omx-sparkshell', 'target', 'release', sparkshellBinaryName(platform));
 }
 
 export function resolveSparkShellBinaryPath(options: ResolveSparkShellBinaryPathOptions = {}): string {

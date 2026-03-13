@@ -10,7 +10,8 @@
   "scripts": {
     "build": "tsc",
     "build:explore": "cargo build -p omx-explore-harness",
-    "build:full": "npm run build && npm run build:explore:release && npm run build:sparkshell",
+    "build:full": "npm run build && npm run build:explore:release && npm run build:runtime && npm run build:sparkshell",
+    "build:runtime": "node scripts/build-runtime.mjs",
     "build:explore:release": "node scripts/build-explore-harness.js",
     "check:no-unused": "tsc -p tsconfig.no-unused.json",
     "clean:native-package-assets": "node scripts/cleanup-explore-harness.js",
@@ -47,6 +48,7 @@
     "prompts/",
     "templates/",
     "scripts/",
+    "scripts/build-runtime.mjs",
     "scripts/build-sparkshell.mjs",
     "scripts/smoke-packed-install.mjs",
     "scripts/test-sparkshell.mjs"

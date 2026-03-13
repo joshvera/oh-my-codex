@@ -121,6 +121,74 @@ describe('native asset helpers', () => {
     }
   });
 
+  it('hydrates the omx-runtime binary from the release manifest into the cache', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-native-runtime-hydrate-'));
+    const cacheDir = join(wd, 'cache');
+    const assetRoot = join(wd, 'assets');
+    try {
+      await mkdir(assetRoot, { recursive: true });
+      await writeFile(join(wd, 'package.json'), JSON.stringify({
+        version: '0.8.15',
+        repository: { url: 'git+https://github.com/Yeachan-Heo/oh-my-codex.git' },
+      }));
+
+      const stagingDir = join(wd, 'staging');
+      await mkdir(stagingDir, { recursive: true });
+      const binaryPath = join(stagingDir, 'omx-runtime');
+      await writeFile(binaryPath, '#!/bin/sh\necho runtime\n');
+      await chmod(binaryPath, 0o755);
+
+      const archivePath = join(assetRoot, 'omx-runtime-x86_64-unknown-linux-gnu.tar.gz');
+      const archive = spawnSync('tar', ['-czf', archivePath, '-C', stagingDir, 'omx-runtime'], { encoding: 'utf-8' });
+      assert.equal(archive.status, 0, archive.stderr || archive.stdout);
+      const archiveBuffer = await readFile(archivePath);
+
+      const manifest = {
+        version: '0.8.15',
+        tag: 'v0.8.15',
+        assets: [
+          {
+            product: 'omx-runtime',
+            version: '0.8.15',
+            platform: 'linux',
+            arch: 'x64',
+            archive: 'omx-runtime-x86_64-unknown-linux-gnu.tar.gz',
+            binary: 'omx-runtime',
+            binary_path: 'omx-runtime',
+            sha256: sha256(archiveBuffer),
+            size: archiveBuffer.length,
+            download_url: '',
+          },
+        ],
+      };
+
+      const server = await startStaticServer(assetRoot);
+      try {
+        manifest.assets[0].download_url = `${server.baseUrl}/${manifest.assets[0].archive}`;
+        await writeFile(join(assetRoot, 'native-release-manifest.json'), JSON.stringify(manifest, null, 2));
+
+        const hydrated = await hydrateNativeBinary('omx-runtime', {
+          packageRoot: wd,
+          env: {
+            OMX_NATIVE_MANIFEST_URL: `${server.baseUrl}/native-release-manifest.json`,
+            OMX_NATIVE_CACHE_DIR: cacheDir,
+          },
+          platform: 'linux',
+          arch: 'x64',
+        });
+
+        assert.equal(hydrated, resolveCachedNativeBinaryPath('omx-runtime', '0.8.15', 'linux', 'x64', {
+          OMX_NATIVE_CACHE_DIR: cacheDir,
+        }));
+        assert.equal(await readFile(hydrated!, 'utf-8'), '#!/bin/sh\necho runtime\n');
+      } finally {
+        await server.close();
+      }
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('returns undefined when the native release manifest is unavailable', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-native-hydrate-missing-manifest-'));
     try {

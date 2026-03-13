@@ -28,6 +28,16 @@ describe('error-handling warning guards', () => {
     assert.match(source, /failed to remove hook-derived watcher pid file/);
   });
 
+  it('routes watcher lifecycle through the native runtime by default when available', async () => {
+    const source = await readSource('src/cli/index.ts');
+
+    assert.match(source, /function shouldUseNativeWatchers\(cwd: string, env: NodeJS\.ProcessEnv = process\.env\)/);
+    assert.match(source, /resolveRuntimeBinaryPath\(\{ cwd, env: process\.env \}\)/);
+    assert.match(source, /'notify-fallback'/);
+    assert.match(source, /'hook-derived'/);
+    assert.match(source, /phase-1 runtime path requires omx-runtime/);
+  });
+
   it('replaces silent log-write catches with warning logs', async () => {
     const loggingSource = await readSource('src/hooks/extensibility/logging.ts');
     const dispatchSource = await readSource('src/hooks/extensibility/dispatcher.ts');
