@@ -56,27 +56,62 @@ describe('phase-1 runtime surface parity contracts', () => {
     assert.match(runtimeMainSource, /omx-runtime hud-watch \[--once\]/);
   });
 
-  it('keeps the watcher/notification lane mapped onto native notify-fallback, hook-derived, and reply-listener subcommands', () => {
+  it('keeps the watcher/notification lane mapped onto the exact TS watcher SSOT touchpoints and native operator subcommands', () => {
     const cliIndexSource = readSource('src', 'cli', 'index.ts');
     const replyListenerSource = readSource('src', 'notifications', 'reply-listener.ts');
     const watchersSource = readSource('crates', 'omx-runtime', 'src', 'watchers.rs');
+    const replyListenerNativeSource = readSource('crates', 'omx-runtime', 'src', 'reply_listener.rs');
     const runtimeMainSource = readSource('crates', 'omx-runtime', 'src', 'main.rs');
 
-    assert.match(cliIndexSource, /spawn\(\s*resolveRuntimeBinaryPath\(\{ cwd, env: process\.env \}\),\s*\[\s*'notify-fallback'/m);
-    assert.match(cliIndexSource, /spawn\(\s*resolveRuntimeBinaryPath\(\{ cwd, env: process\.env \}\),\s*\[\s*'hook-derived'/m);
+    assert.match(
+      cliIndexSource,
+      /spawn\(\s*resolveRuntimeBinaryPath\(\{ cwd, env: process\.env \}\),\s*\[\s*'notify-fallback',\s*'--cwd',\s*cwd,\s*'--notify-script',\s*notifyScript,\s*'--pid-file',\s*pidPath,\s*'--parent-pid',\s*String\(process\.pid\)/m,
+    );
+    assert.match(
+      cliIndexSource,
+      /process\.env\.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS\s*\?\s*\['--max-lifetime-ms',\s*process\.env\.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS\]/m,
+    );
+    assert.match(
+      cliIndexSource,
+      /spawn\(\s*resolveRuntimeBinaryPath\(\{ cwd, env: process\.env \}\),\s*\[\s*'hook-derived',\s*'--cwd',\s*cwd,\s*'--pid-file',\s*pidPath/m,
+    );
     assert.match(cliIndexSource, /spawnSync\(runtimeBinaryPath, \['notify-fallback', '--once', '--cwd', cwd, '--notify-script', notifyScript\]/);
     assert.match(cliIndexSource, /spawnSync\(runtimeBinaryPath, \['hook-derived', '--once', '--cwd', cwd\]/);
 
-    assert.match(replyListenerSource, /resolveRuntimeBinaryPath/);
+    assert.match(replyListenerSource, /resolveRuntimeBinaryPath\(\{ cwd: process\.cwd\(\), env: process\.env \}\)/);
+    assert.match(replyListenerSource, /\["reply-listener", \.\.\.args\]/);
+    assert.match(replyListenerSource, /\["reply-listener"\]/);
+    assert.match(replyListenerSource, /createMinimalDaemonEnv\(\)/);
     assert.match(replyListenerSource, /native reply-listener runtime unavailable/);
 
     assert.match(watchersSource, /pub fn run_notify_fallback/);
     assert.match(watchersSource, /pub fn run_hook_derived/);
+    assert.match(watchersSource, /"--notify-script" if allow_notify_script/);
+    assert.match(watchersSource, /"--parent-pid"/);
+    assert.match(watchersSource, /"--max-lifetime-ms"/);
     assert.match(watchersSource, /failed writing pid-file/);
 
-    assert.match(runtimeMainSource, /Some\("notify-fallback"\) => watchers::run_notify_fallback\(&args\[1\.\.\]\)/);
-    assert.match(runtimeMainSource, /Some\("hook-derived"\) => watchers::run_hook_derived\(&args\[1\.\.\]\)/);
-    assert.match(runtimeMainSource, /Some\("reply-listener"\) => reply_listener::run_reply_listener\(&args\[1\.\.\]\)/);
+    for (const marker of [
+      /Some\("reply-listener"\) => reply_listener::run_reply_listener\(&args\[1\.\.\]\)/,
+      /Some\("notify-fallback"\) => watchers::run_notify_fallback\(&args\[1\.\.\]\)/,
+      /Some\("hook-derived"\) => watchers::run_hook_derived\(&args\[1\.\.\]\)/,
+      /omx-runtime reply-listener/,
+      /omx-runtime notify-fallback \[--once\] --cwd <path> \[--notify-script <path>\] \[--pid-file <path>\]/,
+      /omx-runtime hook-derived \[--once\] --cwd <path> \[--pid-file <path>\]/,
+    ]) {
+      assert.match(runtimeMainSource, marker);
+    }
+
+    for (const marker of [
+      /Some\("--once"\) => start_reply_listener\(true\)/,
+      /Some\("status"\) => status_reply_listener\(\)/,
+      /Some\("stop"\) => stop_reply_listener\(\)/,
+      /Some\("discord-fetch"\) => discord_fetch_command\(\)/,
+      /Some\("lookup-message"\) => lookup_message_command\(&args\[1\.\.\]\)/,
+      /Some\("inject-reply"\) => inject_reply_command\(&args\[1\.\.\]\)/,
+    ]) {
+      assert.match(replyListenerNativeSource, marker);
+    }
   });
 
   it('keeps the MCP/CLI worker boundary mapped to claim-safe team api operations without worker-side workingDirectory usage', () => {
