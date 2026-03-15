@@ -41,4 +41,21 @@ describe('TS→Rust parity lanes doc contract', () => {
     assert.match(doc, /Unsafe statements/);
     assert.match(doc, /Recommended next review order/);
   });
+
+  it('keeps the parity doc and topology source aligned on bounded ownership claims', () => {
+    const parityDoc = read('docs/reference/ts-rust-parity-lanes.md');
+    const topologySource = read('crates/omx-runtime/src/topology.rs');
+
+    assert.match(parityDoc, /expired-claim reclaim, ready-work rebalance, mailbox-delivery state tracking, structured verification-evidence gating, monitor snapshot persistence, and bounded linked-Ralph terminal-state sync/i);
+    assert.match(parityDoc, /no full shutdown request \/ worker-ACK \/ linked-Ralph event parity/i);
+
+    assert.match(topologySource, /guarded hud-watch launch seam/);
+    assert.match(topologySource, /bounded monitor\/shutdown slices/);
+    assert.match(topologySource, /TypeScript SSOT/);
+    assert.match(topologySource, /parity-incomplete relative to the TypeScript watcher scripts/);
+
+    const ownershipRowsBlock = topologySource.match(/const OWNERSHIP_ROWS:[\s\S]*?\];/)?.[0] ?? '';
+    assert.doesNotMatch(ownershipRowsBlock, /Rust-native team lifecycle, polling, stale-worker detection, and shutdown ownership\./);
+    assert.doesNotMatch(ownershipRowsBlock, /Fallback watcher, derived watcher, and reply polling loops move behind one native lifecycle owner\./);
+  });
 });

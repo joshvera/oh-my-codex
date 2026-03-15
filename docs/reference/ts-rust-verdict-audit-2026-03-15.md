@@ -42,7 +42,7 @@ TypeScript remains the behavioral SSOT. Rust owns several execution boundaries a
 - Rust evidence: `crates/omx-runtime/src/main.rs:30`, `crates/omx-runtime/src/main.rs:39`, `crates/omx-runtime/src/topology.rs:1`
 - Strongest Rust-owned slice: native command surface and binary resolution/spawn boundary are explicit and test-backed.
 - Highest-confidence remaining gap: boundary migration is ahead of behavioral migration, so topology/ownership statements must not be read as full parity claims.
-- Doc truthfulness: stale-conservative at most; not over-claiming full parity.
+- Doc truthfulness: truthful after the bounded-ownership refresh in `docs/reference/ts-rust-parity-lanes.md` and `crates/omx-runtime/src/topology.rs`.
 
 ## Verification
 - `npm run build -- --pretty false` — PASS

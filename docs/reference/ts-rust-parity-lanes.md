@@ -28,14 +28,12 @@ A review-only parity map for the current hybrid runtime. TypeScript remains the 
 - `src/mcp/team-server.ts:327-333` — MCP now spawns `omx-runtime runtime-run` at the runtime boundary.
 
 ### Verified gap summary
-Rust owns the launch seam, but does **not** yet match TS lifecycle semantics. The native startup/config path already persists `team_state_root`, `workspace_mode`, worker `role`, lifecycle profile, and bounded monitor metadata; however the native monitor/shutdown path is still materially narrower than `src/team/runtime.ts`:
+Rust owns the launch seam and now covers a stronger bounded lifecycle slice than the earlier cutover docs: the native startup/config path persists `team_state_root`, `workspace_mode`, worker `role`, lifecycle profile, and bounded monitor metadata, while the native monitor path also performs expired-claim reclaim, ready-work rebalance, mailbox-delivery state tracking, structured verification-evidence gating, monitor snapshot persistence, and bounded linked-Ralph terminal-state sync. Even so, the native runtime still does **not** yet match full `src/team/runtime.ts` lifecycle semantics:
 - no leader-session conflict parity,
 - no full worktree provisioning / detached-trigger parity,
 - no worker instruction-file / model-instruction parity,
-- no mailbox delivery / dispatch receipt parity,
-- no rebalance parity,
-- no structured verification evidence gate parity,
-- no full linked-Ralph shutdown/event parity beyond bounded terminal-state sync.
+- no full startup dispatch retry / readiness-evidence parity,
+- no full shutdown request / worker-ACK / linked-Ralph event parity.
 
 ### Cutover guidance
 Treat `runtime-run` as **native-owned but parity-incomplete**. Safe claim: launch boundary migrated. Unsafe claim: full team lifecycle parity.
@@ -118,7 +116,7 @@ Safe claim: guarded watcher/reply launch path is native-aware. Unsafe claim: wat
 ### Rust ownership today
 - `src/mcp/team-server.ts:327-333` maps MCP `omx_run_team_start` into `omx-runtime runtime-run`.
 - `src/cli/runtime-native.ts:40,62,84,87,117,135,147` maps packaged/runtime binary resolution for `omx-runtime` command use.
-- `crates/omx-runtime/src/topology.rs` explicitly documents the intended Phase 1 ownership model: one native launcher for launcher boundary, HUD, team supervision, pane observation, watcher loops, and `.omx/state` writing.
+- `crates/omx-runtime/src/topology.rs` explicitly documents the Phase 1 ownership cut line using bounded language: native launcher boundary plus partial runtime/HUD/watcher ownership without claiming full behavioral parity.
 
 ### Verified gap summary
 The boundary map is clear: **CLI/MCP entry semantics are still TS-defined**, while selected execution surfaces are already native. This means parity review must separate:

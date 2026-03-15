@@ -7,12 +7,12 @@ const OWNERSHIP_ROWS: [(&str, &str, &str); 6] = [
     (
         "hud_watch_render",
         "omx-runtime hud",
-        "Rust-native HUD replaces node ... hud --watch launch paths.",
+        "Rust owns the guarded hud-watch launch seam; TypeScript still owns full HUD state/render behavior.",
     ),
     (
         "team_supervision",
         "omx-runtime supervisor",
-        "Rust-native team lifecycle, polling, stale-worker detection, and shutdown ownership.",
+        "Rust owns runtime-run startup plus bounded monitor/shutdown slices, but full lifecycle parity still lives in the TypeScript SSOT.",
     ),
     (
         "pane_observation",
@@ -22,12 +22,12 @@ const OWNERSHIP_ROWS: [(&str, &str, &str); 6] = [
     (
         "watcher_loops",
         "omx-runtime supervisor",
-        "Fallback watcher, derived watcher, and reply polling loops move behind one native lifecycle owner.",
+        "Reply-listener owns a meaningful native slice, but fallback/derived watcher behavior remains parity-incomplete relative to the TypeScript watcher scripts.",
     ),
     (
         "state_contract",
         ".omx/state",
-        "Phase 1 preserves existing state roots where possible; native owner becomes the writer/observer of record.",
+        "Phase 1 preserves existing state roots where possible; native code is a bounded writer/observer of record without implying complete behavioral cutover.",
     ),
 ];
 
@@ -79,5 +79,16 @@ mod tests {
         let output = phase1_topology_json();
         assert!(output.contains("\"surface\":\"team_supervision\""));
         assert!(output.contains("\"decision\":\"single-native-launcher\""));
+    }
+
+    #[test]
+    fn topology_text_uses_bounded_truthful_claims() {
+        let output = phase1_topology_text();
+        assert!(output.contains("bounded monitor/shutdown slices"));
+        assert!(output.contains("TypeScript SSOT"));
+        assert!(output.contains("guarded hud-watch launch seam"));
+        assert!(output.contains("parity-incomplete"));
+        assert!(!output.contains("Rust-native team lifecycle, polling, stale-worker detection, and shutdown ownership."));
+        assert!(!output.contains("Fallback watcher, derived watcher, and reply polling loops move behind one native lifecycle owner."));
     }
 }

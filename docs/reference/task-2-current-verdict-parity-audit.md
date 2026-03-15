@@ -10,7 +10,7 @@ Worker: worker-2 (verifier)
   - `crates/omx-runtime/src/runtime_run.rs:1029-1146` reclaims expired claims, rebalances work, gates terminal success on structured verification evidence, delivers mailbox notifications, writes phase/monitor snapshots, and syncs linked-Ralph terminal state.
 - Highest-confidence remaining gap:
   - TS still owns leader-session conflict and worktree / role-instruction bootstrap semantics: `src/team/runtime.ts:751-798, 855-906` vs Rust startup templates pinned to `"workspace_mode":"single"` in `crates/omx-runtime/src/runtime_run.rs:445,464,553,573`.
-- Docs status: stale-conservative
+- Docs status: truthful after the Phase 1 bounded-lifecycle wording refresh in `docs/reference/ts-rust-parity-lanes.md`
   - `docs/reference/ts-rust-parity-lanes.md:32-38` still says Rust lacks mailbox delivery, rebalance, structured verification gate, and linked-Ralph shutdown/event parity, but live Rust monitor code now implements bounded versions of those behaviors.
 
 ## Lane 2 — team runtime / tmux control-plane parity
@@ -46,8 +46,8 @@ Worker: worker-2 (verifier)
   - `src/cli/runtime-native.ts:87-153` owns runtime-binary resolution / hydration.
   - `src/team/api-interop.ts:89-125` defines claim-safe worker lifecycle operations used by the worker protocol.
 - Highest-confidence remaining gap:
-  - Boundary mapping is clear, but truthfulness is mixed: `crates/omx-runtime/src/topology.rs:13-25` still says Rust owns team lifecycle / watcher loops broadly, which overstates actual behavior relative to live parity gaps in lanes 1-4.
-- Docs status: stale-overclaiming
+  - Boundary mapping is now truthful, but behavioral migration still lags boundary migration; topology/docs must keep distinguishing bounded native ownership from full parity across runtime, HUD, and watcher lanes.
+- Docs status: truthful after narrowing `crates/omx-runtime/src/topology.rs` to bounded ownership claims
 
 ## Verification
 - `npm run build -- --pretty false` — PASS
