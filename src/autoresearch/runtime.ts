@@ -129,7 +129,7 @@ interface AutoresearchInstructionLedgerSummary {
 }
 
 const AUTORESEARCH_RESULTS_HEADER = 'iteration\tcommit\tpass\tscore\tstatus\tdescription\n';
-const AUTORESEARCH_WORKTREE_EXCLUDES = ['results.tsv', 'run.log', 'node_modules'];
+const AUTORESEARCH_WORKTREE_EXCLUDES = ['results.tsv', 'run.log', 'node_modules', '.omx/'];
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -246,7 +246,9 @@ function isAllowedRuntimeDirtyLine(line: string): boolean {
   const trimmed = line.trim();
   if (trimmed.length < 4) return false;
   const path = trimmed.slice(3).trim();
-  return trimmed.startsWith('?? ') && AUTORESEARCH_WORKTREE_EXCLUDES.includes(path);
+  return trimmed.startsWith('?? ') && AUTORESEARCH_WORKTREE_EXCLUDES.some((exclude) => exclude.endsWith('/')
+    ? path.startsWith(exclude) || path === exclude.slice(0, -1)
+    : path === exclude);
 }
 
 export function assertResetSafeWorktree(worktreePath: string): void {
