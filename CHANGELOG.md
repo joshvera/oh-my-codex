@@ -17,7 +17,6 @@ All notable changes to this project are documented in this file.
 - **Autoresearch novice deep-interview intake bridge** — autoresearch can now route novice users through the deep-interview intake flow before launching autonomous research. (PR [#906](https://github.com/Yeachan-Heo/oh-my-codex/pull/906))
 - **`omx cleanup` for orphaned MCP servers** — new cleanup command detects and removes orphaned MCP server processes. (PR [#901](https://github.com/Yeachan-Heo/oh-my-codex/pull/901), closes [#900](https://github.com/Yeachan-Heo/oh-my-codex/issues/900))
 - **Stale `/tmp` cleanup in `omx cleanup`** — cleanup now also removes stale temporary files from `/tmp`. (PR [#912](https://github.com/Yeachan-Heo/oh-my-codex/pull/912), closes [#908](https://github.com/Yeachan-Heo/oh-my-codex/issues/908))
-- **Ralphthon mode** — new marathon execution mode with watchdog failure notifications, state recovery, and structured PRD orchestrator. (PR [#880](https://github.com/Yeachan-Heo/oh-my-codex/pull/880))
 - **Autoresearch showcase hub** — added showcase index, runner script, and completed demos for adaptive sorting, latent subspace discovery, noisy bayesopt, and kaggle-style ML missions. (PRs [#884](https://github.com/Yeachan-Heo/oh-my-codex/pull/884))
 
 ### Changed
@@ -186,7 +185,6 @@ Generated from the latest merged `dev` runtime/model-default work and validated 
 - **Team runtime hardening across startup/worktree/idle-launch-arg paths** — includes the merged fixes from PRs [#696](https://github.com/Yeachan-Heo/oh-my-codex/pull/696), [#697](https://github.com/Yeachan-Heo/oh-my-codex/pull/697), [#700](https://github.com/Yeachan-Heo/oh-my-codex/pull/700), [#707](https://github.com/Yeachan-Heo/oh-my-codex/pull/707), [#708](https://github.com/Yeachan-Heo/oh-my-codex/pull/708), and [#711](https://github.com/Yeachan-Heo/oh-my-codex/pull/711).
 - **Release gate stability for setup refresh tests** — setup AGENTS overwrite coverage now stays non-interactive under test so the release gate no longer hangs on a model-upgrade prompt.
 
-
 ## [0.8.10] - 2026-03-09
 
 5 non-merge commits from `v0.8.9..dev`. Contributors: [@Yeachan-Heo](https://github.com/Yeachan-Heo), [@HaD0Yun](https://github.com/HaD0Yun).
@@ -309,7 +307,6 @@ Generated from the Gemini worker hotfix on `dev`, plus release-validation harden
 
 ### CI / Test
 - Hardened the notify-fallback watcher streaming test to wait for watcher readiness before asserting EOF-tail behavior during full-suite runs.
-
 
 ## [0.8.2] - 2026-03-06
 

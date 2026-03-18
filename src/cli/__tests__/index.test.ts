@@ -364,7 +364,6 @@ describe("commandOwnsLocalHelp", () => {
       "hooks",
       "hud",
       "ralph",
-      "ralphthon",
       "resume",
       "session",
       "sparkshell",
@@ -411,13 +410,6 @@ describe("resolveCliInvocation", () => {
   it("resolves autoresearch to autoresearch command", () => {
     assert.deepEqual(resolveCliInvocation(["autoresearch", "missions/demo"]), {
       command: "autoresearch",
-      launchArgs: [],
-    });
-  });
-
-  it("resolves ralphthon to ralphthon command", () => {
-    assert.deepEqual(resolveCliInvocation(["ralphthon", "--resume"]), {
-      command: "ralphthon",
       launchArgs: [],
     });
   });

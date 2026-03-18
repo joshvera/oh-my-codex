@@ -19,8 +19,6 @@
 - Contracts and runtime deslopped for clarity
 - ESM `__dirname` error and macOS test compatibility fixed
 
-### New: Ralphthon mode
-
 - Marathon execution mode with watchdog failure notifications, structured PRD orchestrator, and state recovery
 
 ### New: `omx cleanup`
@@ -42,7 +40,6 @@
 - feat: add AGENTS autonomy directive ([#883](https://github.com/Yeachan-Heo/oh-my-codex/pull/883))
 - feat(autoresearch): add novice deep-interview intake bridge ([#906](https://github.com/Yeachan-Heo/oh-my-codex/pull/906))
 - feat(cli): add omx cleanup for orphaned MCP servers ([#901](https://github.com/Yeachan-Heo/oh-my-codex/pull/901))
-- feat(cli): wire ralphthon watchdog launch flow ([#880](https://github.com/Yeachan-Heo/oh-my-codex/pull/880))
 
 ### Fixes
 - fix: bootstrap packed-install smoke deps in worktrees ([#919](https://github.com/Yeachan-Heo/oh-my-codex/pull/919), closes [#917](https://github.com/Yeachan-Heo/oh-my-codex/issues/917))
