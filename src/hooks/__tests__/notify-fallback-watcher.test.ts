@@ -312,6 +312,7 @@ describe('notify-fallback watcher', () => {
         kind: 'inbox',
         to_worker: 'worker-1',
         worker_index: 1,
+        pane_id: '%42',
         trigger_message: 'dispatch ping',
       }, wd);
 
@@ -470,6 +471,229 @@ describe('notify-fallback watcher', () => {
     }
   });
 
+  it('supports hot-core-only watcher runs by disabling explicit control-plane sidecars', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-hot-core-only-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state', 'team', 'dispatch-team'), { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+      const queued = await enqueueDispatchRequest('dispatch-team', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        trigger_message: 'dispatch ping',
+      }, wd);
+
+      await writeFile(join(wd, '.omx', 'state', 'team-state.json'), JSON.stringify({
+        active: true,
+        team_name: 'dispatch-team',
+        current_phase: 'team-exec',
+      }, null, 2));
+      await writeFile(join(wd, '.omx', 'state', 'hud-state.json'), JSON.stringify({
+        last_turn_at: new Date(Date.now() - 300_000).toISOString(),
+        turn_count: 3,
+      }, null, 2));
+      await writeFile(join(wd, '.omx', 'state', 'team', 'dispatch-team', 'config.json'), JSON.stringify({
+        name: 'dispatch-team',
+        tmux_session: 'omx-team-dispatch-team',
+        leader_pane_id: '%42',
+      }, null, 2));
+
+      const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--control-plane-actions', 'none'],
+        {
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+          },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
+      assert.equal(request?.status, 'pending');
+
+      const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+      const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+      assert.deepEqual(watcherState.control_plane_actions, []);
+      assert.equal(watcherState.dispatch_drain?.enabled, false);
+      assert.equal(watcherState.dispatch_drain?.run_count, 0);
+      assert.equal(watcherState.leader_nudge?.enabled, false);
+      assert.equal(watcherState.leader_nudge?.run_count, 0);
+
+      const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      assert.ok(!logEntries.some((entry: { type?: string }) => entry.type === 'dispatch_drain_tick'));
+      assert.ok(!logEntries.some((entry: { type?: string }) => entry.type === 'leader_nudge_tick'));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+
+
+  it('supports dispatch-only watcher runs without leader nudge sidecars', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dispatch-only-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    const captureFile = join(wd, 'capture.txt');
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state', 'team', 'dispatch-team'), { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeFile(captureFile, 'ready\n› ');
+
+      await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+      const queued = await enqueueDispatchRequest('dispatch-team', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        pane_id: '%42',
+        trigger_message: 'dispatch ping',
+      }, wd);
+
+      await writeFile(join(wd, '.omx', 'state', 'team-state.json'), JSON.stringify({
+        active: true,
+        team_name: 'dispatch-team',
+        current_phase: 'team-exec',
+      }, null, 2));
+      await writeFile(join(wd, '.omx', 'state', 'hud-state.json'), JSON.stringify({
+        last_turn_at: new Date(Date.now() - 300_000).toISOString(),
+        turn_count: 3,
+      }, null, 2));
+      await writeFile(join(wd, '.omx', 'state', 'team', 'dispatch-team', 'config.json'), JSON.stringify({
+        name: 'dispatch-team',
+        tmux_session: 'omx-team-dispatch-team',
+        leader_pane_id: '%42',
+      }, null, 2));
+
+      const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--control-plane-actions', 'dispatch_drain'],
+        {
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+            OMX_TEST_CAPTURE_FILE: captureFile,
+          },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
+      assert.ok(request);
+      assert.notEqual(request?.status, 'pending');
+
+      const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+      const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+      assert.deepEqual(watcherState.control_plane_actions, ['dispatch_drain']);
+      assert.equal(watcherState.dispatch_drain?.enabled, true);
+      assert.equal(watcherState.dispatch_drain?.run_count, 1);
+      assert.equal(watcherState.leader_nudge?.enabled, false);
+      assert.equal(watcherState.leader_nudge?.run_count, 0);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
+      assert.doesNotMatch(tmuxLog, /Team dispatch-team: leader stale/);
+
+      const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      assert.ok(logEntries.some((entry: { type?: string }) => entry.type === 'dispatch_drain_tick'));
+      assert.ok(!logEntries.some((entry: { type?: string }) => entry.type === 'leader_nudge_tick'));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to the default control-plane sidecars for invalid action selection', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-invalid-actions-'));
+    const fakeBinDir = join(wd, 'fake-bin');
+    const tmuxLogPath = join(wd, 'tmux.log');
+    const captureFile = join(wd, 'capture.txt');
+    try {
+      await mkdir(join(wd, '.omx', 'logs'), { recursive: true });
+      await mkdir(join(wd, '.omx', 'state', 'team', 'dispatch-team'), { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      await writeFile(captureFile, 'ready\n› ');
+
+      await initTeamState('dispatch-team', 'task', 'executor', 1, wd);
+      const queued = await enqueueDispatchRequest('dispatch-team', {
+        kind: 'inbox',
+        to_worker: 'worker-1',
+        worker_index: 1,
+        pane_id: '%42',
+        trigger_message: 'dispatch ping',
+      }, wd);
+
+      await writeFile(join(wd, '.omx', 'state', 'team-state.json'), JSON.stringify({
+        active: true,
+        team_name: 'dispatch-team',
+        current_phase: 'team-exec',
+      }, null, 2));
+      await writeFile(join(wd, '.omx', 'state', 'hud-state.json'), JSON.stringify({
+        last_turn_at: new Date(Date.now() - 300_000).toISOString(),
+        turn_count: 3,
+      }, null, 2));
+      await writeFile(join(wd, '.omx', 'state', 'team', 'dispatch-team', 'config.json'), JSON.stringify({
+        name: 'dispatch-team',
+        tmux_session: 'omx-team-dispatch-team',
+        leader_pane_id: '%42',
+      }, null, 2));
+
+      const watcherScript = new URL('../../../scripts/notify-fallback-watcher.js', import.meta.url).pathname;
+      const notifyHook = new URL('../../../scripts/notify-hook.js', import.meta.url).pathname;
+      const result = spawnSync(
+        process.execPath,
+        [watcherScript, '--once', '--cwd', wd, '--notify-script', notifyHook, '--control-plane-actions', 'bogus-action'],
+        {
+          encoding: 'utf-8',
+          env: {
+            ...process.env,
+            PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+            OMX_TEST_CAPTURE_FILE: captureFile,
+          },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+
+      const request = await readDispatchRequest('dispatch-team', queued.request.request_id, wd);
+      assert.ok(request);
+      assert.notEqual(request?.status, 'pending');
+
+      const watcherStatePath = join(wd, '.omx', 'state', 'notify-fallback-state.json');
+      const watcherState = JSON.parse(await readFile(watcherStatePath, 'utf-8'));
+      assert.deepEqual(watcherState.control_plane_actions, ['dispatch_drain', 'leader_nudge']);
+      assert.equal(watcherState.dispatch_drain?.enabled, true);
+      assert.equal(watcherState.dispatch_drain?.run_count, 1);
+      assert.equal(watcherState.leader_nudge?.enabled, true);
+      assert.equal(watcherState.leader_nudge?.run_count, 1);
+
+      const logPath = join(wd, '.omx', 'logs', `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+      const logEntries = (await readFile(logPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      assert.ok(logEntries.some((entry: { type?: string }) => entry.type === 'dispatch_drain_tick'));
+      const leaderNudgeEvent = logEntries.find((entry: { type?: string }) => entry.type === 'leader_nudge_tick');
+      assert.ok(leaderNudgeEvent, 'expected leader_nudge_tick visibility when default sidecars are selected');
+      assert.equal(leaderNudgeEvent.leader_only, true);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
   it('watcher retry does not retype when pre-capture still contains trigger', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-dispatch-cm-'));
     const fakeBinDir = join(wd, 'fake-bin');

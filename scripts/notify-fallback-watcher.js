@@ -88,6 +88,8 @@ const RALPH_CONTINUE_CADENCE_MS = 60_000;
 const RALPH_TERMINAL_PHASES = new Set(['complete', 'failed', 'cancelled']);
 const RALPHTHON_WATCHDOG_RESTART_LIMIT = 3;
 const RALPHTHON_WATCHDOG_RESTART_WINDOW_MS = 5 * 60 * 1000;
+const DEFAULT_CONTROL_PLANE_ACTIONS = ['dispatch_drain', 'leader_nudge'];
+const VALID_CONTROL_PLANE_ACTIONS = new Set(DEFAULT_CONTROL_PLANE_ACTIONS);
 
 const fileState = new Map();
 const seenTurnKeys = new Set();
@@ -140,6 +142,36 @@ let lastRalphthonWatchdog = {
 let ralphthonRestartWindowStartedAt = 0;
 let ralphthonRestartCount = 0;
 let ralphthonOrchestrator = null;
+
+function normalizeControlPlaneActions(raw) {
+  const normalized = safeString(raw).trim().toLowerCase();
+  if (!normalized) return [...DEFAULT_CONTROL_PLANE_ACTIONS];
+
+  const tokens = normalized
+    .split(',')
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+  if (tokens.length === 0) return [...DEFAULT_CONTROL_PLANE_ACTIONS];
+  if (tokens.length === 1 && tokens[0] === 'none') return [];
+
+  const selected = [];
+  for (const token of tokens) {
+    if (token === 'none') continue;
+    if (!VALID_CONTROL_PLANE_ACTIONS.has(token)) continue;
+    if (!selected.includes(token)) selected.push(token);
+  }
+
+  return selected.length > 0 ? selected : [...DEFAULT_CONTROL_PLANE_ACTIONS];
+}
+
+const controlPlaneActions = normalizeControlPlaneActions(
+  argValue('--control-plane-actions', process.env.OMX_NOTIFY_FALLBACK_CONTROL_PLANE_ACTIONS || '')
+);
+
+function hasControlPlaneAction(actionName) {
+  return controlPlaneActions.includes(actionName);
+}
 
 function eventLog(event) {
   return appendFile(logPath, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`).catch(() => {});
@@ -444,16 +476,17 @@ async function writeState(extra = {}) {
     max_lifetime_ms: maxLifetimeMs,
     tracked_files: fileState.size,
     seen_turns: seenTurnKeys.size,
+    control_plane_actions: controlPlaneActions,
     dispatch_drain: {
-      enabled: true,
       max_per_tick: dispatchTickMax,
       run_count: dispatchDrainRuns,
       ...lastDispatchDrain,
+      enabled: hasControlPlaneAction('dispatch_drain'),
     },
     leader_nudge: {
-      enabled: true,
       run_count: leaderNudgeRuns,
       ...lastLeaderNudge,
+      enabled: hasControlPlaneAction('leader_nudge'),
     },
     ralph_continue_steer: {
       ...lastRalphContinueSteer,
@@ -782,9 +815,24 @@ async function runDispatchDrainTick() {
   }
 }
 
-async function pumpTeamControlPlaneTick() {
-  await runDispatchDrainTick();
-  await runLeaderNudgeTick();
+const CONTROL_PLANE_ACTION_RUNNERS = {
+  dispatch_drain: runDispatchDrainTick,
+  leader_nudge: runLeaderNudgeTick,
+};
+
+async function runWatcherControlPlaneSidecarsTick() {
+  for (const actionName of controlPlaneActions) {
+    const runner = CONTROL_PLANE_ACTION_RUNNERS[actionName];
+    if (!runner) continue;
+    await runner();
+  }
+}
+
+async function runWatcherHotCoreTick() {
+  await ensureTrackedFiles();
+  await pollFiles();
+  await runRalphWatcherBehaviorTick();
+  await runRalphthonWatchdogTick();
 }
 
 
@@ -992,11 +1040,8 @@ async function runRalphthonWatchdogTick() {
 }
 
 async function runWatcherCycle() {
-  await ensureTrackedFiles();
-  await pollFiles();
-  await pumpTeamControlPlaneTick();
-  await runRalphWatcherBehaviorTick();
-  await runRalphthonWatchdogTick();
+  await runWatcherHotCoreTick();
+  await runWatcherControlPlaneSidecarsTick();
   await writeState();
 }
 
