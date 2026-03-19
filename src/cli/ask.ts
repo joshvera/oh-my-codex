@@ -152,8 +152,21 @@ export function resolveAskAdvisorScriptPath(
 ): string {
   const override = env[ASK_ADVISOR_SCRIPT_ENV]?.trim();
   if (override) {
-    return isAbsolute(override) ? override : join(packageRoot, override);
+    if (isAbsolute(override)) return override;
+
+    const direct = join(packageRoot, override);
+    if (existsSync(direct)) return direct;
+
+    if (override.startsWith('scripts/')) {
+      return join(packageRoot, 'dist', override);
+    }
+
+    return direct;
   }
+
+  const distPath = join(packageRoot, 'dist', 'scripts', 'run-provider-advisor.js');
+  if (existsSync(distPath)) return distPath;
+
   return join(packageRoot, 'scripts', 'run-provider-advisor.js');
 }
 

@@ -55,13 +55,13 @@ describe('runHudAuthorityTick', () => {
     const call = calls[0]!;
     assert.equal(call.nodePath, '/node');
     assert.deepEqual(call.args, [
-      '/pkg/scripts/notify-fallback-watcher.js',
+      '/pkg/dist/scripts/notify-fallback-watcher.js',
       '--once',
       '--authority-only',
       '--cwd',
       '/tmp/project',
       '--notify-script',
-      '/pkg/scripts/notify-hook.js',
+      '/pkg/dist/scripts/notify-hook.js',
       '--poll-ms',
       '75',
     ]);

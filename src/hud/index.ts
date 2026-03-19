@@ -129,18 +129,21 @@ export async function runWatchMode(
     }
     inFlight = true;
     try {
-      if (firstRender) {
-        dependencies.writeStdout('\x1b[2J\x1b[H');
-        firstRender = false;
-      } else {
-        dependencies.writeStdout('\x1b[H');
-      }
-      const config = await dependencies.readHudConfigFn(cwd);
-      const ctx = await dependencies.readAllStateFn(cwd, config);
-      const preset = flags.preset ?? config.preset;
-      const line = dependencies.renderHudFn(ctx, preset);
-      dependencies.writeStdout(line + '\x1b[K\n\x1b[J');
-      await dependencies.runAuthorityTickFn({ cwd });
+      do {
+        queued = false;
+        if (firstRender) {
+          dependencies.writeStdout('\x1b[2J\x1b[H');
+          firstRender = false;
+        } else {
+          dependencies.writeStdout('\x1b[H');
+        }
+        const config = await dependencies.readHudConfigFn(cwd);
+        const ctx = await dependencies.readAllStateFn(cwd, config);
+        const preset = flags.preset ?? config.preset;
+        const line = dependencies.renderHudFn(ctx, preset);
+        dependencies.writeStdout(line + '\x1b[K\n\x1b[J');
+        void dependencies.runAuthorityTickFn({ cwd }).catch(() => {});
+      } while (!stopped && queued);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       dependencies.writeStderr(`HUD watch render failed: ${message}\n`);
@@ -149,11 +152,6 @@ export async function runWatchMode(
       return;
     } finally {
       inFlight = false;
-    }
-
-    if (queued) {
-      queued = false;
-      await renderTick();
     }
   };
 

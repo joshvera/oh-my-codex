@@ -8,7 +8,6 @@ import {
   isPaneRunningShell,
   paneHasActiveTask,
   paneLooksReady,
-  resolveCodexPane,
 } from '../tmux-hook-engine.js';
 
 export function mapPaneInjectionReadinessReason(reason: any): any {
@@ -32,24 +31,6 @@ export async function evaluatePaneInjectionReadiness(paneTarget: any, {
       paneCurrentCommand: '',
       paneCapture: '',
     };
-  }
-
-  // Canonical bypass: if resolveCodexPane confirms this is a codex pane
-  // (via pane_start_command), skip all readiness guards. The pane IS running
-  // codex even though tmux may report cmd=sh (shell wrapper).
-  try {
-    if (resolveCodexPane() === target) {
-      return {
-        ok: true,
-        sent: false,
-        reason: 'ok',
-        paneTarget: target,
-        paneCurrentCommand: 'codex',
-        paneCapture: '',
-      };
-    }
-  } catch {
-    // Non-fatal: fall through to normal readiness checks
   }
 
   if (skipIfScrolling) {
