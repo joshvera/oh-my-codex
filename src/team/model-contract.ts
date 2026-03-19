@@ -176,6 +176,7 @@ export function resolveAgentDefaultModel(
   const normalized = agentType.trim().toLowerCase();
   if (normalized === '') return undefined;
   if (normalized.endsWith('-low')) return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
+  if (normalized === 'executor') return getMainDefaultModel(codexHomeOverride);
 
   switch (getAgent(normalized)?.modelClass) {
     case 'fast':

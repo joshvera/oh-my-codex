@@ -34,6 +34,10 @@ function getAgentRecommendedModel(
   agent: AgentDefinition,
   context: AgentsModelTableContext,
 ): string {
+  if (agent.name === 'executor') {
+    return context.frontierModel;
+  }
+
   switch (agent.modelClass) {
     case 'fast':
       return context.sparkModel;
@@ -107,7 +111,7 @@ export function buildAgentsModelTable(
       'Standard (subagent default)',
       context.subagentDefaultModel,
       'high',
-      'Default standard-capability model for installable executors and specialists unless a role is explicitly frontier or spark.',
+      'Default standard-capability model for installable specialists and secondary worker lanes unless a role is explicitly frontier or spark.',
     ),
     ...Object.values(definitions).map((agent) =>
       buildTableRow(

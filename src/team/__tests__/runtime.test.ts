@@ -211,12 +211,12 @@ describe('runtime', () => {
     }
   });
 
-  it('resolveWorkerLaunchArgsFromEnv injects the standard default model for standard agent types', () => {
+  it('resolveWorkerLaunchArgsFromEnv injects the frontier default model for executor workers', () => {
     const args = resolveWorkerLaunchArgsFromEnv(
       { OMX_TEAM_WORKER_LAUNCH_ARGS: '--no-alt-screen' },
       'executor',
     );
-    assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-5.4-mini']);
+    assert.deepEqual(args, ['--no-alt-screen', '--model', 'gpt-5.4']);
   });
 
   it('resolveWorkerLaunchArgsFromEnv treats *-low aliases as low complexity', () => {
