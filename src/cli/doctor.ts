@@ -14,6 +14,7 @@ import { getCatalogExpectations } from './catalog-contract.js';
 import { parse as parseToml } from '@iarna/toml';
 import { resolvePackagedExploreHarnessCommand, EXPLORE_BIN_ENV } from './explore.js';
 import { getPackageRoot } from '../utils/package.js';
+import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 
 interface DoctorOptions {
   verbose?: boolean;
@@ -204,6 +205,30 @@ async function collectTeamDoctorIssues(cwd: string): Promise<TeamDoctorIssue[]> 
   const lagThresholdMs = 60_000;
   const shutdownThresholdMs = 30_000;
   const leaderStaleThresholdMs = 180_000;
+
+  // Rust-first: if the runtime bridge is enabled, use Rust-authored readiness
+  // and authority as the semantic truth source for runtime health.
+  if (isBridgeEnabled()) {
+    const bridge = getDefaultBridge(stateDir);
+    const readiness = bridge.readReadiness();
+    const authority = bridge.readAuthority();
+    if (readiness && !readiness.ready) {
+      for (const reason of readiness.reasons) {
+        issues.push({
+          code: 'resume_blocker',
+          message: `runtime not ready: ${reason}`,
+          severity: 'fail',
+        });
+      }
+    }
+    if (authority?.stale) {
+      issues.push({
+        code: 'stale_leader',
+        message: `authority stale (owner: ${authority.owner ?? 'unknown'}): ${authority.stale_reason ?? 'unknown reason'}`,
+        severity: 'fail',
+      });
+    }
+  }
 
   const teamDirs: string[] = [];
   if (existsSync(teamsRoot)) {

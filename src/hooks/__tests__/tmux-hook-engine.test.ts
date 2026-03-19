@@ -13,7 +13,7 @@ import {
   buildSendKeysArgv,
   buildPaneCurrentCommandArgv,
   isPaneRunningShell,
-} from '../../../scripts/tmux-hook-engine.js';
+} from '../../scripts/tmux-hook-engine.js';
 
 describe('normalizeTmuxHookConfig', () => {
   it('returns safe disabled defaults for missing config', () => {

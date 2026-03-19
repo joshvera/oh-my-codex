@@ -10,6 +10,8 @@ import { execSync } from 'child_process';
 import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { omxStateDir } from '../utils/paths.js';
+import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
+import type { RuntimeSnapshot } from '../runtime/bridge.js';
 import { getReadScopedStatePaths } from '../mcp/state-paths.js';
 import type {
   RalphStateForHud,
@@ -238,5 +240,14 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
       readSessionState(cwd),
     ]);
 
-  return { version, gitBranch, ralph, ultrawork, autopilot, team, metrics, hudNotify, session };
+  // When the Rust runtime bridge is enabled, prefer Rust-authored snapshot
+  // for authority/backlog/readiness display over JS-inferred state.
+  let runtimeSnapshot: RuntimeSnapshot | null = null;
+  if (isBridgeEnabled()) {
+    const stateDir = omxStateDir(cwd);
+    const bridge = getDefaultBridge(stateDir);
+    runtimeSnapshot = bridge.readCompatFile<RuntimeSnapshot>('snapshot.json');
+  }
+
+  return { version, gitBranch, ralph, ultrawork, autopilot, team, metrics, hudNotify, session, runtimeSnapshot };
 }

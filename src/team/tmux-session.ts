@@ -15,7 +15,7 @@ import {
   paneHasActiveTask as sharedPaneHasActiveTask,
   paneIsBootstrapping as sharedPaneIsBootstrapping,
   paneLooksReady as sharedPaneLooksReady,
-} from '../../scripts/tmux-hook-engine.js';
+} from '../scripts/tmux-hook-engine.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
 import { classifySpawnError, resolveCommandPathForPlatform, spawnPlatformCommandSync } from '../utils/platform-command.js';
 

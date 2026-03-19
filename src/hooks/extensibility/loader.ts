@@ -37,8 +37,9 @@ export function hooksDir(cwd: string): string {
 
 export function isHookPluginsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = `${env[HOOK_PLUGIN_ENABLE_ENV] ?? ''}`.trim().toLowerCase();
-  if (!raw) return true;
-  return raw !== '0' && raw !== 'false' && raw !== 'no';
+  // Plugins are ON by default — only disable if explicitly opted out
+  if (raw === '0' || raw === 'false' || raw === 'no') return false;
+  return true;
 }
 
 export function resolveHookPluginTimeoutMs(

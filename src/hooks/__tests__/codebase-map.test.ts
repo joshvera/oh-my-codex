@@ -77,7 +77,7 @@ describe('generateCodebaseMap', () => {
   it('includes non-src top-level directories', async () => {
     await mkdir(join(tempDir, 'scripts'), { recursive: true });
     await writeFile(join(tempDir, 'scripts', 'notify-hook.js'), 'export function notify() {}');
-    await gitAdd(tempDir, 'scripts/notify-hook.js');
+    await gitAdd(tempDir, 'dist/scripts/notify-hook.js');
 
     const map = await generateCodebaseMap(tempDir);
     assert.ok(map.includes('scripts'), 'should include scripts directory');

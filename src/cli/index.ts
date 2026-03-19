@@ -2255,7 +2255,7 @@ async function startNotifyFallbackWatcher(
   const pidPath = notifyFallbackPidPath(cwd);
   const pkgRoot = getPackageRoot();
   const watcherScript = join(pkgRoot, "scripts", "notify-fallback-watcher.js");
-  const notifyScript = join(pkgRoot, "scripts", "notify-hook.js");
+  const notifyScript = join(pkgRoot, "dist", "scripts", "notify-hook.js");
   if (!existsSync(watcherScript) || !existsSync(notifyScript)) return;
 
   // Stop stale watcher from a previous run.
@@ -2467,7 +2467,7 @@ async function flushNotifyFallbackOnce(
   const { spawnSync } = await import("child_process");
   const pkgRoot = getPackageRoot();
   const watcherScript = join(pkgRoot, "scripts", "notify-fallback-watcher.js");
-  const notifyScript = join(pkgRoot, "scripts", "notify-hook.js");
+  const notifyScript = join(pkgRoot, "dist", "scripts", "notify-hook.js");
   if (!existsSync(watcherScript) || !existsSync(notifyScript)) return;
   spawnSync(
     process.execPath,

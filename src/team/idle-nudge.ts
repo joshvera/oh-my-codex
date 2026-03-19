@@ -12,7 +12,7 @@
  */
 
 import { execFile } from 'child_process';
-import { buildCapturePaneArgv } from '../../scripts/tmux-hook-engine.js';
+import { buildCapturePaneArgv } from '../scripts/tmux-hook-engine.js';
 import { paneLooksReady, paneHasActiveTask, sendToWorker } from './tmux-session.js';
 
 // ---------------------------------------------------------------------------

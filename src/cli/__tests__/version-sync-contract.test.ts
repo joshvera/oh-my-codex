@@ -13,13 +13,31 @@ describe('version sync contract', () => {
     const explore = TOML.parse(readFileSync(join(process.cwd(), 'crates', 'omx-explore', 'Cargo.toml'), 'utf-8')) as {
       package?: { version?: string | { workspace?: boolean } };
     };
+    const runtimeCore = TOML.parse(
+      readFileSync(join(process.cwd(), 'crates', 'omx-runtime-core', 'Cargo.toml'), 'utf-8'),
+    ) as { package?: { version?: string | { workspace?: boolean } } };
+    const mux = TOML.parse(readFileSync(join(process.cwd(), 'crates', 'omx-mux', 'Cargo.toml'), 'utf-8')) as {
+      package?: { version?: string | { workspace?: boolean } };
+    };
+    const runtime = TOML.parse(readFileSync(join(process.cwd(), 'native', 'omx-runtime', 'Cargo.toml'), 'utf-8')) as {
+      package?: { version?: string | { workspace?: boolean } };
+    };
     const sparkshell = TOML.parse(readFileSync(join(process.cwd(), 'native', 'omx-sparkshell', 'Cargo.toml'), 'utf-8')) as {
       package?: { version?: string | { workspace?: boolean } };
     };
 
     assert.equal(workspace.workspace?.package?.version, pkg.version);
-    assert.deepEqual(workspace.workspace?.members, ['crates/omx-explore', 'native/omx-sparkshell']);
+    assert.deepEqual(workspace.workspace?.members, [
+      'crates/omx-explore',
+      'crates/omx-mux',
+      'crates/omx-runtime-core',
+      'crates/omx-runtime',
+      'crates/omx-sparkshell',
+    ]);
     assert.deepEqual(explore.package?.version, { workspace: true });
+    assert.deepEqual(runtimeCore.package?.version, { workspace: true });
+    assert.deepEqual(mux.package?.version, { workspace: true });
+    assert.deepEqual(runtime.package?.version, { workspace: true });
     assert.deepEqual(sparkshell.package?.version, { workspace: true });
   });
 });

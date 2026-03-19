@@ -1524,7 +1524,7 @@ async function setupNotifyHook(
   pkgRoot: string,
   options: Pick<SetupOptions, "dryRun" | "verbose">,
 ): Promise<void> {
-  const hookScript = join(pkgRoot, "scripts", "notify-hook.js");
+  const hookScript = join(pkgRoot, "dist", "scripts", "notify-hook.js");
   if (!existsSync(hookScript)) {
     if (options.verbose)
       console.log("  Notify hook script not found, skipping.");

@@ -426,7 +426,7 @@ async function testTmuxHook(args: string[]): Promise<void> {
     console.log('Proceeding with placeholder target; notify-hook may log `invalid_config` skips.');
   }
   const pkgRoot = getPackageRoot();
-  const notifyHook = join(pkgRoot, 'scripts', 'notify-hook.js');
+  const notifyHook = join(pkgRoot, 'dist', 'scripts', 'notify-hook.js');
   if (!existsSync(notifyHook)) {
     throw new Error(`notify-hook.js not found at ${notifyHook}`);
   }

@@ -75,7 +75,7 @@ function getOmxTopLevelLines(
   existingConfig = "",
   modelOverride?: string,
 ): string[] {
-  const notifyHookPath = join(pkgRoot, "scripts", "notify-hook.js");
+  const notifyHookPath = join(pkgRoot, "dist", "scripts", "notify-hook.js");
   const escapedPath = escapeTomlString(notifyHookPath);
   const rootValues = parseRootKeyValues(existingConfig);
 

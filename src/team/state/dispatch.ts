@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { getDefaultBridge, isBridgeEnabled } from '../../runtime/bridge.js';
 
 export type TeamDispatchRequestKind = 'inbox' | 'mailbox' | 'nudge';
 export type TeamDispatchRequestStatus = 'pending' | 'notified' | 'delivered' | 'failed';
@@ -126,6 +127,18 @@ export async function enqueueDispatchRequest(
   }
   deps.validateWorkerName(requestInput.to_worker);
 
+  // Dual-write: Rust bridge (non-fatal) + TS file (canonical during cutover)
+  if (isBridgeEnabled()) {
+    try {
+      getDefaultBridge(deps.cwd).execCommand({
+        command: 'QueueDispatch',
+        request_id: 'pre-' + Date.now(),
+        target: requestInput.to_worker,
+        metadata: { kind: requestInput.kind, team_name: deps.teamName, worker_index: requestInput.worker_index, pane_id: requestInput.pane_id, trigger_message: requestInput.trigger_message, message_id: requestInput.message_id, inbox_correlation_key: requestInput.inbox_correlation_key, transport_preference: requestInput.transport_preference, fallback_allowed: requestInput.fallback_allowed },
+      });
+    } catch { /* bridge failure non-fatal */ }
+  }
+
   return await deps.withDispatchLock(deps.teamName, deps.cwd, async () => {
     const requests = await deps.readDispatchRequests(deps.teamName, deps.cwd);
     const existing = requests.find((req) => equivalentPendingDispatch(req, requestInput));
@@ -216,6 +229,9 @@ export async function markDispatchRequestNotified(
   patch: Partial<TeamDispatchRequest> = {},
   deps: DispatchDeps,
 ): Promise<TeamDispatchRequest | null> {
+  if (isBridgeEnabled()) {
+    try { getDefaultBridge(deps.cwd).execCommand({ command: 'MarkNotified', request_id: requestId, channel: patch.message_id ?? 'tmux' }); } catch {}
+  }
   const current = await readDispatchRequest(requestId, deps);
   if (!current) return null;
   if (current.status === 'notified' || current.status === 'delivered') return current;
@@ -227,8 +243,23 @@ export async function markDispatchRequestDelivered(
   patch: Partial<TeamDispatchRequest> = {},
   deps: DispatchDeps,
 ): Promise<TeamDispatchRequest | null> {
+  if (isBridgeEnabled()) {
+    try { getDefaultBridge(deps.cwd).execCommand({ command: 'MarkDelivered', request_id: requestId }); } catch {}
+  }
   const current = await readDispatchRequest(requestId, deps);
   if (!current) return null;
   if (current.status === 'delivered') return current;
   return await transitionDispatchRequest(requestId, current.status, 'delivered', patch, deps);
+}
+
+export async function markDispatchRequestFailed(
+  requestId: string,
+  reason: string,
+  deps: DispatchDeps,
+): Promise<void> {
+  if (isBridgeEnabled()) {
+    try { getDefaultBridge(deps.cwd).execCommand({ command: 'MarkFailed', request_id: requestId, reason }); } catch {}
+  }
+  // Fallback: delegate to existing transition when bridge disabled
+  await transitionDispatchRequest(requestId, 'pending', 'failed', { last_reason: reason }, deps);
 }

@@ -119,7 +119,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'check mailbox',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       const result = await mod.drainPendingTeamDispatch({
         cwd,
@@ -148,7 +148,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'check leader mailbox',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       const result = await mod.drainPendingTeamDispatch({
         cwd,
@@ -213,7 +213,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'check leader mailbox',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, injector: async () => ({ ok: true, reason: 'injected_for_test' }) });
       await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5, injector: async () => ({ ok: true, reason: 'injected_for_test' }) });
@@ -260,7 +260,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'Read .omx/state/team/alpha/mailbox/leader-fixed.json; worker-1 sent a new message. Reply with the next concrete step.',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       const result = await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5 });
       assert.equal(result.processed, 1);
@@ -292,7 +292,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'check mailbox',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       const result = await mod.drainPendingTeamDispatch({
         cwd,
@@ -324,7 +324,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'ping',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       await mod.drainPendingTeamDispatch({
         cwd,
@@ -355,7 +355,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'ping',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       // First tick: injector returns unconfirmed → should stay pending
       const result = await mod.drainPendingTeamDispatch({
@@ -384,7 +384,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'ping',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       const injector = async () => ({ ok: true, reason: 'tmux_send_keys_unconfirmed' });
       // Drain 3 times to exhaust max attempts (MAX_UNCONFIRMED_ATTEMPTS=3)
@@ -412,7 +412,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'ping',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       const result = await mod.drainPendingTeamDispatch({
         cwd,
@@ -436,7 +436,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'ping',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       await mod.drainPendingTeamDispatch({
         cwd,
@@ -484,7 +484,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'ping',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5 });
       await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5 });
@@ -543,7 +543,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'ping',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5 });
       await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5 });
@@ -598,7 +598,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'ping',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       const result = await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5 });
       assert.equal(result.processed, 0, 'must not mark notified when wide tail still shows trigger');
@@ -646,7 +646,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'ping',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       const result = await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5 });
       assert.equal(result.processed, 0);
@@ -683,7 +683,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'IND-123 only...',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       const result = await mod.drainPendingTeamDispatch({
         cwd,
@@ -725,7 +725,7 @@ describe('notify-hook team dispatch consumer', () => {
         trigger_message: 'IND-123 only: retry',
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       const injector = async () => {
         injectCount += 1;
@@ -767,7 +767,7 @@ describe('notify-hook team dispatch consumer', () => {
         fallback_allowed: false,
       }, cwd);
 
-      const modulePath = new URL('../../../scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
       const mod = await import(pathToFileURL(modulePath).href);
       const result = await mod.drainPendingTeamDispatch({
         cwd,

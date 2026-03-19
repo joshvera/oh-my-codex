@@ -65,6 +65,8 @@ export interface HudRenderContext {
   metrics: HudMetrics | null;
   hudNotify: HudNotifyState | null;
   session: SessionStateForHud | null;
+  /** Rust-authored runtime snapshot (present when bridge is enabled and snapshot.json exists). */
+  runtimeSnapshot?: import('../runtime/bridge.js').RuntimeSnapshot | null;
 }
 
 /** HUD preset names */

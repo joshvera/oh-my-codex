@@ -31,7 +31,7 @@ describe('notify-hook session-scoped iteration updates', () => {
 
       const testDir = dirname(fileURLToPath(import.meta.url));
       const repoRoot = join(testDir, '..', '..', '..');
-      const result = spawnSync(process.execPath, ['scripts/notify-hook.js', JSON.stringify(payload)], {
+      const result = spawnSync(process.execPath, ['dist/scripts/notify-hook.js', JSON.stringify(payload)], {
         cwd: repoRoot,
         encoding: 'utf-8',
         env: {
@@ -81,7 +81,7 @@ describe('notify-hook session-scoped iteration updates', () => {
 
       const testDir = dirname(fileURLToPath(import.meta.url));
       const repoRoot = join(testDir, '..', '..', '..');
-      const result = spawnSync(process.execPath, ['scripts/notify-hook.js', JSON.stringify(payload)], {
+      const result = spawnSync(process.execPath, ['dist/scripts/notify-hook.js', JSON.stringify(payload)], {
         cwd: repoRoot,
         encoding: 'utf-8',
         env: {
@@ -138,7 +138,7 @@ describe('notify-hook session-scoped iteration updates', () => {
 
       const testDir = dirname(fileURLToPath(import.meta.url));
       const repoRoot = join(testDir, '..', '..', '..');
-      const result = spawnSync(process.execPath, ['scripts/notify-hook.js', JSON.stringify(payload)], {
+      const result = spawnSync(process.execPath, ['dist/scripts/notify-hook.js', JSON.stringify(payload)], {
         cwd: repoRoot,
         encoding: 'utf-8',
         env: {
@@ -196,7 +196,7 @@ describe('notify-hook session-scoped iteration updates', () => {
 
       const testDir = dirname(fileURLToPath(import.meta.url));
       const repoRoot = join(testDir, '..', '..', '..');
-      const result = spawnSync(process.execPath, ['scripts/notify-hook.js', JSON.stringify(payload)], {
+      const result = spawnSync(process.execPath, ['dist/scripts/notify-hook.js', JSON.stringify(payload)], {
         cwd: repoRoot,
         encoding: 'utf-8',
         env: {

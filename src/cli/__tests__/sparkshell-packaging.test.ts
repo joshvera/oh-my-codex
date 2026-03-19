@@ -30,10 +30,10 @@ describe('sparkshell packaging scaffold', () => {
     const packagedBinaryRelativePath = join(`${platform()}-${arch()}`, binaryName);
     const packagedBinaryPath = join(stagedRoot, packagedBinaryRelativePath);
 
-    assert.deepEqual(pkg.bin, { omx: 'bin/omx.js' });
+    assert.deepEqual(pkg.bin, { omx: 'dist/cli/omx.js' });
     assert.equal(pkg.scripts?.['build:sparkshell'], 'node scripts/build-sparkshell.mjs');
     assert.equal(pkg.scripts?.['test:sparkshell'], 'node scripts/test-sparkshell.mjs');
-    assert.equal(pkg.files?.includes('bin/omx.js'), true, 'expected package files allowlist to include bin/omx.js');
+    assert.equal(pkg.files?.includes('dist/cli/omx.js'), true, 'expected package files allowlist to include bin/omx.js');
     assert.equal(pkg.files?.includes('bin/'), false, 'did not expect broad bin/ allowlist in package files');
     assert.equal(pkg.files?.includes('bin/native/'), false, 'did not expect package files to include bin/native/');
     assert.equal(pkg.files?.includes('scripts/build-sparkshell.mjs'), true);
