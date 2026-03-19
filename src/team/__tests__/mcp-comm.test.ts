@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile } from 'fs/promises';
 import { join } from 'path';
@@ -14,6 +14,17 @@ import {
   queueDirectMailboxMessage,
   queueBroadcastMailboxMessage,
 } from '../mcp-comm.js';
+
+const ORIGINAL_OMX_TEAM_STATE_ROOT = process.env.OMX_TEAM_STATE_ROOT;
+
+beforeEach(() => {
+  delete process.env.OMX_TEAM_STATE_ROOT;
+});
+
+afterEach(() => {
+  if (typeof ORIGINAL_OMX_TEAM_STATE_ROOT === 'string') process.env.OMX_TEAM_STATE_ROOT = ORIGINAL_OMX_TEAM_STATE_ROOT;
+  else delete process.env.OMX_TEAM_STATE_ROOT;
+});
 
 describe('mcp-comm', () => {
   it('queueInboxInstruction writes inbox before notifying', async () => {
