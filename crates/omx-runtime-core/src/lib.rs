@@ -272,7 +272,7 @@ impl fmt::Display for RuntimeSnapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuthoritySnapshot {
     pub owner: Option<String>,
     pub lease_id: Option<String>,
@@ -307,18 +307,6 @@ impl AuthoritySnapshot {
     }
 }
 
-impl Default for AuthoritySnapshot {
-    fn default() -> Self {
-        Self {
-            owner: None,
-            lease_id: None,
-            leased_until: None,
-            stale: false,
-            stale_reason: None,
-        }
-    }
-}
-
 impl fmt::Display for AuthoritySnapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let owner = self.owner.as_deref().unwrap_or("none");
@@ -333,7 +321,7 @@ impl fmt::Display for AuthoritySnapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BacklogSnapshot {
     pub pending: u64,
     pub notified: u64,
@@ -374,17 +362,6 @@ impl BacklogSnapshot {
     }
 }
 
-impl Default for BacklogSnapshot {
-    fn default() -> Self {
-        Self {
-            pending: 0,
-            notified: 0,
-            delivered: 0,
-            failed: 0,
-        }
-    }
-}
-
 impl fmt::Display for BacklogSnapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -395,7 +372,7 @@ impl fmt::Display for BacklogSnapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReplaySnapshot {
     pub cursor: Option<String>,
     pub pending_events: u64,
@@ -421,17 +398,6 @@ impl ReplaySnapshot {
 
     pub fn clear_deferred_leader_notification(&mut self) {
         self.deferred_leader_notification = false;
-    }
-}
-
-impl Default for ReplaySnapshot {
-    fn default() -> Self {
-        Self {
-            cursor: None,
-            pending_events: 0,
-            last_replayed_event_id: None,
-            deferred_leader_notification: false,
-        }
     }
 }
 
