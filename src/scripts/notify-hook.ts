@@ -36,7 +36,6 @@ import {
   pruneRecentTurns,
   readdir,
 } from './notify-hook/state-io.js';
-import { isLeaderStale, resolveLeaderStalenessThresholdMs } from './notify-hook/team-leader-nudge.js';
 import { syncLinkedRalphOnTeamTerminal } from './notify-hook/linked-sync.js';
 import { handleTmuxInjection } from './notify-hook/tmux-injection.js';
 import { maybeAutoNudge, resolveNudgePaneTarget } from './notify-hook/auto-nudge.js';
@@ -283,18 +282,6 @@ async function main() {
       // Non-critical
     }
   }
-
-  // 3.5. Pre-compute leader staleness BEFORE updating HUD state (used by nudge in step 6)
-  let preComputedLeaderStale = false;
-  if (!isTeamWorker) {
-    try {
-      const stalenessMs = resolveLeaderStalenessThresholdMs();
-      preComputedLeaderStale = await isLeaderStale(stateDir, stalenessMs, Date.now());
-    } catch {
-      // Non-critical
-    }
-  }
-
   // 4. Write HUD state summary for `omx hud` (lead session only)
   if (!isTeamWorker) {
     const hudStatePath = join(stateDir, 'hud-state.json');
