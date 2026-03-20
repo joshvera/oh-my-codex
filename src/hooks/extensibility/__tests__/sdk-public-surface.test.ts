@@ -27,7 +27,7 @@ describe('HookPluginSdk public surface', () => {
       const sdk = createHookPluginSdk({ cwd, pluginName: 'test', event: makeEvent() });
       assert.equal('state' in sdk, true);
       assert.equal('pluginState' in sdk, false);
-      assert.equal(Object.hasOwn(sdk, 'pluginState'), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(sdk, 'pluginState'), false);
       assert.equal(Reflect.get(sdk, 'pluginState'), undefined);
     } finally {
       await rm(cwd, { recursive: true, force: true });
