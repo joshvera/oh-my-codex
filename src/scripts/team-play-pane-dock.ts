@@ -17,6 +17,13 @@ interface XWindowGeometry {
   height: number;
 }
 
+interface FrameExtents {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
 interface PaneMetrics {
   paneLeft: number;
   paneTop: number;
@@ -129,6 +136,34 @@ function fitAspectWithinRect(rect: XWindowGeometry, logicalWidth: number, logica
   return { x, y, width, height };
 }
 
+function defaultFrameExtents(): FrameExtents {
+  return { left: 14, right: 14, top: 49, bottom: 17 };
+}
+
+function fitInnerWindowWithinOuterRect(
+  outerRect: XWindowGeometry,
+  logicalWidth: number,
+  logicalHeight: number,
+  extents: FrameExtents,
+): XWindowGeometry {
+  const innerBounds: XWindowGeometry = {
+    x: outerRect.x + extents.left,
+    y: outerRect.y + extents.top,
+    width: Math.max(320, outerRect.width - extents.left - extents.right),
+    height: Math.max(90, outerRect.height - extents.top - extents.bottom),
+  };
+  return fitAspectWithinRect(innerBounds, logicalWidth, logicalHeight);
+}
+
+function expandInnerRectToOuterRect(innerRect: XWindowGeometry, extents: FrameExtents): XWindowGeometry {
+  return {
+    x: innerRect.x - extents.left,
+    y: innerRect.y - extents.top,
+    width: innerRect.width + extents.left + extents.right,
+    height: innerRect.height + extents.top + extents.bottom,
+  };
+}
+
 function resolveTargetRect(terminalWindowId: string, paneId: string, logicalWidth: number, logicalHeight: number): XWindowGeometry | null {
   const terminal = readXWindowGeometry(terminalWindowId);
   const pane = readPaneMetrics(paneId);
@@ -154,6 +189,29 @@ function readRustDinoWindowIds(windowTitle: string): string[] {
     .map((line) => line.split(/\s+/)[0] ?? '')
     .filter((value) => /^0x[0-9a-f]+$/i.test(value))
     .sort((left, right) => Number.parseInt(right, 16) - Number.parseInt(left, 16));
+}
+
+function resolveObservedFrameExtents(windowTitle: string): FrameExtents {
+  const geometries = readRustDinoWindowIds(windowTitle)
+    .map((windowId) => readXWindowGeometry(windowId))
+    .filter((value): value is XWindowGeometry => value !== null)
+    .sort((left, right) => (right.width * right.height) - (left.width * left.height));
+  if (geometries.length < 2) return defaultFrameExtents();
+
+  const outer = geometries[0]!;
+  const inner = geometries[geometries.length - 1]!;
+  if (outer.width < inner.width || outer.height < inner.height) return defaultFrameExtents();
+
+  const extents = {
+    left: Math.max(0, inner.x - outer.x),
+    top: Math.max(0, inner.y - outer.y),
+    right: Math.max(0, (outer.x + outer.width) - (inner.x + inner.width)),
+    bottom: Math.max(0, (outer.y + outer.height) - (inner.y + inner.height)),
+  };
+  if (extents.top === 0 && extents.bottom === 0 && extents.left === 0 && extents.right === 0) {
+    return defaultFrameExtents();
+  }
+  return extents;
 }
 
 function applyWindowDock(windowId: string, rect: XWindowGeometry): void {
@@ -204,10 +262,14 @@ function main(): void {
     throw new Error(`missing built dino binary at ${binaryPath}`);
   }
 
+  const initialExtents = defaultFrameExtents();
+  const initialInnerRect = initialRect
+    ? fitInnerWindowWithinOuterRect(initialRect, options.logicalWidth, options.logicalHeight, initialExtents)
+    : null;
   const childEnv = {
     ...process.env,
-    DINO_WINDOW_WIDTH: String(initialRect?.width ?? options.logicalWidth),
-    DINO_WINDOW_HEIGHT: String(initialRect?.height ?? options.logicalHeight),
+    DINO_WINDOW_WIDTH: String(initialInnerRect?.width ?? options.logicalWidth),
+    DINO_WINDOW_HEIGHT: String(initialInnerRect?.height ?? options.logicalHeight),
   };
   const child = spawn(binaryPath, {
     cwd: options.gameCwd,
@@ -224,7 +286,9 @@ function main(): void {
       knownWindowId = readRustDinoWindowIds(options.windowTitle)[0] ?? null;
     }
     if (!knownWindowId) return;
-    applyWindowDock(knownWindowId, rect);
+    const extents = resolveObservedFrameExtents(options.windowTitle);
+    const innerRect = fitInnerWindowWithinOuterRect(rect, options.logicalWidth, options.logicalHeight, extents);
+    applyWindowDock(knownWindowId, expandInnerRectToOuterRect(innerRect, extents));
   }, 500);
 
   const stop = (code: number | null, signal: NodeJS.Signals | null): void => {
