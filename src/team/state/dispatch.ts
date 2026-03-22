@@ -127,18 +127,6 @@ export async function enqueueDispatchRequest(
   }
   deps.validateWorkerName(requestInput.to_worker);
 
-  // Dual-write: Rust bridge (non-fatal) + TS file (canonical during cutover)
-  if (isBridgeEnabled()) {
-    try {
-      getDefaultBridge(deps.cwd).execCommand({
-        command: 'QueueDispatch',
-        request_id: 'pre-' + Date.now(),
-        target: requestInput.to_worker,
-        metadata: { kind: requestInput.kind, team_name: deps.teamName, worker_index: requestInput.worker_index, pane_id: requestInput.pane_id, trigger_message: requestInput.trigger_message, message_id: requestInput.message_id, inbox_correlation_key: requestInput.inbox_correlation_key, transport_preference: requestInput.transport_preference, fallback_allowed: requestInput.fallback_allowed },
-      });
-    } catch { /* bridge failure non-fatal */ }
-  }
-
   return await deps.withDispatchLock(deps.teamName, deps.cwd, async () => {
     const requests = await deps.readDispatchRequests(deps.teamName, deps.cwd);
     const existing = requests.find((req) => equivalentPendingDispatch(req, requestInput));
@@ -161,6 +149,28 @@ export async function enqueueDispatchRequest(
 
     requests.push(request);
     await deps.writeDispatchRequests(deps.teamName, requests, deps.cwd);
+
+    if (isBridgeEnabled()) {
+      try {
+        getDefaultBridge(deps.cwd).execCommand({
+          command: 'QueueDispatch',
+          request_id: request.request_id,
+          target: requestInput.to_worker,
+          metadata: {
+            kind: requestInput.kind,
+            team_name: deps.teamName,
+            worker_index: requestInput.worker_index,
+            pane_id: requestInput.pane_id,
+            trigger_message: requestInput.trigger_message,
+            message_id: requestInput.message_id,
+            inbox_correlation_key: requestInput.inbox_correlation_key,
+            transport_preference: requestInput.transport_preference,
+            fallback_allowed: requestInput.fallback_allowed,
+          },
+        });
+      } catch { /* bridge failure non-fatal */ }
+    }
+
     return { request, deduped: false };
   });
 }

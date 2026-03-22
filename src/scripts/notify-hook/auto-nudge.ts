@@ -287,11 +287,42 @@ export async function capturePane(paneId, lines = 10) {
   }
 }
 
+async function resolveCodexPaneFromAnchor(anchorPane) {
+  const paneId = safeString(anchorPane).trim();
+  if (!paneId) return '';
+
+  try {
+    const sessionResult = await runProcess('tmux', ['display-message', '-t', paneId, '-p', '#S'], 2000);
+    const sessionName = safeString(sessionResult.stdout).trim();
+    if (!sessionName) return '';
+
+    const panesResult = await runProcess(
+      'tmux',
+      ['list-panes', '-s', '-t', sessionName, '-F', '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}'],
+      2000,
+    );
+    const panes = safeString(panesResult.stdout).trim().split('\n').filter(Boolean);
+    for (const line of panes) {
+      const [candidatePaneId, , rawStartCommand = ''] = line.split('\t');
+      const startCommand = safeString(rawStartCommand).toLowerCase();
+      if (!candidatePaneId) continue;
+      if (/\bomx\b.*\bhud\b.*--watch/i.test(startCommand)) continue;
+      if (startCommand.includes('codex')) return candidatePaneId;
+    }
+  } catch {
+    // Fall back to the anchored pane when session scanning is unavailable.
+  }
+
+  return '';
+}
+
 export async function resolveNudgePaneTarget(stateDir: any) {
   // Use canonical codex pane resolver — validates pane is running an agent, not a shell
   const { resolveCodexPane } = await import('../tmux-hook-engine.js');
   const codexPane = resolveCodexPane();
   if (codexPane) return codexPane;
+
+  let fallbackPane = '';
 
   try {
     const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
@@ -303,7 +334,11 @@ export async function resolveNudgePaneTarget(stateDir: any) {
         try {
           const state = JSON.parse(await readFile(path, 'utf-8'));
           if (state && state.active && state.tmux_pane_id) {
-            return safeString(state.tmux_pane_id);
+            const anchoredPane = safeString(state.tmux_pane_id).trim();
+            if (!anchoredPane) continue;
+            const upgradedPane = await resolveCodexPaneFromAnchor(anchoredPane);
+            if (upgradedPane) return upgradedPane;
+            if (!fallbackPane) fallbackPane = anchoredPane;
           }
         } catch {
           // skip malformed state
@@ -314,7 +349,7 @@ export async function resolveNudgePaneTarget(stateDir: any) {
     // Non-critical
   }
 
-  return '';
+  return fallbackPane;
 }
 
 export async function maybeAutoNudge({ cwd, stateDir, logsDir, payload }) {

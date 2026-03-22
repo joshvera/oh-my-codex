@@ -191,6 +191,106 @@ describe('notify-hook auto-nudge', () => {
     });
   });
 
+  it('auto-nudges from active mode state by upgrading an anchored shell pane to the sibling codex pane', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const codexHome = join(cwd, 'codex-home');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(stateDir, { recursive: true });
+      await mkdir(codexHome, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(codexHome, '.omx-config.json'), {
+        autoNudge: { enabled: true, delaySec: 0 },
+      });
+
+      await writeJson(join(stateDir, 'ralph-state.json'), {
+        active: true,
+        tmux_pane_id: '%99',
+      });
+
+      const fakeTmux = `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$format" == "#{pane_current_command}" && "$target" == "%99" ]]; then
+    echo "sh"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_current_command}" && "$target" == "%100" ]]; then
+    echo "node"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_start_command}" && "$target" == "%100" ]]; then
+    echo "codex --model gpt-5"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_in_mode}" && "$target" == "%100" ]]; then
+    echo "0"
+    exit 0
+  fi
+  if [[ "$format" == "#S" && "$target" == "%99" ]]; then
+    echo "devsess"
+    exit 0
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  target=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -t) target="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ "$target" == "devsess" ]]; then
+    printf "%%99\tsh\tbash\n%%100\tnode\tcodex --model gpt-5\n"
+    exit 0
+  fi
+  echo "%1 12345"
+  exit 0
+fi
+if [[ "$cmd" == "capture-pane" ]]; then
+  printf "How can I help?\n› "
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+exit 0
+`;
+      await writeFile(join(fakeBinDir, 'tmux'), fakeTmux);
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir, codexHome, {
+        'last-assistant-message': 'If you want, I can keep going from here.',
+      }, {
+        TMUX_PANE: '',
+      });
+      assert.equal(result.status, 0, `hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /display-message -t %99 -p #S/, 'should anchor off the active mode pane');
+      assert.match(tmuxLog, /send-keys -t %100 -l yes, proceed \[OMX_TMUX_INJECT\]/, 'should upgrade anchored shell pane to sibling codex pane');
+    });
+  });
+
   it('still auto-nudges in team-worker context using the worker state root', async () => {
     await withTempWorkingDir(async (cwd) => {
       const workerStateRoot = join(cwd, 'leader-state-root');
