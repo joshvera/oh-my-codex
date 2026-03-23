@@ -153,19 +153,10 @@ omx team shutdown <team-name>
 
 중요 규칙: 중단하는 경우가 아니라면 작업이 `in_progress` 상태인 동안 종료하지 마세요.
 
-### Ralph 정리 정책
+### Team shutdown policy
 
-팀이 ralph 모드(`omx team ralph ...`)로 실행될 때, 종료 정리는
-일반 경로와 다른 전용 정책을 적용합니다:
-
-| 동작 | 일반 팀 | Ralph 팀 |
-|---|---|---|
-| 실패 시 강제 종료 | `shutdown_gate_blocked` 발생 | 게이트를 우회하고 `ralph_cleanup_policy` 이벤트 기록 |
-| 자동 브랜치 삭제 | 롤백 시 worktree 브랜치 삭제 | 브랜치 보존 (`skipBranchDeletion`) |
-| 완료 로깅 | 표준 `shutdown_gate` 이벤트 | 작업 분석이 포함된 추가 `ralph_cleanup_summary` 이벤트 |
-
-Ralph 정책은 팀 모드 상태(`linked_ralph`)에서 자동 감지되거나
-`omx team shutdown <name> --ralph`로 명시적으로 전달할 수 있습니다.
+Use `omx team shutdown <team-name>` after the team reaches a terminal state.
+Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
 
 팀 워커를 위한 Worker CLI 선택:
 

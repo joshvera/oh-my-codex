@@ -510,7 +510,7 @@ describe('applyRalplanGate', () => {
       await mkdir(plansDir, { recursive: true });
       await writeFile(
         join(plansDir, 'prd-issue-831.md'),
-        '# Approved plan\n\nLaunch hint: omx team ralph 3:executor "Execute approved issue 831 plan"\n',
+        '# Approved plan\n\nLaunch hint: omx team 3:executor "Execute approved issue 831 plan"\n',
       );
       await writeFile(join(plansDir, 'test-spec-issue-831.md'), '# Test spec\n');
 
@@ -529,7 +529,7 @@ describe('applyRalplanGate', () => {
       await mkdir(plansDir, { recursive: true });
       await writeFile(
         join(plansDir, 'prd-issue-831.md'),
-        '# Approved plan\n\nLaunch hint: omx team ralph 3:executor "Execute approved issue 831 plan"\n',
+        '# Approved plan\n\nLaunch hint: omx team 3:executor "Execute approved issue 831 plan"\n',
       );
       await writeFile(join(plansDir, 'test-spec-issue-831.md'), '# Test spec\n');
 

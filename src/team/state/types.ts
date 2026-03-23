@@ -7,7 +7,7 @@ export interface TeamConfig {
   task: string;
   agent_type: string;
   worker_launch_mode: 'interactive' | 'prompt';
-  lifecycle_profile: 'default' | 'linked_ralph';
+  lifecycle_profile: 'default';
   worker_count: number;
   max_workers: number;
   workers: WorkerInfo[];
@@ -162,7 +162,7 @@ export interface TeamManifestV2 {
   leader: TeamLeader;
   policy: TeamPolicy;
   governance: TeamGovernance;
-  lifecycle_profile: 'default' | 'linked_ralph';
+  lifecycle_profile: 'default';
   permissions_snapshot: PermissionsSnapshot;
   tmux_session: string;
   worker_count: number;

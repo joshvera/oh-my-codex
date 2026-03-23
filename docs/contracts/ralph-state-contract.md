@@ -10,21 +10,11 @@ Ralph runtime state is stored at `.omx/state/{scope}/ralph-state.json` and MUST 
 - `current_phase: string` **(required while active)**
 - `started_at: ISO8601 string` **(required while active)**
 - `completed_at?: ISO8601 string`
-- Optional linkage fields: `linked_ultrawork`, `linked_ecomode`, `linked_team`, `linked_mode`, `linked_team_terminal_phase`, `linked_team_terminal_at`
+- Optional linkage fields: `linked_ultrawork`, `linked_ecomode`, `linked_mode`
 
-## Team-linked launch path guarantees
-
-When Ralph is launched through `omx team ralph ...`, the authoritative scope
-MUST reflect that linked launch from the start:
-
-- team state records `linked_ralph=true` and the resolved `team_name`
-- Ralph state records `active=true`, `linked_team=true`, `linked_mode='team'`,
-  and the same `team_name`
-- `linked_team_terminal_phase` and `linked_team_terminal_at` stay unset until
-  the linked team reaches a terminal phase
-
-This is a linked launch path over the shared team runtime, not a separate team
-state schema.
+Ralph remains a standalone mode. Other workflows may start Ralph later as an
+explicit follow-up, but there is no built-in `omx team ralph ...` linked launch
+path anymore.
 
 Legacy phase aliases may be normalized for compatibility, but persisted values MUST end in the frozen enum below.
 
@@ -61,7 +51,7 @@ starting
 |---|---|
 | `src/hud/state.ts` | Read session scope first when current session is known; fall back to root only when scoped file is absent. |
 | `src/mcp/trace-server.ts` | Build mode timeline from authoritative scope paths resolved via state-path helpers. |
-| `scripts/notify-hook.js` | Update lifecycle counters/sync only in the authoritative session scope (or root fallback), never all sessions. |
+| `scripts/notify-hook.js` | Update lifecycle counters only in the authoritative session scope (or root fallback), never all sessions. |
 | `src/hooks/agents-overlay.ts` | Summarize active modes from scope-preferred mode files (session overrides root). |
 | `src/cli/index.ts` (`status`/`cancel`) | Status and cancellation operate on scope-preferred mode files; cancellation does not mutate unrelated sessions. |
 

@@ -152,19 +152,10 @@ omx team shutdown <team-name>
 
 Önemli kural: İptal etmiyorsanız, görevler hâlâ `in_progress` durumundayken kapatmayın.
 
-### Ralph Temizlik Politikası
+### Team shutdown policy
 
-Bir takım ralph modunda çalıştığında (`omx team ralph ...`), kapatma temizliği
-normal yoldan farklı özel bir politika uygular:
-
-| Davranış | Normal takım | Ralph takımı |
-|---|---|---|
-| Başarısızlıkta zorla kapatma | `shutdown_gate_blocked` hatası verir | Kapıyı atlar, `ralph_cleanup_policy` olayını günlükler |
-| Otomatik dal silme | Geri almada worktree dallarını siler | Dalları korur (`skipBranchDeletion`) |
-| Tamamlanma günlükleme | Standart `shutdown_gate` olayı | Görev dökümü ile ek `ralph_cleanup_summary` olayı |
-
-Ralph politikası takım modu durumundan (`linked_ralph`) otomatik algılanır veya
-`omx team shutdown <name> --ralph` ile açıkça belirtilebilir.
+Use `omx team shutdown <team-name>` after the team reaches a terminal state.
+Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
 
 Takım çalışanları için Worker CLI seçimi:
 

@@ -1,6 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath } from 'node:path';
-import { readModeState } from '../modes/base.js';
 import { sendWorkerMessage, shutdownTeam } from './runtime.js';
 import {
   TEAM_NAME_SAFE_PATTERN,
@@ -981,12 +980,7 @@ export async function executeTeamApiOperation(
         const teamName = String(args.team_name || '').trim();
         if (!teamName) return { ok: false, operation, error: { code: 'invalid_input', message: 'team_name is required' } };
         const force = args.force === true;
-        const ralphFromState = await readModeState('team', cwd).then(
-          (state) => state?.active === true && state?.linked_ralph === true && state?.team_name === teamName,
-          () => false,
-        );
-        const ralph = args.ralph === true || ralphFromState;
-        await shutdownTeam(teamName, cwd, { force, ralph });
+        await shutdownTeam(teamName, cwd, { force });
         return { ok: true, operation, data: { team_name: teamName, cleanup_mode: 'shutdown' } };
       }
       case 'orphan-cleanup': {

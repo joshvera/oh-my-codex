@@ -11,7 +11,6 @@ import { classifyTaskSize } from '../hooks/task-size-detector.js';
 import { readApprovedExecutionLaunchHint } from '../planning/artifacts.js';
 import { routeTaskToRole } from '../team/role-router.js';
 import { allocateTasksToWorkers } from '../team/allocation-policy.js';
-import { ensureLinkedRalphModeState as ensureLinkedRalphBridgeState, runLinkedRalphBridge } from '../team/linked-ralph-bridge.js';
 import {
   buildFollowupStaffingPlan,
   resolveAvailableAgentTypes,
@@ -39,7 +38,6 @@ interface ParsedTeamArgs {
   explicitWorkerCount: boolean;
   task: string;
   teamName: string;
-  ralph: boolean;
 }
 
 
@@ -49,7 +47,6 @@ interface TeamFollowupContext {
   explicitWorkerCount: boolean;
   agentType?: string;
   explicitAgentType?: boolean;
-  ralph: boolean;
 }
 
 function readPersistedTeamFollowupState(cwd: string): {
@@ -60,7 +57,6 @@ function readPersistedTeamFollowupState(cwd: string): {
   agentType?: string;
   agent_types?: string;
   linkedRalph?: boolean;
-  linked_ralph?: boolean;
 } | null {
   const path = join(cwd, '.omx', 'state', 'team-state.json');
   if (!existsSync(path)) return null;
@@ -107,7 +103,6 @@ function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFoll
       explicitWorkerCount: true,
       agentType: approvedHint.agentType,
       explicitAgentType: approvedHint.agentType != null,
-      ralph: existingTeamState?.linked_ralph === true || existingTeamState?.linkedRalph === true || approvedHint.linkedRalph === true,
     };
   }
 
@@ -117,7 +112,6 @@ function resolveApprovedTeamFollowupContext(cwd: string, task: string): TeamFoll
     explicitWorkerCount: approvedHint.workerCount != null,
     agentType: approvedHint.agentType,
     explicitAgentType: approvedHint.agentType != null,
-    ralph: approvedHint.linkedRalph === true,
   };
 }
 
@@ -126,11 +120,11 @@ const DEFAULT_SPARKSHELL_TAIL_LINES = 400;
 const MIN_SPARKSHELL_TAIL_LINES = 100;
 const MAX_SPARKSHELL_TAIL_LINES = 1000;
 const TEAM_HELP = `
-Usage: omx team [ralph] [N:agent-type] "<task description>"
+Usage: omx team [N:agent-type] "<task description>"
        omx team status <team-name> [--json] [--tail-lines <100-1000>]
        omx team await <team-name> [--timeout-ms <ms>] [--after-event-id <id>] [--json]
        omx team resume <team-name>
-       omx team shutdown <team-name> [--force] [--ralph]
+       omx team shutdown <team-name> [--force]
        omx team api <operation> [--input <json>] [--json]
        omx team api --help
 
@@ -201,7 +195,7 @@ const TEAM_API_OPERATION_OPTIONAL_FIELDS: Partial<Record<TeamApiOperation, strin
   'create-task': ['owner', 'blocked_by', 'requires_code_change'],
   'update-task': ['subject', 'description', 'blocked_by', 'requires_code_change'],
   'claim-task': ['expected_version'],
-  'cleanup': ['force', 'ralph'],
+  'cleanup': ['force'],
   'transition-task-status': ['result', 'error'],
   'read-shutdown-ack': ['min_updated_at'],
   'write-worker-identity': [
@@ -1700,15 +1694,13 @@ function renderTeamPaneStatus(
 
 function parseTeamArgs(args: string[], cwd: string = process.cwd()): ParsedTeamArgs {
   const tokens = [...args];
-  let ralph = false;
   let workerCount = 3;
   let agentType = 'executor';
   let explicitAgentType = false;
   let explicitWorkerCount = false;
 
   if (tokens[0]?.toLowerCase() === 'ralph') {
-    ralph = true;
-    tokens.shift();
+    throw new Error('Deprecated usage: `omx team ralph ...` has been removed. Use `omx team ...` or run `omx ralph ...` separately.');
   }
 
   const first = tokens[0] || '';
@@ -1729,7 +1721,7 @@ function parseTeamArgs(args: string[], cwd: string = process.cwd()): ParsedTeamA
 
   const task = tokens.join(' ').trim();
   if (!task) {
-    throw new Error('Usage: omx team [ralph] [N:agent-type] "<task description>"');
+    throw new Error('Usage: omx team [N:agent-type] "<task description>"');
   }
 
   const followupContext = resolveApprovedTeamFollowupContext(cwd, task);
@@ -1743,11 +1735,10 @@ function parseTeamArgs(args: string[], cwd: string = process.cwd()): ParsedTeamA
       agentType = followupContext.agentType;
       explicitAgentType = followupContext.explicitAgentType === true;
     }
-    ralph = ralph || followupContext.ralph;
   }
 
   const teamName = sanitizeTeamName(slugifyTask(effectiveTask));
-  return { workerCount, agentType, explicitAgentType, explicitWorkerCount, task: effectiveTask, teamName, ralph };
+  return { workerCount, agentType, explicitAgentType, explicitWorkerCount, task: effectiveTask, teamName };
 }
 
 export function parseTeamStartArgs(args: string[]): ParsedTeamStartArgs {
@@ -2045,7 +2036,6 @@ async function ensureTeamModeState(
     await updateModeState('team', {
       task_description: parsed.task,
       current_phase: 'team-exec',
-      linked_ralph: parsed.ralph,
       team_name: parsed.teamName,
       agent_count: parsed.workerCount,
       agent_types: roleDistribution,
@@ -2053,16 +2043,12 @@ async function ensureTeamModeState(
       staffing_summary: staffingPlan.staffingSummary,
       staffing_allocations: staffingPlan.allocations,
     });
-    if (parsed.ralph) {
-      await ensureLinkedRalphModeState(parsed);
-    }
     return;
   }
 
   await startMode('team', parsed.task, 50);
   await updateModeState('team', {
     current_phase: 'team-exec',
-    linked_ralph: parsed.ralph,
     team_name: parsed.teamName,
     agent_count: parsed.workerCount,
     agent_types: roleDistribution,
@@ -2071,49 +2057,8 @@ async function ensureTeamModeState(
     staffing_allocations: staffingPlan.allocations,
   });
 
-  if (parsed.ralph) {
-    await ensureLinkedRalphModeState(parsed);
-  }
 }
 
-function isLinkedRalphProfile(
-  config: { lifecycle_profile?: unknown } | null | undefined,
-): boolean {
-  return config?.lifecycle_profile === 'linked_ralph';
-}
-
-async function ensureLinkedRalphModeState(parsed: ParsedTeamArgs): Promise<void> {
-  const existing = await readModeState('ralph').catch(() => null);
-  const nextPhase = existing?.active === true
-    && typeof existing.current_phase === 'string'
-    && !['complete', 'failed', 'cancelled'].includes(existing.current_phase)
-    ? existing.current_phase
-    : 'executing';
-
-  if (!existing?.active) {
-    await startMode('ralph', parsed.task, 50);
-  }
-
-  await updateModeState('ralph', {
-    active: true,
-    task_description: parsed.task,
-    current_phase: nextPhase,
-    completed_at: undefined,
-    linked_team: true,
-    linked_mode: 'team',
-    team_name: parsed.teamName,
-    linked_team_terminal_phase: undefined,
-    linked_team_terminal_at: undefined,
-  });
-}
-
-export function buildLeaderMonitoringHints(teamName: string): string[] {
-  const sanitized = sanitizeTeamName(teamName);
-  return [
-    `leader_check: omx team status ${sanitized}`,
-    `leader_loop_hint: while ON, keep checking state (example: sleep 30 && omx team status ${sanitized})`,
-  ];
-}
 
 async function renderStartSummary(runtime: TeamRuntime, staffingPlan?: FollowupStaffingPlan): Promise<void> {
   console.log(`Team started: ${runtime.teamName}`);
@@ -2144,7 +2089,15 @@ async function renderStartSummary(runtime: TeamRuntime, staffingPlan?: FollowupS
   }
 }
 
-export async function teamCommand(args: string[], options: TeamCliOptions = {}): Promise<void> {
+export function buildLeaderMonitoringHints(teamName: string): string[] {
+  const sanitized = sanitizeTeamName(teamName);
+  return [
+    `leader_check: omx team status ${sanitized}`,
+    `leader_loop_hint: while ON, keep checking state (example: sleep 30 && omx team status ${sanitized})`,
+  ];
+}
+
+export async function teamCommand(args: string[], _options: TeamCliOptions = {}): Promise<void> {
   const cwd = process.cwd();
   const parsedWorktree = parseWorktreeMode(args);
   const worktreeMode = resolveDefaultTeamWorktreeMode(parsedWorktree.mode);
@@ -2379,13 +2332,6 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
       console.log(`No resumable team found for ${name}`);
       return;
     }
-    const existingState = await readModeState('team').catch(() => null);
-    const persistedRalph = isLinkedRalphProfile(runtime.config);
-    const preservedRalph = persistedRalph || (
-      existingState?.active === true
-      && existingState?.team_name === runtime.teamName
-      && existingState?.linked_ralph === true
-    );
     await ensureTeamModeState({
       task: runtime.config.task,
       workerCount: runtime.config.worker_count,
@@ -2393,7 +2339,6 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
       explicitAgentType: false,
       explicitWorkerCount: false,
       teamName: runtime.teamName,
-      ralph: preservedRalph,
     });
     const availableAgentTypes = await resolveAvailableAgentTypes(cwd);
     const staffingPlan = buildFollowupStaffingPlan('team', runtime.config.task, availableAgentTypes, {
@@ -2406,20 +2351,9 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
 
   if (subcommand === 'shutdown') {
     const name = teamArgs[1];
-    if (!name) throw new Error('Usage: omx team shutdown <team-name> [--force] [--ralph]');
+    if (!name) throw new Error('Usage: omx team shutdown <team-name> [--force]');
     const force = teamArgs.includes('--force');
-    const ralphFlag = teamArgs.includes('--ralph');
-    const persistedConfig = await readTeamConfig(name, cwd).catch(() => null);
-    const ralphFromState = !ralphFlag
-      ? (
-        isLinkedRalphProfile(persistedConfig)
-        || await readModeState('team').then(
-          (s) => s?.active === true && s?.linked_ralph === true && s?.team_name === name,
-          () => false,
-        )
-      )
-      : false;
-    await shutdownTeam(name, cwd, { force, ralph: ralphFlag || ralphFromState });
+    await shutdownTeam(name, cwd, { force });
     await updateModeState('team', {
       active: false,
       current_phase: 'cancelled',
@@ -2458,26 +2392,9 @@ export async function teamCommand(args: string[], options: TeamCliOptions = {}):
     executionPlan.workerCount,
     tasks,
     cwd,
-    { worktreeMode, ralph: parsed.ralph },
+    { worktreeMode },
   );
 
   await ensureTeamModeState(effectiveParsed, tasks);
-  if (parsed.ralph) {
-    await ensureLinkedRalphBridgeState(parsed.task, parsed.teamName, cwd);
-  }
-  if (options.verbose) {
-    console.log(`linked_ralph=${parsed.ralph}`);
-  }
   await renderStartSummary(runtime, staffingPlan);
-  if (parsed.ralph) {
-    if (runtime.config.worker_launch_mode === 'prompt') {
-      return;
-    }
-    await runLinkedRalphBridge({
-      teamName: runtime.teamName,
-      task: parsed.task,
-      cwd,
-      log: (message) => console.log(message),
-    });
-  }
 }

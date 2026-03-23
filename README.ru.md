@@ -152,19 +152,10 @@ omx team shutdown <team-name>
 
 Важное правило: не завершайте работу, пока задачи находятся в состоянии `in_progress`, если только не прерываете выполнение.
 
-### Политика очистки Ralph
+### Team shutdown policy
 
-Когда команда работает в режиме ralph (`omx team ralph ...`), очистка при завершении
-применяет специальную политику, отличающуюся от обычного пути:
-
-| Поведение | Обычная команда | Команда Ralph |
-|---|---|---|
-| Принудительное завершение при сбое | Выбрасывает `shutdown_gate_blocked` | Обходит шлюз, логирует событие `ralph_cleanup_policy` |
-| Автоматическое удаление веток | Удаляет ветки worktree при откате | Сохраняет ветки (`skipBranchDeletion`) |
-| Логирование завершения | Стандартное событие `shutdown_gate` | Дополнительное событие `ralph_cleanup_summary` с разбивкой задач |
-
-Политика Ralph автоматически определяется из состояния командного режима (`linked_ralph`) или
-может быть указана явно через `omx team shutdown <name> --ralph`.
+Use `omx team shutdown <team-name>` after the team reaches a terminal state.
+Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
 
 Выбор Worker CLI для рабочих команды:
 

@@ -143,7 +143,7 @@ describe('Consensus mode execution handoff (plan/SKILL.md)', () => {
     assert.match(consensusSection, /staffing guidance|role allocation/i);
     assert.match(consensusSection, /reasoning levels? by lane|suggested reasoning/i);
     assert.match(consensusSection, /omx team|launch hint/i);
-    assert.match(consensusSection, /team -> ralph verification path|team -> ralph/i);
+    assert.match(consensusSection, /team verification path/i);
   });
 
   it('should mention deliberate mode requirements in consensus mode', () => {
@@ -278,7 +278,7 @@ describe('RALPLAN-DR in ralplan/SKILL.md', () => {
     assert.match(ralplanSkill, /staffing guidance|role\/staffing allocation/i);
     assert.match(ralplanSkill, /reasoning levels? by lane|reasoning-by-lane/i);
     assert.match(ralplanSkill, /omx team|launch hints?/i);
-    assert.match(ralplanSkill, /team -> ralph/i);
+    assert.match(ralplanSkill, /team verification/i);
   });
 });
 
@@ -318,7 +318,7 @@ describe('Planner prompt follow-up staffing guidance', () => {
     assert.match(plannerPrompt, /team and ralph follow-up paths/i);
     assert.match(plannerPrompt, /reasoning levels? by lane|suggested reasoning/i);
     assert.match(plannerPrompt, /launch hints?/i);
-    assert.match(plannerPrompt, /team -> ralph/i);
+    assert.match(plannerPrompt, /team verification path/i);
   });
 });
 

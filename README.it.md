@@ -152,19 +152,10 @@ omx team shutdown <team-name>
 
 Regola importante: non arrestare mentre i task sono ancora `in_progress`, a meno che non si stia abortendo.
 
-### Policy di pulizia Ralph
+### Team shutdown policy
 
-Quando un team è in esecuzione in modalità ralph (`omx team ralph ...`), la pulizia allo shutdown
-applica una policy dedicata che differisce dal percorso normale:
-
-| Comportamento | Team normale | Team Ralph |
-|---|---|---|
-| Shutdown forzato in caso di errore | Lancia `shutdown_gate_blocked` | Aggira il gate, registra l'evento `ralph_cleanup_policy` |
-| Eliminazione automatica dei branch | Elimina i branch worktree durante il rollback | Preserva i branch (`skipBranchDeletion`) |
-| Logging di completamento | Evento standard `shutdown_gate` | Evento aggiuntivo `ralph_cleanup_summary` con dettaglio dei task |
-
-La policy ralph viene rilevata automaticamente dallo stato della modalità team (`linked_ralph`) o
-può essere passata esplicitamente tramite `omx team shutdown <name> --ralph`.
+Use `omx team shutdown <team-name>` after the team reaches a terminal state.
+Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
 
 Selezione CLI worker per i worker del team:
 

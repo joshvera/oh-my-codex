@@ -66,7 +66,6 @@ import {
   type WorkerHeartbeat,
   type WorkerStatus,
   type TeamTask,
-  type TeamManifestV2,
   type TeamMonitorSnapshotState,
   type TeamPhaseState,
   type TeamWorkerIntegrationState,
@@ -193,50 +192,6 @@ async function syncRootTeamModeStateOnTerminalPhase(
   }
 }
 
-async function syncLinkedRalphModeStateOnTerminalPhase(
-  teamName: string,
-  phase: TeamPhase | TerminalPhase,
-  cwd: string,
-  nowIso: string = new Date().toISOString(),
-): Promise<void> {
-  if (phase !== 'complete' && phase !== 'failed' && phase !== 'cancelled') return;
-
-  try {
-    const [teamState, ralphState] = await Promise.all([
-      readModeState('team', cwd),
-      readModeState('ralph', cwd),
-    ]);
-    if (!teamState || !ralphState) return;
-
-    const stateTeamName = typeof teamState.team_name === 'string' ? teamState.team_name.trim() : '';
-    if (stateTeamName && stateTeamName !== teamName) return;
-    if (teamState.linked_ralph !== true || ralphState.linked_team !== true) return;
-
-    const terminalAt = typeof teamState.completed_at === 'string' && teamState.completed_at
-      ? teamState.completed_at
-      : nowIso;
-    const alreadySynced = ralphState.active === false
-      && ralphState.current_phase === phase
-      && ralphState.linked_team_terminal_phase === phase
-      && ralphState.linked_team_terminal_at === terminalAt
-      && ralphState.completed_at === terminalAt;
-    if (alreadySynced) return;
-
-    await updateModeState('ralph', {
-      active: false,
-      current_phase: phase,
-      linked_mode: 'team',
-      linked_team: true,
-      linked_team_terminal_phase: phase,
-      linked_team_terminal_at: terminalAt,
-      completed_at: terminalAt,
-      last_turn_at: nowIso,
-    }, cwd);
-  } catch {
-    // Best-effort compatibility sync only.
-  }
-}
-
 /** Runtime handle returned by startTeam */
 export interface TeamRuntime {
   teamName: string;
@@ -248,17 +203,6 @@ export interface TeamRuntime {
 
 interface ShutdownOptions {
   force?: boolean;
-  /** When true, applies ralph-specific cleanup policy: no force-kill on failure, detailed audit logging. */
-  ralph?: boolean;
-}
-
-function resolveLifecycleProfile(
-  config: Pick<TeamConfig, 'lifecycle_profile'> | null | undefined,
-  manifest: Pick<TeamManifestV2, 'lifecycle_profile'> | null | undefined,
-): 'default' | 'linked_ralph' {
-  if (manifest?.lifecycle_profile === 'linked_ralph') return 'linked_ralph';
-  if (config?.lifecycle_profile === 'linked_ralph') return 'linked_ralph';
-  return 'default';
 }
 
 function collectProvisionedShutdownWorktrees(config: TeamConfig): EnsureWorktreeResult[] {
@@ -840,8 +784,6 @@ async function prepareWorkerWorktreeShutdownReports(config: TeamConfig, leaderCw
 
 export interface TeamStartOptions {
   worktreeMode?: WorktreeMode;
-  /** When true, applies ralph-specific cleanup policy during startup rollback (skip branch deletion). */
-  ralph?: boolean;
 }
 
 interface ShutdownGateCounts {
@@ -1411,7 +1353,7 @@ export async function startTeam(
         workspace_mode: workspaceMode,
         worktree_mode: effectiveWorktreeMode,
       },
-      options.ralph === true ? 'linked_ralph' : 'default',
+      'default',
     );
     if (!config) {
       throw new Error('failed to initialize team config');
@@ -1819,7 +1761,7 @@ export async function startTeam(
     if (provisionedWorktrees.length > 0) {
       try {
         await rollbackProvisionedWorktrees(provisionedWorktrees, {
-          skipBranchDeletion: options.ralph === true,
+          skipBranchDeletion: false,
         });
       } catch (cleanupError) {
         rollbackErrors.push(`rollbackProvisionedWorktrees: ${String(cleanupError)}`);
@@ -2001,7 +1943,6 @@ export async function monitorTeam(teamName: string, cwd: string): Promise<TeamSn
   await writeTeamPhaseState(sanitized, phaseState, cwd);
   const phase: TeamPhase | TerminalPhase = phaseState.current_phase;
   await syncRootTeamModeStateOnTerminalPhase(sanitized, phase, cwd);
-  await syncLinkedRalphModeStateOnTerminalPhase(sanitized, phase, cwd);
 
   if (deadWorkerStall) {
     recommendations.push('All workers are dead while work remains; mark the team failed or restart with fresh workers.');
@@ -2227,8 +2168,6 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
     return;
   }
   const manifest = await readTeamManifestV2(sanitized, cwd);
-  const lifecycleProfile = resolveLifecycleProfile(config, manifest);
-  const ralph = options.ralph === true || lifecycleProfile === 'linked_ralph';
   const governance = resolveGovernancePolicy(
     manifest?.governance,
     manifest?.policy as Partial<TeamGovernance> | undefined,
@@ -2253,30 +2192,15 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
       {
         type: 'shutdown_gate',
         worker: 'leader-fixed',
-        reason: `allowed=${gate.allowed} total=${gate.total} pending=${gate.pending} blocked=${gate.blocked} in_progress=${gate.in_progress} completed=${gate.completed} failed=${gate.failed} cleanup_requires_all_workers_inactive=${governance.cleanup_requires_all_workers_inactive}${ralph ? ' policy=ralph' : ''}`,
+        reason: `allowed=${gate.allowed} total=${gate.total} pending=${gate.pending} blocked=${gate.blocked} in_progress=${gate.in_progress} completed=${gate.completed} failed=${gate.failed} cleanup_requires_all_workers_inactive=${governance.cleanup_requires_all_workers_inactive}`,
       },
       cwd,
     ).catch(() => {});
 
     if (!gate.allowed) {
-      const hasActiveWork = gate.pending > 0 || gate.blocked > 0 || gate.in_progress > 0;
-      if (ralph && !hasActiveWork) {
-        // Ralph policy: bypass on failure-only scenarios (no pending/blocked/in_progress tasks).
-        // This allows the ralph loop to retry rather than leaving stale team state.
-        await appendTeamEvent(
-          sanitized,
-          {
-            type: 'ralph_cleanup_policy',
-            worker: 'leader-fixed',
-            reason: `gate_bypassed:pending=${gate.pending},blocked=${gate.blocked},in_progress=${gate.in_progress},failed=${gate.failed}`,
-          },
-          cwd,
-        ).catch(() => {});
-      } else {
-        throw new Error(
-          `shutdown_gate_blocked:pending=${gate.pending},blocked=${gate.blocked},in_progress=${gate.in_progress},failed=${gate.failed}`,
-        );
-      }
+      throw new Error(
+        `shutdown_gate_blocked:pending=${gate.pending},blocked=${gate.blocked},in_progress=${gate.in_progress},failed=${gate.failed}`,
+      );
     }
   }
 
@@ -2454,30 +2378,12 @@ export async function shutdownTeam(teamName: string, cwd: string, options: Shutd
   }
   restoreTeamModelInstructionsFile(sanitized);
 
-  // 6. Ralph stricter completion logging
-  if (ralph) {
-    const finalTasks = await listTasks(sanitized, cwd).catch(() => [] as Awaited<ReturnType<typeof listTasks>>);
-    const completed = finalTasks.filter((t) => t.status === 'completed').length;
-    const failed = finalTasks.filter((t) => t.status === 'failed').length;
-    const pending = finalTasks.filter((t) => t.status === 'pending').length;
-    await appendTeamEvent(
-      sanitized,
-      {
-        type: 'ralph_cleanup_summary',
-        worker: 'leader-fixed',
-        reason: `total=${finalTasks.length} completed=${completed} failed=${failed} pending=${pending} force=${force}`,
-      },
-      cwd,
-    ).catch(() => {});
-    await syncLinkedRalphModeStateOnTerminalPhase(sanitized, 'cancelled', cwd);
-  }
-
   const cleanupErrors: string[] = [];
   const provisionedWorktrees = collectProvisionedShutdownWorktrees(config);
   if (provisionedWorktrees.length > 0) {
     try {
       await rollbackProvisionedWorktrees(provisionedWorktrees, {
-        skipBranchDeletion: options.ralph === true,
+        skipBranchDeletion: false,
       });
     } catch (err) {
       cleanupErrors.push(`rollbackProvisionedWorktrees: ${String(err)}`);
@@ -2503,8 +2409,7 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
   const sanitized = sanitizeTeamName(teamName);
   const config = await readTeamConfig(sanitized, cwd);
   if (!config) return null;
-  const manifest = await readTeamManifestV2(sanitized, cwd);
-  config.lifecycle_profile = resolveLifecycleProfile(config, manifest);
+  config.lifecycle_profile = 'default';
 
   if (config.worker_launch_mode === 'prompt') {
     const hasLivePromptWorker = config.workers.some((worker) => isPromptWorkerAlive(config, worker));

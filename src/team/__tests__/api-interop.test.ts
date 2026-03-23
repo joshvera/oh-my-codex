@@ -1348,37 +1348,7 @@ describe('executeTeamApiOperation: cleanup', () => {
     }
   });
 
-  it('honors linked Ralph cleanup policy for failure-only cleanup', async () => {
-    const { cwd, cleanup } = await setupTeam('cleanup-linked-ralph');
-    try {
-      await createTask('cleanup-linked-ralph', {
-        subject: 'failed task',
-        description: 'linked Ralph cleanup should bypass failure-only shutdown gate',
-        status: 'failed',
-      }, cwd);
-      await writeFile(join(cwd, '.omx', 'state', 'team-state.json'), JSON.stringify({
-        active: true,
-        current_phase: 'team-exec',
-        linked_ralph: true,
-        team_name: 'cleanup-linked-ralph',
-      }, null, 2));
 
-      const result = await executeTeamApiOperation('cleanup', {
-        team_name: 'cleanup-linked-ralph',
-      }, cwd);
-      assert.equal(result.ok, true);
-
-      const summary = await executeTeamApiOperation('get-summary', {
-        team_name: 'cleanup-linked-ralph',
-      }, cwd);
-      assert.equal(summary.ok, false);
-      if (!summary.ok) {
-        assert.equal(summary.error.code, 'team_not_found');
-      }
-    } finally {
-      await cleanup();
-    }
-  });
 });
 
 describe('executeTeamApiOperation: orphan-cleanup', () => {

@@ -98,7 +98,7 @@ describe('team state', () => {
     }
   });
 
-  it('initTeamState persists linked_ralph lifecycle profile when requested', async () => {
+  it('initTeamState persists the default lifecycle profile', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-lifecycle-profile-'));
     try {
       const cfg = await initTeamState(
@@ -110,14 +110,14 @@ describe('team state', () => {
         DEFAULT_MAX_WORKERS,
         process.env,
         {},
-        'linked_ralph',
+        'default',
       );
 
-      assert.equal(cfg.lifecycle_profile, 'linked_ralph');
+      assert.equal(cfg.lifecycle_profile, 'default');
       const readCfg = await readTeamConfig('team-linked', cwd);
       const manifest = await readTeamManifestV2('team-linked', cwd);
-      assert.equal(readCfg?.lifecycle_profile, 'linked_ralph');
-      assert.equal(manifest?.lifecycle_profile, 'linked_ralph');
+      assert.equal(readCfg?.lifecycle_profile, 'default');
+      assert.equal(manifest?.lifecycle_profile, 'default');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

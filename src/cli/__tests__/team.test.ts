@@ -69,14 +69,11 @@ describe('parseTeamStartArgs', () => {
     assert.equal(result.parsed.agentType, 'debugger');
   });
 
-  it('parses named worktree mode with ralph prefix', () => {
-    const result = parseTeamStartArgs(['ralph', '--worktree=feature/demo', '4:executor', 'ship', 'it']);
-    assert.deepEqual(result.worktreeMode, { enabled: true, detached: false, name: 'feature/demo' });
-    assert.equal(result.parsed.ralph, true);
-    assert.equal(result.parsed.workerCount, 4);
-    assert.equal(result.parsed.agentType, 'executor');
-    assert.equal(result.parsed.task, 'ship it');
-    assert.equal(result.parsed.teamName, 'ship-it');
+  it('rejects deprecated omx team ralph syntax', () => {
+    assert.throws(
+      () => parseTeamStartArgs(['ralph', '--worktree=feature/demo', '4:executor', 'ship', 'it']),
+      /Deprecated usage: `omx team ralph \.\.\.` has been removed/,
+    );
   });
 
   it('accepts the maximum supported worker count', () => {
@@ -99,7 +96,7 @@ describe('parseTeamStartArgs', () => {
       await mkdir(join(wd, '.omx', 'plans'), { recursive: true });
       await writeFile(
         join(wd, '.omx', 'plans', 'prd-issue-831.md'),
-        '# Approved plan\n\nLaunch via omx team ralph 3:executor "Execute approved issue 831 plan"\n',
+        '# Approved plan\n\nLaunch via omx team 3:executor "Execute approved issue 831 plan"\n',
       );
       await writeFile(join(wd, '.omx', 'plans', 'test-spec-issue-831.md'), '# Test spec\n');
 
@@ -108,7 +105,6 @@ describe('parseTeamStartArgs', () => {
       assert.equal(result.parsed.workerCount, 3);
       assert.equal(result.parsed.agentType, 'executor');
       assert.equal(result.parsed.explicitWorkerCount, true);
-      assert.equal(result.parsed.ralph, true);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
@@ -123,14 +119,13 @@ describe('parseTeamStartArgs', () => {
       await mkdir(join(wd, '.omx', 'plans'), { recursive: true });
       await writeFile(
         join(wd, '.omx', 'plans', 'prd-issue-831.md'),
-        '# Approved plan\n\nLaunch via omx team ralph 3:executor "Execute approved issue 831 plan"\n',
+        '# Approved plan\n\nLaunch via omx team 3:executor "Execute approved issue 831 plan"\n',
       );
       await writeFile(join(wd, '.omx', 'plans', 'test-spec-issue-831.md'), '# Test spec\n');
 
       const result = parseTeamStartArgs(['team으로', '해줘']);
       assert.equal(result.parsed.task, 'Execute approved issue 831 plan');
       assert.equal(result.parsed.workerCount, 3);
-      assert.equal(result.parsed.ralph, true);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
@@ -145,7 +140,7 @@ describe('parseTeamStartArgs', () => {
       await mkdir(join(wd, '.omx', 'plans'), { recursive: true });
       await writeFile(
         join(wd, '.omx', 'plans', 'prd-issue-831.md'),
-        '# Approved plan\n\nLaunch via omx team ralph 3:executor "Execute approved issue 831 plan"\n',
+        '# Approved plan\n\nLaunch via omx team 3:executor "Execute approved issue 831 plan"\n',
       );
       await writeFile(join(wd, '.omx', 'plans', 'test-spec-issue-831.md'), '# Test spec\n');
 
@@ -155,7 +150,6 @@ describe('parseTeamStartArgs', () => {
       assert.equal(result.parsed.agentType, 'debugger');
       assert.equal(result.parsed.explicitWorkerCount, true);
       assert.equal(result.parsed.explicitAgentType, true);
-      assert.equal(result.parsed.ralph, true);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
@@ -198,7 +192,7 @@ describe('teamCommand api', () => {
       console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
       await teamCommand(['--help']);
       assert.equal(logs.length, 1);
-      assert.match(logs[0] ?? '', /Usage: omx team \[ralph\] \[N:agent-type\]/);
+      assert.match(logs[0] ?? '', /Usage: omx team \[N:agent-type\]/);
       assert.match(logs[0] ?? '', /omx team api <operation>/);
       assert.match(logs[0] ?? '', /dedicated worktrees automatically by default/);
       assert.match(logs[0] ?? '', /--worktree is deprecated/);
@@ -215,7 +209,7 @@ describe('teamCommand api', () => {
       console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
       await teamCommand(['help']);
       assert.equal(logs.length, 1);
-      assert.match(logs[0] ?? '', /Usage: omx team \[ralph\] \[N:agent-type\]/);
+      assert.match(logs[0] ?? '', /Usage: omx team \[N:agent-type\]/);
       assert.match(logs[0] ?? '', /omx team api <operation>/);
       assert.match(logs[0] ?? '', /dedicated worktrees automatically by default/);
       assert.match(logs[0] ?? '', /--worktree is deprecated/);
@@ -1540,69 +1534,11 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
-  it('establishes Ralph-side linked state for real omx team ralph launches', async () => {
-    const wd = await mkdtemp(join(tmpdir(), 'omx-team-ralph-link-'));
-    const binDir = join(wd, 'bin');
-    const fakeCodexPath = join(binDir, 'codex');
-    const previousCwd = process.cwd();
-    const previousPath = process.env.PATH;
-    const previousTmux = process.env.TMUX;
-    const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
-    const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
-
-    await mkdir(binDir, { recursive: true });
-    await writeFile(
-      fakeCodexPath,
-      `#!/usr/bin/env node
-setTimeout(() => process.exit(0), 150);
-process.stdin.resume();
-process.on('SIGTERM', () => process.exit(0));
-`,
+  it('rejects legacy omx team ralph launches at command entry', async () => {
+    await assert.rejects(
+      () => withoutTeamTestWorkerEnv(() => teamCommand(['ralph', '1:executor', 'issue 742 linked ralph launch'])),
+      /Deprecated usage: `omx team ralph \.\.\.` has been removed/,
     );
-    await chmod(fakeCodexPath, 0o755);
-
-    try {
-      process.chdir(wd);
-      process.env.PATH = `${binDir}:${previousPath ?? ''}`;
-      delete process.env.TMUX;
-      process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'prompt';
-      process.env.OMX_TEAM_WORKER_CLI = 'codex';
-
-      const teamTask = 'issue 742 linked ralph launch';
-      const teamName = parseTeamStartArgs(['ralph', '1:executor', teamTask]).parsed.teamName;
-      await withoutTeamTestWorkerEnv(() => teamCommand(['ralph', '1:executor', teamTask]));
-
-      const teamState = JSON.parse(await readFile(join(wd, '.omx', 'state', 'team-state.json'), 'utf-8')) as Record<string, unknown>;
-      const ralphState = JSON.parse(await readFile(join(wd, '.omx', 'state', 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
-      const teamConfig = JSON.parse(
-        await readFile(join(wd, '.omx', 'state', 'team', teamName, 'config.json'), 'utf-8'),
-      ) as Record<string, unknown>;
-      const teamManifest = JSON.parse(
-        await readFile(join(wd, '.omx', 'state', 'team', teamName, 'manifest.v2.json'), 'utf-8'),
-      ) as Record<string, unknown>;
-
-      assert.equal(teamState.linked_ralph, true);
-      assert.equal(teamState.team_name, teamName);
-      assert.equal(teamConfig.lifecycle_profile, 'linked_ralph');
-      assert.equal(teamManifest.lifecycle_profile, 'linked_ralph');
-      assert.equal(ralphState.active, true);
-      assert.equal(ralphState.current_phase, 'executing');
-      assert.equal(ralphState.linked_team, true);
-      assert.equal(ralphState.linked_mode, 'team');
-      assert.equal(ralphState.team_name, teamName);
-      assert.equal(ralphState.linked_team_terminal_phase, undefined);
-      assert.equal(ralphState.linked_team_terminal_at, undefined);
-    } finally {
-      process.chdir(previousCwd);
-      if (typeof previousPath === 'string') process.env.PATH = previousPath;
-      else delete process.env.PATH;
-      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
-      else delete process.env.TMUX;
-      if (typeof previousLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = previousLaunchMode;
-      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
-      if (typeof previousWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = previousWorkerCli;
-      else delete process.env.OMX_TEAM_WORKER_CLI;
-      await rm(wd, { recursive: true, force: true });
-    }
   });
+
 });

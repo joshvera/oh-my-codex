@@ -153,19 +153,10 @@ omx team shutdown <team-name>
 
 重要なルール：中断する場合を除き、タスクが`in_progress`状態の間はシャットダウンしないでください。
 
-### Ralphクリーンアップポリシー
+### Team shutdown policy
 
-チームがralphモード（`omx team ralph ...`）で実行される場合、シャットダウンのクリーンアップは
-通常のパスとは異なる専用ポリシーを適用します：
-
-| 動作 | 通常チーム | Ralphチーム |
-|---|---|---|
-| 失敗時の強制シャットダウン | `shutdown_gate_blocked`をスロー | ゲートをバイパスし、`ralph_cleanup_policy`イベントをログ |
-| 自動ブランチ削除 | ロールバック時にworktreeブランチを削除 | ブランチを保持（`skipBranchDeletion`） |
-| 完了ログ | 標準`shutdown_gate`イベント | タスク内訳付きの追加`ralph_cleanup_summary`イベント |
-
-Ralphポリシーはチームモード状態（`linked_ralph`）から自動検出されるか、
-`omx team shutdown <name> --ralph`で明示的に渡すことができます。
+Use `omx team shutdown <team-name>` after the team reaches a terminal state.
+Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
 
 チームワーカー用のWorker CLI選択：
 

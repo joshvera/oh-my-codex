@@ -66,7 +66,7 @@ export interface TeamConfig {
   task: string;
   agent_type: string;
   worker_launch_mode: 'interactive' | 'prompt';
-  lifecycle_profile: 'default' | 'linked_ralph';
+  lifecycle_profile: 'default';
   worker_count: number;
   max_workers: number; // default 20, configurable up to 20
   workers: WorkerInfo[];
@@ -226,7 +226,7 @@ export interface TeamManifestV2 {
   leader: TeamLeader;
   policy: TeamPolicy;
   governance: TeamGovernance;
-  lifecycle_profile: 'default' | 'linked_ralph';
+  lifecycle_profile: 'default';
   permissions_snapshot: PermissionsSnapshot;
   tmux_session: string;
   worker_count: number;
@@ -708,7 +708,7 @@ export async function initTeamState(
   maxWorkers: number = DEFAULT_MAX_WORKERS,
   env: NodeJS.ProcessEnv = process.env,
   workspace: TeamWorkspaceMetadata = {},
-  lifecycleProfile: 'default' | 'linked_ralph' = 'default',
+  lifecycleProfile: 'default' = 'default',
 ): Promise<TeamConfig> {
   validateTeamName(teamName);
 
@@ -885,7 +885,7 @@ function normalizeTeamConfig(config: TeamConfig): TeamConfig {
   const workerLaunchMode = config.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive';
   return {
     ...config,
-    lifecycle_profile: config.lifecycle_profile === 'linked_ralph' ? 'linked_ralph' : 'default',
+    lifecycle_profile: 'default',
     leader_pane_id: config.leader_pane_id ?? null,
     hud_pane_id: config.hud_pane_id ?? null,
     resize_hook_name: config.resize_hook_name ?? null,
@@ -948,7 +948,7 @@ export async function writeTeamManifestV2(manifest: TeamManifestV2, cwd: string)
         ...manifest,
         policy: normalizedPolicy,
         governance: normalizedGovernance,
-        lifecycle_profile: manifest.lifecycle_profile === 'linked_ralph' ? 'linked_ralph' : 'default',
+        lifecycle_profile: 'default',
       },
       null,
       2,
@@ -974,7 +974,7 @@ export async function readTeamManifestV2(teamName: string, cwd: string): Promise
         worker_launch_mode: parsedManifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
       }),
       governance: normalizeTeamGovernance(parsedManifest.governance, parsedManifest.policy),
-      lifecycle_profile: parsedManifest.lifecycle_profile === 'linked_ralph' ? 'linked_ralph' : 'default',
+      lifecycle_profile: 'default',
     };
   } catch {
     return null;

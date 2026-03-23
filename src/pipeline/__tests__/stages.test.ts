@@ -185,7 +185,7 @@ describe('Team Exec Stage', () => {
         cwd: '/tmp/test',
       });
 
-      assert.match(instruction, /^omx team ralph 3:executor /);
+      assert.match(instruction, /^omx team 3:executor /);
       assert.match(instruction, /implement feature/);
       assert.match(instruction, /staffing=/);
       assert.match(instruction, /verify=/);
@@ -206,7 +206,7 @@ describe('Team Exec Stage', () => {
         cwd: '/tmp',
       });
 
-      assert.match(instruction, /^omx team ralph 1:executor /);
+      assert.match(instruction, /^omx team 1:executor /);
       assert.match(instruction, /staffing=/);
     });
   });

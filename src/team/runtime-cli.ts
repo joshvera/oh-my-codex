@@ -70,22 +70,15 @@ export async function loadLivePaneState(teamName: string, cwd: string): Promise<
   };
 }
 
-async function readLifecycleProfile(teamName: string, cwd: string): Promise<'default' | 'linked_ralph'> {
-  const config = await readTeamConfig(teamName, cwd);
-  return config?.lifecycle_profile === 'linked_ralph' ? 'linked_ralph' : 'default';
-}
-
 export async function shutdownWithForceFallback(teamName: string, cwd: string): Promise<void> {
-  const lifecycleProfile = await readLifecycleProfile(teamName, cwd);
-  const ralphLinked = lifecycleProfile === 'linked_ralph';
   try {
-    await shutdownTeam(teamName, cwd, { ralph: ralphLinked });
+    await shutdownTeam(teamName, cwd);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes('shutdown_gate_blocked') && !message.includes('shutdown_rejected')) {
       throw error;
     }
-    await shutdownTeam(teamName, cwd, { force: true, ralph: ralphLinked });
+    await shutdownTeam(teamName, cwd, { force: true });
   }
 }
 

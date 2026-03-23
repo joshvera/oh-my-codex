@@ -153,19 +153,10 @@ omx team shutdown <team-name>
 
 Quy tắc quan trọng: không tắt khi các tác vụ vẫn đang ở trạng thái `in_progress` trừ khi đang hủy bỏ.
 
-### Chính sách dọn dẹp Ralph
+### Team shutdown policy
 
-Khi đội chạy trong chế độ ralph (`omx team ralph ...`), việc dọn dẹp khi tắt
-áp dụng chính sách chuyên dụng khác với đường dẫn thông thường:
-
-| Hành vi | Đội thông thường | Đội Ralph |
-|---|---|---|
-| Tắt cưỡng bức khi lỗi | Ném `shutdown_gate_blocked` | Bỏ qua cổng, ghi nhật ký sự kiện `ralph_cleanup_policy` |
-| Xóa nhánh tự động | Xóa nhánh worktree khi rollback | Giữ lại nhánh (`skipBranchDeletion`) |
-| Ghi nhật ký hoàn thành | Sự kiện `shutdown_gate` tiêu chuẩn | Sự kiện `ralph_cleanup_summary` bổ sung với phân tích tác vụ |
-
-Chính sách Ralph được phát hiện tự động từ trạng thái chế độ đội (`linked_ralph`) hoặc
-có thể được truyền rõ ràng qua `omx team shutdown <name> --ralph`.
+Use `omx team shutdown <team-name>` after the team reaches a terminal state.
+Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
 
 Chọn Worker CLI cho worker của đội:
 

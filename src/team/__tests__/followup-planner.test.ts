@@ -54,9 +54,9 @@ describe('followup-planner', () => {
     assert.ok(
       plan.allocations.some((allocation) => allocation.reason.includes('specialist') || allocation.reason.includes('verification')),
     );
-    assert.equal(plan.launchHints.shellCommand, 'omx team ralph 3:executor "Fix flaky integration tests and update README"');
-    assert.equal(plan.launchHints.skillCommand, '$team ralph 3:executor "Fix flaky integration tests and update README"');
-    assert.match(plan.verificationPlan.summary, /team -> ralph/i);
+    assert.equal(plan.launchHints.shellCommand, 'omx team 3:executor "Fix flaky integration tests and update README"');
+    assert.equal(plan.launchHints.skillCommand, '$team 3:executor "Fix flaky integration tests and update README"');
+    assert.match(plan.verificationPlan.summary, /coordinated execution and verification owner/i);
     assert.equal(plan.verificationPlan.checkpoints.length, 3);
   });
 

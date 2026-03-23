@@ -152,19 +152,10 @@ omx team shutdown <team-name>
 
 Wichtige Regel: Fahren Sie nicht herunter, während Aufgaben noch `in_progress` sind, es sei denn, Sie brechen ab.
 
-### Ralph-Aufräumrichtlinie
+### Team shutdown policy
 
-Wenn ein Team im Ralph-Modus läuft (`omx team ralph ...`), wendet die Shutdown-Bereinigung
-eine spezielle Richtlinie an, die sich vom normalen Pfad unterscheidet:
-
-| Verhalten | Normales Team | Ralph-Team |
-|---|---|---|
-| Erzwungenes Herunterfahren bei Fehler | Wirft `shutdown_gate_blocked` | Umgeht Gate, protokolliert `ralph_cleanup_policy`-Ereignis |
-| Automatische Branch-Löschung | Löscht Worktree-Branches bei Rollback | Bewahrt Branches (`skipBranchDeletion`) |
-| Abschluss-Protokollierung | Standard-`shutdown_gate`-Ereignis | Zusätzliches `ralph_cleanup_summary`-Ereignis mit Aufgabenaufschlüsselung |
-
-Die Ralph-Richtlinie wird automatisch aus dem Team-Modus-Zustand (`linked_ralph`) erkannt oder
-kann explizit über `omx team shutdown <name> --ralph` übergeben werden.
+Use `omx team shutdown <team-name>` after the team reaches a terminal state.
+Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
 
 Worker-CLI-Auswahl für Team-Worker:
 

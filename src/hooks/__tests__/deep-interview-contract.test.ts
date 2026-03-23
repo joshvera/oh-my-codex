@@ -83,7 +83,7 @@ describe("deep-interview Ouroboros contract", () => {
 			/preserve intent, non-goals, decision boundaries, acceptance criteria/i,
 		);
 		assert.match(deepInterviewSkill, /binding context/i);
-		assert.match(deepInterviewSkill, /team -> ralph/i);
+		assert.match(deepInterviewSkill, /team verification path/i);
 	});
 
 	it("uses OMX-native output paths", () => {

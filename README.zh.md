@@ -153,19 +153,10 @@ omx team shutdown <team-name>
 
 重要规则：除非中止，否则不要在任务仍处于 `in_progress` 状态时关闭。
 
-### Ralph 清理策略
+### Team shutdown policy
 
-当团队在 ralph 模式下运行时（`omx team ralph ...`），关闭清理
-应用与常规路径不同的专用策略：
-
-| 行为 | 普通团队 | Ralph 团队 |
-|---|---|---|
-| 失败时强制关闭 | 抛出 `shutdown_gate_blocked` | 绕过闸门，记录 `ralph_cleanup_policy` 事件 |
-| 自动分支删除 | 回滚时删除 worktree 分支 | 保留分支 (`skipBranchDeletion`) |
-| 完成日志 | 标准 `shutdown_gate` 事件 | 附带任务分解的 `ralph_cleanup_summary` 事件 |
-
-Ralph 策略从团队模式状态（`linked_ralph`）自动检测，或
-可通过 `omx team shutdown <name> --ralph` 显式传递。
+Use `omx team shutdown <team-name>` after the team reaches a terminal state.
+Team cleanup now follows one standalone path; there is no separate `omx team ralph ...` shutdown policy anymore.
 
 团队 worker 的 Worker CLI 选择：
 
