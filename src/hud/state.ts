@@ -17,6 +17,10 @@ import type {
   RalphStateForHud,
   UltraworkStateForHud,
   AutopilotStateForHud,
+  RalplanStateForHud,
+  DeepInterviewStateForHud,
+  AutoresearchStateForHud,
+  UltraqaStateForHud,
   TeamStateForHud,
   HudMetrics,
   HudNotifyState,
@@ -101,6 +105,37 @@ export async function readUltraworkState(cwd: string): Promise<UltraworkStateFor
 
 export async function readAutopilotState(cwd: string): Promise<AutopilotStateForHud | null> {
   const state = await readScopedModeState<AutopilotStateForHud>(cwd, 'autopilot');
+  return state?.active ? state : null;
+}
+
+export async function readRalplanState(cwd: string): Promise<RalplanStateForHud | null> {
+  const state = await readScopedModeState<RalplanStateForHud>(cwd, 'ralplan');
+  return state?.active ? state : null;
+}
+
+interface DeepInterviewRawState extends DeepInterviewStateForHud {
+  input_lock?: {
+    active?: boolean;
+  };
+}
+
+export async function readDeepInterviewState(cwd: string): Promise<DeepInterviewStateForHud | null> {
+  const state = await readScopedModeState<DeepInterviewRawState>(cwd, 'deep-interview');
+  if (!state?.active) return null;
+
+  return {
+    ...state,
+    input_lock_active: state.input_lock_active ?? state.input_lock?.active === true,
+  };
+}
+
+export async function readAutoresearchState(cwd: string): Promise<AutoresearchStateForHud | null> {
+  const state = await readScopedModeState<AutoresearchStateForHud>(cwd, 'autoresearch');
+  return state?.active ? state : null;
+}
+
+export async function readUltraqaState(cwd: string): Promise<UltraqaStateForHud | null> {
+  const state = await readScopedModeState<UltraqaStateForHud>(cwd, 'ultraqa');
   return state?.active ? state : null;
 }
 
@@ -229,11 +264,15 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
   const version = readVersion();
   const gitBranch = buildGitBranchLabel(cwd, config);
 
-  const [ralph, ultrawork, autopilot, team, metrics, hudNotify, session] =
+  const [ralph, ultrawork, autopilot, ralplan, deepInterview, autoresearch, ultraqa, team, metrics, hudNotify, session] =
     await Promise.all([
       readRalphState(cwd),
       readUltraworkState(cwd),
       readAutopilotState(cwd),
+      readRalplanState(cwd),
+      readDeepInterviewState(cwd),
+      readAutoresearchState(cwd),
+      readUltraqaState(cwd),
       readTeamState(cwd),
       readMetrics(cwd),
       readHudNotifyState(cwd),
@@ -249,5 +288,20 @@ export async function readAllState(cwd: string, config: ResolvedHudConfig = DEFA
     runtimeSnapshot = bridge.readCompatFile<RuntimeSnapshot>('snapshot.json');
   }
 
-  return { version, gitBranch, ralph, ultrawork, autopilot, team, metrics, hudNotify, session, runtimeSnapshot };
+  return {
+    version,
+    gitBranch,
+    ralph,
+    ultrawork,
+    autopilot,
+    ralplan,
+    deepInterview,
+    autoresearch,
+    ultraqa,
+    team,
+    metrics,
+    hudNotify,
+    session,
+    runtimeSnapshot,
+  };
 }

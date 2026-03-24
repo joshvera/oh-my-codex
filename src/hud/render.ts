@@ -60,6 +60,37 @@ function renderAutopilot(ctx: HudRenderContext): string | null {
   return yellow(`autopilot:${phase}`);
 }
 
+function renderRalplan(ctx: HudRenderContext): string | null {
+  if (!ctx.ralplan) return null;
+  const iteration = ctx.ralplan.iteration;
+  const planningComplete = ctx.ralplan.planning_complete === true;
+  if (typeof iteration === 'number' && Number.isFinite(iteration)) {
+    const max = planningComplete ? iteration : '?';
+    return cyan(`ralplan:${iteration}/${max}`);
+  }
+  const phase = sanitizeDynamicText(ctx.ralplan.current_phase || 'active') || 'active';
+  return cyan(`ralplan:${phase}`);
+}
+
+function renderDeepInterview(ctx: HudRenderContext): string | null {
+  if (!ctx.deepInterview) return null;
+  const phase = sanitizeDynamicText(ctx.deepInterview.current_phase || 'active') || 'active';
+  const lockSuffix = ctx.deepInterview.input_lock_active ? ':lock' : '';
+  return yellow(`interview:${phase}${lockSuffix}`);
+}
+
+function renderAutoresearch(ctx: HudRenderContext): string | null {
+  if (!ctx.autoresearch) return null;
+  const phase = sanitizeDynamicText(ctx.autoresearch.current_phase || 'active') || 'active';
+  return cyan(`research:${phase}`);
+}
+
+function renderUltraqa(ctx: HudRenderContext): string | null {
+  if (!ctx.ultraqa) return null;
+  const phase = sanitizeDynamicText(ctx.ultraqa.current_phase || 'active') || 'active';
+  return green(`qa:${phase}`);
+}
+
 function renderTeam(ctx: HudRenderContext): string | null {
   if (!ctx.team) return null;
   const count = ctx.team.agent_count;
@@ -142,6 +173,10 @@ const MINIMAL_ELEMENTS: ElementRenderer[] = [
   renderGitBranch,
   renderRalph,
   renderUltrawork,
+  renderRalplan,
+  renderDeepInterview,
+  renderAutoresearch,
+  renderUltraqa,
   renderTeam,
   renderTurns,
 ];
@@ -151,6 +186,10 @@ const FOCUSED_ELEMENTS: ElementRenderer[] = [
   renderRalph,
   renderUltrawork,
   renderAutopilot,
+  renderRalplan,
+  renderDeepInterview,
+  renderAutoresearch,
+  renderUltraqa,
   renderTeam,
   renderTurns,
   renderTokens,
@@ -164,6 +203,10 @@ const FULL_ELEMENTS: ElementRenderer[] = [
   renderRalph,
   renderUltrawork,
   renderAutopilot,
+  renderRalplan,
+  renderDeepInterview,
+  renderAutoresearch,
+  renderUltraqa,
   renderTeam,
   renderTurns,
   renderTokens,

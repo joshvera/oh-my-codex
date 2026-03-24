@@ -26,6 +26,10 @@ function emptyCtx(): HudRenderContext {
     ralph: null,
     ultrawork: null,
     autopilot: null,
+    ralplan: null,
+    deepInterview: null,
+    autoresearch: null,
+    ultraqa: null,
     team: null,
     metrics: null,
     hudNotify: null,
@@ -139,6 +143,58 @@ describe('renderHud – autopilot', () => {
   it('omits autopilot when null', () => {
     const result = renderHud(emptyCtx(), 'focused');
     assert.ok(!result.includes('autopilot'));
+  });
+});
+
+// ── Ralplan ───────────────────────────────────────────────────────────────────
+
+describe('renderHud – ralplan', () => {
+  it('renders ralplan with the current phase', () => {
+    const ctx = { ...emptyCtx(), ralplan: { active: true, current_phase: 'review' } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes(`${CYAN}ralplan:review${RESET}`));
+  });
+
+  it('renders iteration display when ralplan iteration is present', () => {
+    const ctx = { ...emptyCtx(), ralplan: { active: true, iteration: 2, planning_complete: false } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes(`${CYAN}ralplan:2/?${RESET}`));
+  });
+});
+
+// ── Deep interview ────────────────────────────────────────────────────────────
+
+describe('renderHud – deepInterview', () => {
+  it('renders interview with the current phase', () => {
+    const ctx = { ...emptyCtx(), deepInterview: { active: true, current_phase: 'intent-first' } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes(`${YELLOW}interview:intent-first${RESET}`));
+  });
+
+  it('shows a lock suffix when input lock is active', () => {
+    const ctx = { ...emptyCtx(), deepInterview: { active: true, current_phase: 'deep-interview', input_lock_active: true } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes('interview:deep-interview:lock'));
+  });
+});
+
+// ── Autoresearch ──────────────────────────────────────────────────────────────
+
+describe('renderHud – autoresearch', () => {
+  it('renders research with the current phase', () => {
+    const ctx = { ...emptyCtx(), autoresearch: { active: true, current_phase: 'running' } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes(`${CYAN}research:running${RESET}`));
+  });
+});
+
+// ── Ultraqa ───────────────────────────────────────────────────────────────────
+
+describe('renderHud – ultraqa', () => {
+  it('renders qa with the current phase', () => {
+    const ctx = { ...emptyCtx(), ultraqa: { active: true, current_phase: 'diagnose' } };
+    const result = renderHud(ctx, 'focused');
+    assert.ok(result.includes(`${GREEN}qa:diagnose${RESET}`));
   });
 });
 
@@ -462,6 +518,10 @@ describe('renderHud – presets', () => {
       gitBranch: 'feat/x',
       ralph: { active: true, iteration: 1, max_iterations: 5 },
       ultrawork: { active: true },
+      ralplan: { active: true, current_phase: 'draft' },
+      deepInterview: { active: true, current_phase: 'intent-first' },
+      autoresearch: { active: true, current_phase: 'running' },
+      ultraqa: { active: true, current_phase: 'qa' },
       team: { active: true, agent_count: 2 },
       metrics: { total_turns: 10, session_turns: 3, last_activity: '' },
     };
@@ -469,6 +529,10 @@ describe('renderHud – presets', () => {
     assert.ok(result.includes('feat/x'));
     assert.ok(result.includes('ralph:1/5'));
     assert.ok(result.includes('ultrawork'));
+    assert.ok(result.includes('ralplan:draft'));
+    assert.ok(result.includes('interview:intent-first'));
+    assert.ok(result.includes('research:running'));
+    assert.ok(result.includes('qa:qa'));
     assert.ok(result.includes('workers'));
     assert.ok(result.includes('turns:3'));
   });
@@ -537,6 +601,10 @@ describe('renderHud – sanitization', () => {
       ...emptyCtx(),
       gitBranch: injected,
       autopilot: { active: true, current_phase: injected },
+      ralplan: { active: true, current_phase: injected },
+      deepInterview: { active: true, current_phase: injected, input_lock_active: true },
+      autoresearch: { active: true, current_phase: injected },
+      ultraqa: { active: true, current_phase: injected },
       team: { active: true, team_name: injected },
     };
 
