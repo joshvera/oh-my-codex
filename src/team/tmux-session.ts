@@ -1,6 +1,6 @@
 import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import {
   CODEX_BYPASS_FLAG,
@@ -389,17 +389,20 @@ export function buildReconcileHudResizeArgs(
   return ['run-shell', buildBestEffortShellCommand(`tmux ${buildHudResizeCommand(hudPaneId, heightLines)}`)];
 }
 
-function buildWorkerLaunchSpec(shellPath: string | undefined): ShellLaunchSpec {
+function buildWorkerLaunchSpec(
+  shellPath: string | undefined,
+  existsImpl: (path: string) => boolean = existsSync,
+): ShellLaunchSpec {
   if (isMsysOrGitBash()) {
     return resolveDefaultShellLaunchSpec();
   }
 
-  const affinitySpec = resolveAllowedShellLaunchSpec(shellPath);
+  const affinitySpec = resolveAllowedShellLaunchSpec(shellPath, existsImpl);
   if (affinitySpec && (affinitySpec.family === 'zsh' || affinitySpec.family === 'bash')) {
     return affinitySpec;
   }
 
-  const fallbackSpec = resolveFallbackShellLaunchSpec(['zsh', 'bash']);
+  const fallbackSpec = resolveFallbackShellLaunchSpec(['zsh', 'bash'], existsImpl);
   if (fallbackSpec) return fallbackSpec;
 
   return resolveDefaultShellLaunchSpec();
@@ -614,6 +617,7 @@ export function buildWorkerStartupCommand(
   extraEnv: Record<string, string> = {},
   workerCliOverride?: TeamWorkerCli,
   initialPrompt?: string,
+  existsImpl: (path: string) => boolean = existsSync,
 ): string {
   const processSpec = buildWorkerProcessLaunchSpec(
     teamName,
@@ -624,7 +628,7 @@ export function buildWorkerStartupCommand(
     workerCliOverride,
     initialPrompt,
   );
-  const launchSpec = buildWorkerLaunchSpec(process.env.SHELL);
+  const launchSpec = buildWorkerLaunchSpec(process.env.SHELL, existsImpl);
   const leaderNodeDir = resolveLeaderNodePath().replace(/\/[^/]+$/, ''); // dirname
   const pathPrefix = leaderNodeDir ? `export PATH='${leaderNodeDir}':$PATH; ` : '';
   const quotedArgs = processSpec.args.map(shellQuoteSingle).join(' ');

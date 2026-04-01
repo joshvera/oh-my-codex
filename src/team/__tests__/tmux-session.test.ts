@@ -1,7 +1,5 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import { syncBuiltinESMExports } from 'node:module';
 import { PassThrough } from 'node:stream';
 import { mkdtemp, readFile, rm, writeFile, chmod } from 'fs/promises';
 import { join } from 'path';
@@ -59,18 +57,6 @@ function withEmptyPath<T>(fn: () => T): T {
   } finally {
     if (typeof prev === 'string') process.env.PATH = prev;
     else delete process.env.PATH;
-  }
-}
-
-function withMockedExistsSync<T>(mock: typeof fs.existsSync, fn: () => T): T {
-  const original = fs.existsSync;
-  fs.existsSync = mock;
-  syncBuiltinESMExports();
-  try {
-    return fn();
-  } finally {
-    fs.existsSync = original;
-    syncBuiltinESMExports();
   }
 }
 
@@ -647,8 +633,15 @@ describe('buildWorkerStartupCommand', () => {
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
     try {
-      const cmd = withMockedExistsSync((candidate) => candidate === '/bin/zsh', () =>
-        buildWorkerStartupCommand('alpha', 2),
+      const cmd = buildWorkerStartupCommand(
+        'alpha',
+        2,
+        [],
+        process.cwd(),
+        {},
+        undefined,
+        undefined,
+        (candidate) => candidate === '/bin/zsh',
       );
       assert.match(cmd, /OMX_TEAM_WORKER=alpha\/worker-2/);
       assert.match(cmd, /'\/bin\/zsh' -lc/);
@@ -668,8 +661,15 @@ describe('buildWorkerStartupCommand', () => {
     const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
     try {
-      const cmd = withMockedExistsSync((candidate) => candidate === '/opt/homebrew/bin/zsh', () =>
-        buildWorkerStartupCommand('alpha', 2),
+      const cmd = buildWorkerStartupCommand(
+        'alpha',
+        2,
+        [],
+        process.cwd(),
+        {},
+        undefined,
+        undefined,
+        (candidate) => candidate === '/opt/homebrew/bin/zsh',
       );
       assert.match(cmd, /'\/opt\/homebrew\/bin\/zsh' -lc/);
       assert.match(cmd, /source ~\/\.zshrc/);
@@ -1053,8 +1053,15 @@ describe('buildWorkerStartupCommand', () => {
     process.env.SHELL = '/opt/custom/fish';
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
     try {
-      const cmd = withMockedExistsSync((candidate) => candidate === '/opt/custom/fish' || candidate === '/bin/bash', () =>
-        buildWorkerStartupCommand('alpha', 1, [], process.cwd()),
+      const cmd = buildWorkerStartupCommand(
+        'alpha',
+        1,
+        [],
+        process.cwd(),
+        {},
+        undefined,
+        undefined,
+        (candidate) => candidate === '/opt/custom/fish' || candidate === '/bin/bash',
       );
       assert.match(cmd, /\/bin\/bash\b/, 'must fall back to bash when zsh is unavailable');
       assert.match(cmd, /\.bashrc/, 'must source bash rc file for bash fallback');
@@ -1073,8 +1080,15 @@ describe('buildWorkerStartupCommand', () => {
     process.env.SHELL = '/opt/custom/fish';
     process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
     try {
-      const cmd = withMockedExistsSync((candidate) => candidate === '/opt/custom/fish', () =>
-        buildWorkerStartupCommand('alpha', 1, [], process.cwd()),
+      const cmd = buildWorkerStartupCommand(
+        'alpha',
+        1,
+        [],
+        process.cwd(),
+        {},
+        undefined,
+        undefined,
+        (candidate) => candidate === '/opt/custom/fish',
       );
       assert.match(cmd, /'\/bin\/sh' -lc\b/, 'must launch workers through /bin/sh when no supported shells exist');
       assert.doesNotMatch(cmd, /\.zshrc|\.bashrc/, 'must not source zsh/bash rc files for /bin/sh fallback');
