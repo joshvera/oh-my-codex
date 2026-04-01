@@ -1,6 +1,6 @@
 import { spawnSync, execFile } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, readFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   CODEX_BYPASS_FLAG,
@@ -19,6 +19,12 @@ import {
 } from '../scripts/tmux-hook-engine.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
 import { classifySpawnError, resolveCommandPathForPlatform, spawnPlatformCommandSync } from '../utils/platform-command.js';
+import {
+  resolveAllowedShellLaunchSpec,
+  resolveDefaultShellLaunchSpec,
+  resolveFallbackShellLaunchSpec,
+  type ShellLaunchSpec,
+} from '../utils/shell-launch.js';
 
 const execFileAsync = promisify(execFile);
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../hud/constants.js';
@@ -63,11 +69,6 @@ export interface WorkerSubmitPlan {
   rounds: number;
   submitKeyPressesPerRound: number;
   allowAdaptiveRetry: boolean;
-}
-
-interface WorkerLaunchSpec {
-  shell: string;
-  rcFile: string | null;
 }
 
 export interface WorkerProcessLaunchSpec {
@@ -388,42 +389,20 @@ export function buildReconcileHudResizeArgs(
   return ['run-shell', buildBestEffortShellCommand(`tmux ${buildHudResizeCommand(hudPaneId, heightLines)}`)];
 }
 
-const ZSH_CANDIDATE_PATHS = ['/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/homebrew/bin/zsh'];
-const BASH_CANDIDATE_PATHS = ['/bin/bash', '/usr/bin/bash'];
-
-function buildShellLaunchSpec(shell: string, rcFile: string | null): WorkerLaunchSpec {
-  return { shell, rcFile };
-}
-
-function resolveSupportedShellAffinity(shellPath: string | undefined): WorkerLaunchSpec | null {
-  if (!shellPath || shellPath.trim() === '' || !existsSync(shellPath)) return null;
-  if (/\/zsh$/i.test(shellPath)) return buildShellLaunchSpec(shellPath, '~/.zshrc');
-  if (/\/bash$/i.test(shellPath)) return buildShellLaunchSpec(shellPath, '~/.bashrc');
-  return null;
-}
-
-function resolveShellFromCandidates(paths: string[], rcFile: string): WorkerLaunchSpec | null {
-  for (const shellPath of paths) {
-    if (existsSync(shellPath)) return buildShellLaunchSpec(shellPath, rcFile);
-  }
-  return null;
-}
-
-function buildWorkerLaunchSpec(shellPath: string | undefined): WorkerLaunchSpec {
+function buildWorkerLaunchSpec(shellPath: string | undefined): ShellLaunchSpec {
   if (isMsysOrGitBash()) {
-    return buildShellLaunchSpec('/bin/sh', null);
+    return resolveDefaultShellLaunchSpec();
   }
 
-  const affinitySpec = resolveSupportedShellAffinity(shellPath);
-  if (affinitySpec) return affinitySpec;
+  const affinitySpec = resolveAllowedShellLaunchSpec(shellPath);
+  if (affinitySpec && (affinitySpec.family === 'zsh' || affinitySpec.family === 'bash')) {
+    return affinitySpec;
+  }
 
-  const zshSpec = resolveShellFromCandidates(ZSH_CANDIDATE_PATHS, '~/.zshrc');
-  if (zshSpec) return zshSpec;
+  const fallbackSpec = resolveFallbackShellLaunchSpec(['zsh', 'bash']);
+  if (fallbackSpec) return fallbackSpec;
 
-  const bashSpec = resolveShellFromCandidates(BASH_CANDIDATE_PATHS, '~/.bashrc');
-  if (bashSpec) return bashSpec;
-
-  return buildShellLaunchSpec('/bin/sh', null);
+  return resolveDefaultShellLaunchSpec();
 }
 
 function escapeTomlString(value: string): string {

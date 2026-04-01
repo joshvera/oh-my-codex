@@ -75,6 +75,10 @@ import {
   classifySpawnError,
   spawnPlatformCommandSync,
 } from "../utils/platform-command.js";
+import {
+  resolveAllowedShellLaunchSpec,
+  resolveDefaultShellLaunchSpec,
+} from "../utils/shell-launch.js";
 import { buildHookEvent } from "../hooks/extensibility/events.js";
 import { dispatchHookEvent } from "../hooks/extensibility/dispatcher.js";
 import {
@@ -189,21 +193,6 @@ const REASONING_MODES = ["low", "medium", "high", "xhigh"] as const;
 type ReasoningMode = (typeof REASONING_MODES)[number];
 const REASONING_MODE_SET = new Set<string>(REASONING_MODES);
 const REASONING_USAGE = "Usage: omx reasoning <low|medium|high|xhigh>";
-const ALLOWED_SHELLS = new Set([
-  "/bin/sh",
-  "/bin/bash",
-  "/bin/zsh",
-  "/bin/dash",
-  "/bin/fish",
-  "/usr/bin/sh",
-  "/usr/bin/bash",
-  "/usr/bin/zsh",
-  "/usr/bin/dash",
-  "/usr/bin/fish",
-  "/usr/local/bin/bash",
-  "/usr/local/bin/zsh",
-  "/usr/local/bin/fish",
-]);
 const WINDOWS_DETACHED_BOOTSTRAP_DELAY_MS = 2500;
 const CODEX_VERSION_FLAGS = new Set(["--version", "-V"]);
 
@@ -1997,19 +1986,17 @@ export function buildTmuxPaneCommand(
   command: string,
   args: string[],
   shellPath: string | undefined = process.env.SHELL,
+  existsImpl: (path: string) => boolean = existsSync,
 ): string {
   const bareCmd = buildTmuxShellCommand(command, args);
-  let rcSource = "";
-  if (shellPath && /\/zsh$/i.test(shellPath)) {
-    rcSource = "if [ -f ~/.zshrc ]; then source ~/.zshrc; fi; ";
-  } else if (shellPath && /\/bash$/i.test(shellPath)) {
-    rcSource = "if [ -f ~/.bashrc ]; then source ~/.bashrc; fi; ";
-  }
-  const rawShell =
-    shellPath && shellPath.trim() !== "" ? shellPath.trim() : "/bin/sh";
-  const shellBin = ALLOWED_SHELLS.has(rawShell) ? rawShell : "/bin/sh";
+  const launchSpec =
+    resolveAllowedShellLaunchSpec(shellPath, existsImpl) ??
+    resolveDefaultShellLaunchSpec();
+  const rcSource = launchSpec.rcFile
+    ? `if [ -f ${launchSpec.rcFile} ]; then source ${launchSpec.rcFile}; fi; `
+    : "";
   const inner = `${rcSource}exec ${bareCmd}`;
-  return `${quoteShellArg(shellBin)} -lc ${quoteShellArg(inner)}`;
+  return `${quoteShellArg(launchSpec.shell)} -lc ${quoteShellArg(inner)}`;
 }
 
 function quoteShellArg(value: string): string {

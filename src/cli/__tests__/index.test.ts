@@ -1047,11 +1047,27 @@ describe("buildTmuxShellCommand", () => {
 });
 
 describe("buildTmuxPaneCommand", () => {
+  it("wraps Homebrew zsh with zsh profile sourcing", () => {
+    const result = buildTmuxPaneCommand(
+      "codex",
+      ["--model", "gpt-5"],
+      "/opt/homebrew/bin/zsh",
+      (path) => path === "/opt/homebrew/bin/zsh",
+    );
+    assert.ok(
+      result.startsWith("'/opt/homebrew/bin/zsh' -lc "),
+      "should start with Homebrew zsh login shell",
+    );
+    assert.ok(result.includes("source ~/.zshrc"), "should source .zshrc");
+    assert.ok(result.includes("exec "), "should exec the command");
+  });
+
   it("wraps command with zsh profile sourcing for zsh shell", () => {
     const result = buildTmuxPaneCommand(
       "codex",
       ["--model", "gpt-5"],
       "/usr/bin/zsh",
+      (path) => path === "/usr/bin/zsh",
     );
     assert.ok(
       result.startsWith("'/usr/bin/zsh' -lc "),
@@ -1062,7 +1078,7 @@ describe("buildTmuxPaneCommand", () => {
   });
 
   it("wraps command with bash profile sourcing for bash shell", () => {
-    const result = buildTmuxPaneCommand("codex", [], "/bin/bash");
+    const result = buildTmuxPaneCommand("codex", [], "/bin/bash", (path) => path === "/bin/bash");
     assert.ok(
       result.startsWith("'/bin/bash' -lc "),
       "should start with bash login shell",
@@ -1072,7 +1088,7 @@ describe("buildTmuxPaneCommand", () => {
   });
 
   it("skips rc sourcing for unknown shells but still uses login flag", () => {
-    const result = buildTmuxPaneCommand("codex", [], "/bin/fish");
+    const result = buildTmuxPaneCommand("codex", [], "/bin/fish", (path) => path === "/bin/fish");
     assert.ok(
       result.startsWith("'/bin/fish' -lc "),
       "should start with fish login shell",
@@ -1087,6 +1103,16 @@ describe("buildTmuxPaneCommand", () => {
       result.startsWith("'/bin/sh' -lc "),
       "should fall back to /bin/sh",
     );
+  });
+
+  it("falls back to /bin/sh without zsh rc sourcing for unsupported zsh-like paths", () => {
+    const result = buildTmuxPaneCommand("codex", [], "/tmp/zsh");
+    assert.ok(
+      result.startsWith("'/bin/sh' -lc "),
+      "should fall back to /bin/sh for unsupported shells",
+    );
+    assert.ok(!result.includes(".zshrc"), "should not source .zshrc");
+    assert.ok(!result.includes(".bashrc"), "should not source .bashrc");
   });
 });
 

@@ -662,6 +662,26 @@ describe('buildWorkerStartupCommand', () => {
     }
   });
 
+  it('uses Homebrew zsh with ~/.zshrc and exec codex', () => {
+    const prevShell = process.env.SHELL;
+    process.env.SHELL = '/opt/homebrew/bin/zsh';
+    const prevBypass = process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = '0';
+    try {
+      const cmd = withMockedExistsSync((candidate) => candidate === '/opt/homebrew/bin/zsh', () =>
+        buildWorkerStartupCommand('alpha', 2),
+      );
+      assert.match(cmd, /'\/opt\/homebrew\/bin\/zsh' -lc/);
+      assert.match(cmd, /source ~\/\.zshrc/);
+      assert.match(cmd, /exec .*codex/);
+    } finally {
+      if (typeof prevShell === 'string') process.env.SHELL = prevShell;
+      else delete process.env.SHELL;
+      if (typeof prevBypass === 'string') process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT = prevBypass;
+      else delete process.env.OMX_BYPASS_DEFAULT_SYSTEM_PROMPT;
+    }
+  });
+
   it('uses bash with ~/.bashrc and preserves launch args', () => {
     const prevShell = process.env.SHELL;
     process.env.SHELL = '/bin/bash';
