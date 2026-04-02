@@ -103,6 +103,28 @@ async function setupTmuxFixture(wd: string, currentPaneId: string): Promise<Reco
   };
 }
 
+async function withPatchedEnv<T>(
+  overrides: Record<string, string>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const keys = Object.keys(overrides);
+  const previous = new Map<string, string | undefined>();
+  for (const key of keys) {
+    previous.set(key, process.env[key]);
+    process.env[key] = overrides[key];
+  }
+
+  try {
+    return await run();
+  } finally {
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (typeof value === 'string') process.env[key] = value;
+      else delete process.env[key];
+    }
+  }
+}
+
 describe('notify-hook Ralph session resume', () => {
   it('resumes a matching prior Ralph into the current OMX session and rebinds the pane', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-notify-ralph-resume-'));
@@ -532,57 +554,59 @@ describe('notify-hook Ralph session resume', () => {
         tmux_pane_id: '%42',
       });
 
-      let releaseFirstLock: () => void = () => {};
-      const firstLocked = new Promise<void>((resolve) => {
-        releaseFirstLock = resolve;
-      });
-      let firstInsideLock = false;
-      let markFirstInside: () => void = () => {};
-      const firstEntered = new Promise<void>((resolve) => {
-        markFirstInside = resolve;
-      });
+      await withPatchedEnv(await setupTmuxFixture(wd, '%88'), async () => {
+        let releaseFirstLock: () => void = () => {};
+        const firstLocked = new Promise<void>((resolve) => {
+          releaseFirstLock = resolve;
+        });
+        let firstInsideLock = false;
+        let markFirstInside: () => void = () => {};
+        const firstEntered = new Promise<void>((resolve) => {
+          markFirstInside = resolve;
+        });
 
-      const firstResume = reconcileRalphSessionResume({
-        stateDir,
-        payloadSessionId: 'codex-session-1',
-        payloadThreadId: 'thread-concurrent-1',
-        env: { ...process.env, TMUX_PANE: '%55' },
-        hooks: {
-          afterLockAcquired: async () => {
-            firstInsideLock = true;
-            markFirstInside();
-            await firstLocked;
+        const firstResume = reconcileRalphSessionResume({
+          stateDir,
+          payloadSessionId: 'codex-session-1',
+          payloadThreadId: 'thread-concurrent-1',
+          env: { ...process.env, TMUX_PANE: '%55' },
+          hooks: {
+            afterLockAcquired: async () => {
+              firstInsideLock = true;
+              markFirstInside();
+              await firstLocked;
+            },
           },
-        },
+        });
+
+        await firstEntered;
+        assert.equal(firstInsideLock, true);
+
+        const secondResume = reconcileRalphSessionResume({
+          stateDir,
+          payloadSessionId: 'codex-session-1',
+          payloadThreadId: 'thread-concurrent-1',
+          env: { ...process.env, TMUX_PANE: '%56' },
+        });
+
+        releaseFirstLock();
+
+        const [firstResult, secondResult] = await Promise.all([firstResume, secondResume]);
+        assert.equal(firstResult.resumed, true);
+        assert.equal(secondResult.resumed, false);
+        assert.equal(secondResult.reason, 'current_ralph_active');
+
+        const currentState = JSON.parse(await readFile(join(currentSessionDir, 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
+        assert.equal(currentState.active, true);
+        assert.equal(currentState.owner_omx_session_id, currentOmxSessionId);
+        assert.equal(currentState.owner_codex_session_id, 'codex-session-1');
+        assert.equal(currentState.tmux_pane_id, '%56');
+
+        const priorState = JSON.parse(await readFile(join(priorSessionDir, 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
+        assert.equal(priorState.active, false);
+        assert.equal(priorState.current_phase, 'cancelled');
+        assert.equal(priorState.stop_reason, 'ownership_transferred');
       });
-
-      await firstEntered;
-      assert.equal(firstInsideLock, true);
-
-      const secondResume = reconcileRalphSessionResume({
-        stateDir,
-        payloadSessionId: 'codex-session-1',
-        payloadThreadId: 'thread-concurrent-1',
-        env: { ...process.env, TMUX_PANE: '%56' },
-      });
-
-      releaseFirstLock();
-
-      const [firstResult, secondResult] = await Promise.all([firstResume, secondResume]);
-      assert.equal(firstResult.resumed, true);
-      assert.equal(secondResult.resumed, false);
-      assert.equal(secondResult.reason, 'current_ralph_active');
-
-      const currentState = JSON.parse(await readFile(join(currentSessionDir, 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(currentState.active, true);
-      assert.equal(currentState.owner_omx_session_id, currentOmxSessionId);
-      assert.equal(currentState.owner_codex_session_id, 'codex-session-1');
-      assert.equal(currentState.tmux_pane_id, '%56');
-
-      const priorState = JSON.parse(await readFile(join(priorSessionDir, 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
-      assert.equal(priorState.active, false);
-      assert.equal(priorState.current_phase, 'cancelled');
-      assert.equal(priorState.stop_reason, 'ownership_transferred');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

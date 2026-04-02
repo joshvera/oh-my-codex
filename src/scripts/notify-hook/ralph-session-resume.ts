@@ -133,8 +133,14 @@ async function readCurrentOmxSessionId(stateDir: string): Promise<string> {
   return SESSION_ID_PATTERN.test(sessionId) ? sessionId : '';
 }
 
+function resolveResumePane(env: NodeJS.ProcessEnv = process.env): string {
+  const injectedPane = captureTmuxPaneFromEnv(env);
+  if (env !== process.env && injectedPane) return injectedPane;
+  return resolveCodexPane() || injectedPane || '';
+}
+
 function bindCurrentPane(state: Record<string, unknown>, nowIso: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
-  const paneId = resolveCodexPane() || captureTmuxPaneFromEnv(env);
+  const paneId = resolveResumePane(env);
   if (!paneId) return state;
 
   return {
@@ -223,7 +229,7 @@ export async function reconcileRalphSessionResume({
         delete updated.owner_codex_thread_id;
         changed = true;
       }
-      const currentPaneId = resolveCodexPane() || captureTmuxPaneFromEnv(env);
+      const currentPaneId = resolveResumePane(env);
       const currentStatePaneId = safeString(updated.tmux_pane_id).trim();
       if (currentPaneId && currentPaneId !== currentStatePaneId) {
         Object.assign(updated, bindCurrentPane(updated, nowIso, env));
