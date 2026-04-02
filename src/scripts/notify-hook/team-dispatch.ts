@@ -367,7 +367,7 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
   if (!target) {
     return { ok: false, reason: 'missing_tmux_target' };
   }
-  const resolution = await resolvePaneTarget(target, '', '', cwd, {});
+  const resolution = await resolvePaneTarget(target, '', '', '', {});
   if (!resolution.paneTarget) {
     return { ok: false, reason: `target_resolution_failed:${resolution.reason}` };
   }
