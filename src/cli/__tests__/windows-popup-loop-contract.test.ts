@@ -15,7 +15,10 @@ const fallbackWatcherSource = readFileSync(join(repoRoot, 'src', 'scripts', 'not
 
 describe('Windows popup loop contracts', () => {
   it('keeps Windows helper spawns hidden', () => {
-    assert.match(cliIndex, /detached:\s*shouldDetachBackgroundHelper\(\),\s*[\s\S]*?stdio:\s*"ignore",\s*[\s\S]*?windowsHide:\s*true/);
+    assert.match(cliIndex, /buildWindowsMsysBackgroundHelperBootstrapScript/);
+    assert.match(cliIndex, /detached:\s*shouldDetachBackgroundHelper\(options\.env,\s*process\.platform\),\s*[\s\S]*?stdio:\s*"ignore",\s*[\s\S]*?windowsHide:\s*true/);
+    assert.match(cliIndex, /spawnSync\([\s\S]*?buildWindowsMsysBackgroundHelperBootstrapScript\([\s\S]*?windowsHide:\s*true/);
+    assert.match(cliIndex, /detached:\s*true,\s*stdio:\s*'ignore',\s*windowsHide:\s*true/);
     assert.match(cliIndex, /spawnSync\(\s*process\.execPath,\s*\[watcherScript,\s*"--once",\s*"--cwd",\s*cwd,\s*"--notify-script",\s*notifyScript\],\s*\{[\s\S]*?windowsHide:\s*true/);
     assert.match(cliIndex, /spawnSync\(process\.execPath,\s*\[watcherScript,\s*"--once",\s*"--cwd",\s*cwd\],\s*\{[\s\S]*?windowsHide:\s*true/);
     assert.match(starPrompt, /spawnSyncFn\('gh',\s*\['api',[\s\S]*?windowsHide:\s*true/);

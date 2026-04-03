@@ -2250,7 +2250,97 @@ export function shouldDetachBackgroundHelper(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): boolean {
-  return !(platform === "win32" && isMsysOrGitBash(env, platform));
+  // The long-running watcher/helper itself must stay detached so it can
+  // survive parent loss. Windows Git Bash/MSYS uses a short hidden bootstrap
+  // process so the detached helper is created without stealing focus.
+  void env;
+  void platform;
+  return true;
+}
+
+export type BackgroundHelperLaunchMode =
+  | "direct-detached"
+  | "windows-msys-bootstrap";
+
+export function resolveBackgroundHelperLaunchMode(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): BackgroundHelperLaunchMode {
+  return platform === "win32" && isMsysOrGitBash(env, platform)
+    ? "windows-msys-bootstrap"
+    : "direct-detached";
+}
+
+export function buildWindowsMsysBackgroundHelperBootstrapScript(
+  helperArgs: readonly string[],
+  cwd: string,
+): string {
+  const helperArgsLiteral = JSON.stringify(helperArgs);
+  const cwdLiteral = JSON.stringify(cwd);
+  return [
+    "const { spawn } = require('child_process');",
+    `const child = spawn(process.execPath, ${helperArgsLiteral}, { cwd: ${cwdLiteral}, detached: true, stdio: 'ignore', windowsHide: true, env: process.env });`,
+    "if (!child.pid) process.exit(1);",
+    "process.stdout.write(String(child.pid));",
+    "child.unref();",
+  ].join("");
+}
+
+async function launchBackgroundHelper(
+  helperArgs: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv },
+): Promise<number | undefined> {
+  const launchMode = resolveBackgroundHelperLaunchMode(
+    options.env,
+    process.platform,
+  );
+
+  if (launchMode === "windows-msys-bootstrap") {
+    const { spawnSync } = await import("child_process");
+    const bootstrap = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        buildWindowsMsysBackgroundHelperBootstrapScript(
+          helperArgs,
+          options.cwd,
+        ),
+      ],
+      {
+        cwd: options.cwd,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        env: options.env,
+      },
+    );
+
+    if (bootstrap.error) {
+      throw bootstrap.error;
+    }
+
+    if (bootstrap.status !== 0) {
+      const detail = (bootstrap.stderr || bootstrap.stdout || "").trim();
+      throw new Error(
+        detail || `background helper bootstrap exited ${bootstrap.status}`,
+      );
+    }
+
+    const helperPid = Number.parseInt((bootstrap.stdout || "").trim(), 10);
+    return Number.isFinite(helperPid) && helperPid > 0
+      ? helperPid
+      : undefined;
+  }
+
+  const child = spawn(process.execPath, helperArgs, {
+    cwd: options.cwd,
+    detached: shouldDetachBackgroundHelper(options.env, process.platform),
+    stdio: "ignore",
+    windowsHide: true,
+    env: options.env,
+  });
+  child.unref();
+  return child.pid;
 }
 
 function parseWatcherPidFile(content: string): number | null {
@@ -2324,40 +2414,50 @@ async function startNotifyFallbackWatcher(
       );
     },
   );
-  const child = spawn(
-    process.execPath,
-    [
-      watcherScript,
-      "--cwd",
+  const watcherEnv = buildNotifyFallbackWatcherEnv(process.env, {
+    codexHomeOverride: options.codexHomeOverride,
+    enableAuthority: options.enableAuthority === true,
+    sessionId: options.sessionId,
+  });
+  let watcherPid: number | undefined;
+  try {
+    watcherPid = await launchBackgroundHelper(
+      [
+        watcherScript,
+        "--cwd",
+        cwd,
+        "--notify-script",
+        notifyScript,
+        "--pid-file",
+        pidPath,
+        "--parent-pid",
+        String(process.pid),
+        ...(process.env.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS
+          ? [
+            "--max-lifetime-ms",
+            process.env.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS,
+          ]
+          : []),
+      ],
+      {
+        cwd,
+        env: watcherEnv,
+      },
+    );
+  } catch (error: unknown) {
+    console.warn("[omx] warning: failed to launch notify fallback watcher", {
       cwd,
-      "--notify-script",
-      notifyScript,
-      "--pid-file",
-      pidPath,
-      "--parent-pid",
-      String(process.pid),
-      ...(process.env.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS
-        ? ["--max-lifetime-ms", process.env.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS]
-        : []),
-    ],
-    {
-      cwd,
-      detached: shouldDetachBackgroundHelper(),
-      stdio: "ignore",
-      windowsHide: true,
-      env: buildNotifyFallbackWatcherEnv(process.env, {
-        codexHomeOverride: options.codexHomeOverride,
-        enableAuthority: options.enableAuthority === true,
-        sessionId: options.sessionId,
-      }),
-    },
-  );
-  child.unref();
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  if (!watcherPid) return;
 
   await writeFile(
     pidPath,
     JSON.stringify(
-      { pid: child.pid, started_at: new Date().toISOString() },
+      { pid: watcherPid, started_at: new Date().toISOString() },
       null,
       2,
     ),
@@ -2408,19 +2508,26 @@ async function startHookDerivedWatcher(cwd: string): Promise<void> {
       );
     },
   );
-  const child = spawn(process.execPath, [watcherScript, "--cwd", cwd], {
-    cwd,
-    detached: shouldDetachBackgroundHelper(),
-    stdio: "ignore",
-    windowsHide: true,
-    env: process.env,
-  });
-  child.unref();
+  let watcherPid: number | undefined;
+  try {
+    watcherPid = await launchBackgroundHelper([watcherScript, "--cwd", cwd], {
+      cwd,
+      env: process.env,
+    });
+  } catch (error: unknown) {
+    console.warn("[omx] warning: failed to launch hook-derived watcher", {
+      cwd,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  if (!watcherPid) return;
 
   await writeFile(
     pidPath,
     JSON.stringify(
-      { pid: child.pid, started_at: new Date().toISOString() },
+      { pid: watcherPid, started_at: new Date().toISOString() },
       null,
       2,
     ),

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { initTeamState, enqueueDispatchRequest, readDispatchRequest } from '../../team/state.js';
+import { buildWindowsMsysBackgroundHelperBootstrapScript } from '../../cli/index.js';
 import { writeSessionStart } from '../session.js';
 
 async function appendLine(path: string, line: object): Promise<void> {
@@ -2403,4 +2404,52 @@ describe('notify-fallback watcher', () => {
       await rm(tempHome, { recursive: true, force: true });
     }
   });
+  it('keeps the detached helper alive after the hidden bootstrap exits', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-fallback-bootstrap-survival-'));
+    const readyPath = join(wd, 'helper-ready.json');
+    const helperScriptPath = join(wd, 'helper-survival.js');
+
+    try {
+      await writeFile(helperScriptPath, `
+const fs = require('node:fs');
+const readyPath = process.argv[2];
+fs.writeFileSync(readyPath, JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }));
+setInterval(() => {}, 1000);
+`);
+
+      const bootstrap = spawnSync(
+        process.execPath,
+        [
+          '-e',
+          buildWindowsMsysBackgroundHelperBootstrapScript([helperScriptPath, readyPath], wd),
+        ],
+        {
+          cwd: wd,
+          encoding: 'utf-8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        },
+      );
+      assert.equal(bootstrap.status, 0, bootstrap.stderr || bootstrap.stdout);
+
+      const helperPid = Number.parseInt((bootstrap.stdout || '').trim(), 10);
+      assert.ok(Number.isFinite(helperPid) && helperPid > 0, 'expected detached helper pid from bootstrap');
+
+      await waitFor(async () => {
+        try {
+          const ready = JSON.parse(await readFile(readyPath, 'utf-8')) as { pid?: number };
+          return ready.pid === helperPid;
+        } catch {
+          return false;
+        }
+      }, 4000, 50);
+
+      assert.ok(isPidAlive(helperPid), 'expected detached helper to survive after bootstrap exit');
+      process.kill(helperPid, 'SIGTERM');
+      await waitFor(async () => !isPidAlive(helperPid), 4000, 50);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });
