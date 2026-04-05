@@ -529,6 +529,63 @@ describe('executeTeamApiOperation: mailbox-mark-delivered', () => {
     }
   });
 
+  it('marks leader-fixed mailbox delivery from a worker worktree and resolves the matching dispatch receipt', async () => {
+    const teamName = 'mark-dlv-leader-worktree';
+    const repoCwd = await mkdtemp(join(tmpdir(), 'omx-interop-mark-dlv-root-'));
+    const workerCwd = await mkdtemp(join(tmpdir(), 'omx-interop-mark-dlv-worktree-'));
+    const prevTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    delete process.env.OMX_TEAM_STATE_ROOT;
+
+    try {
+      await initTeamState(teamName, 'leader mailbox delivery receipt', 'executor', 2, repoCwd);
+      process.env.OMX_TEAM_STATE_ROOT = join(repoCwd, '.omx', 'state');
+
+      const sendResult = await executeTeamApiOperation('send-message', {
+        team_name: teamName,
+        from_worker: 'worker-1',
+        to_worker: 'leader-fixed',
+        body: 'DONE: worker-1 finished a mailbox integrity probe',
+      }, workerCwd);
+      assert.equal(sendResult.ok, true);
+      if (!sendResult.ok) throw new Error('expected successful leader send-message result');
+
+      const message = sendResult.data.message as Record<string, unknown>;
+      const messageId = String(message.message_id ?? '');
+      assert.ok(messageId, 'leader mailbox message should include a message_id');
+
+      const pendingRequests = await listDispatchRequests(teamName, repoCwd, { kind: 'mailbox', to_worker: 'leader-fixed' });
+      const pendingDispatch = pendingRequests.find((request) => request.message_id === messageId);
+      assert.ok(pendingDispatch, 'leader mailbox send should enqueue a matching dispatch request');
+
+      const result = await executeTeamApiOperation('mailbox-mark-delivered', {
+        team_name: teamName,
+        worker: 'leader-fixed',
+        message_id: messageId,
+      }, workerCwd);
+      assert.equal(result.ok, true);
+      if (!result.ok) throw new Error('expected successful leader mailbox-mark-delivered result');
+      assert.equal(result.data.updated, true);
+      assert.equal(result.data.dispatch_request_id, pendingDispatch?.request_id);
+      assert.equal(result.data.dispatch_updated, true);
+
+      const updatedDispatch = await readDispatchRequest(teamName, pendingDispatch!.request_id, repoCwd);
+      assert.equal(updatedDispatch?.status, 'delivered');
+      assert.ok(updatedDispatch?.delivered_at, 'leader dispatch receipt should record delivered_at');
+
+      const leaderMailbox = JSON.parse(await readFile(
+        join(repoCwd, '.omx', 'state', 'team', teamName, 'mailbox', 'leader-fixed.json'),
+        'utf-8',
+      )) as { messages?: Array<Record<string, unknown>> };
+      const deliveredMessage = (leaderMailbox.messages ?? []).find((entry) => entry.message_id === messageId);
+      assert.equal(typeof deliveredMessage?.delivered_at, 'string');
+    } finally {
+      if (typeof prevTeamStateRoot === 'string') process.env.OMX_TEAM_STATE_ROOT = prevTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(repoCwd, { recursive: true, force: true });
+      await rm(workerCwd, { recursive: true, force: true });
+    }
+  });
+
   it('reports when no matching mailbox dispatch request exists', async () => {
     const { cwd, cleanup } = await setupTeam('mark-dlv-no-dispatch');
     try {

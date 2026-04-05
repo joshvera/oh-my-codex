@@ -10,6 +10,8 @@ import {
   paneLooksReady,
 } from '../tmux-hook-engine.js';
 
+export const PANE_READINESS_UNVERIFIED_REASON = 'pane_readiness_unverified';
+
 export function mapPaneInjectionReadinessReason(reason: any): any {
   return reason === 'pane_running_shell' ? 'agent_not_running' : reason;
 }
@@ -20,7 +22,10 @@ export async function evaluatePaneInjectionReadiness(paneTarget: any, {
   requireRunningAgent = true,
   requireReady = true,
   requireIdle = true,
+  requireObservableState = false,
+  requireCaptureEvidence = undefined,
 } = {}): Promise<any> {
+  const normalizedRequireObservableState = typeof requireCaptureEvidence === 'boolean' ? requireCaptureEvidence : requireObservableState;
   const target = safeString(paneTarget).trim();
   if (!target) {
     return {
@@ -52,6 +57,15 @@ export async function evaluatePaneInjectionReadiness(paneTarget: any, {
 
   let paneCurrentCommand = '';
   let paneRunningShell = false;
+  const buildReadinessResult = (ok: boolean, reason: string, paneCapture: string, readinessEvidence: string) => ({
+    ok,
+    sent: false,
+    reason,
+    paneTarget: target,
+    paneCurrentCommand,
+    paneCapture,
+    readinessEvidence,
+  });
   try {
     const result = await runProcess('tmux', buildPaneCurrentCommandArgv(target), 1000);
     paneCurrentCommand = safeString(result.stdout).trim();
@@ -63,40 +77,33 @@ export async function evaluatePaneInjectionReadiness(paneTarget: any, {
   try {
     const capture = await runProcess('tmux', buildCapturePaneArgv(target, captureLines), 1000);
     const paneCapture = safeString(capture.stdout);
-    if (paneCapture.trim() !== '') {
+    const hasCaptureEvidence = paneCapture.trim() !== '';
+    if (hasCaptureEvidence) {
       const paneShowsLiveAgent = paneLooksReady(paneCapture) || paneHasActiveTask(paneCapture);
       if (paneRunningShell && !paneShowsLiveAgent) {
-        return {
-          ok: false,
-          sent: false,
-          reason: 'pane_running_shell',
-          paneTarget: target,
-          paneCurrentCommand,
-          paneCapture,
-        };
+        return buildReadinessResult(false, 'pane_running_shell', paneCapture, 'captured');
       }
       if (requireIdle && paneHasActiveTask(paneCapture)) {
-        return {
-          ok: false,
-          sent: false,
-          reason: 'pane_has_active_task',
-          paneTarget: target,
-          paneCurrentCommand,
-          paneCapture,
-        };
+        return buildReadinessResult(false, 'pane_has_active_task', paneCapture, 'captured');
       }
       if (requireReady && !paneLooksReady(paneCapture)) {
+        return buildReadinessResult(false, 'pane_not_ready', paneCapture, 'captured');
+      }
+      if (normalizedRequireObservableState && !paneShowsLiveAgent) {
+        return buildReadinessResult(false, PANE_READINESS_UNVERIFIED_REASON, paneCapture, 'captured_unverified');
+      }
+      if (requireObservableState && !paneShowsLiveAgent) {
         return {
           ok: false,
           sent: false,
-          reason: 'pane_not_ready',
+          reason: 'pane_state_unverified',
           paneTarget: target,
           paneCurrentCommand,
           paneCapture,
         };
       }
     }
-    if (paneRunningShell && paneCapture.trim() === '') {
+    if (paneRunningShell && !hasCaptureEvidence) {
       return {
         ok: false,
         sent: false,
@@ -106,33 +113,18 @@ export async function evaluatePaneInjectionReadiness(paneTarget: any, {
         paneCapture,
       };
     }
-    return {
-      ok: true,
-      sent: false,
-      reason: 'ok',
-      paneTarget: target,
-      paneCurrentCommand,
-      paneCapture,
-    };
+    if (normalizedRequireObservableState && !hasCaptureEvidence && !paneCurrentCommand) {
+      return buildReadinessResult(false, PANE_READINESS_UNVERIFIED_REASON, paneCapture, 'capture_empty');
+    }
+    return buildReadinessResult(true, 'ok', paneCapture, hasCaptureEvidence ? 'captured' : (paneCurrentCommand ? 'command_only' : 'none'));
   } catch {
     if (paneRunningShell) {
-      return {
-        ok: false,
-        sent: false,
-        reason: 'pane_running_shell',
-        paneTarget: target,
-        paneCurrentCommand,
-        paneCapture: '',
-      };
+      return buildReadinessResult(false, 'pane_running_shell', '', 'capture_failed');
     }
-    return {
-      ok: true,
-      sent: false,
-      reason: 'ok',
-      paneTarget: target,
-      paneCurrentCommand,
-      paneCapture: '',
-    };
+    if (normalizedRequireObservableState) {
+      return buildReadinessResult(false, PANE_READINESS_UNVERIFIED_REASON, '', 'capture_failed');
+    }
+    return buildReadinessResult(true, 'ok', '', paneCurrentCommand ? 'command_only' : 'none');
   }
 }
 

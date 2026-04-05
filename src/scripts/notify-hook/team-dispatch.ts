@@ -373,6 +373,7 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
   if (!target) {
     return { ok: false, reason: 'missing_tmux_target' };
   }
+  const leaderTargeted = request.to_worker === 'leader-fixed';
   let resolution;
   if (target.type === 'session') {
     const paneId = await resolveSessionToPane(target.value).catch(() => null);
@@ -385,14 +386,24 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
   if (!resolution.paneTarget) {
     return { ok: false, reason: `target_resolution_failed:${resolution.reason}` };
   }
+  const isLeaderMailboxDispatch = request.to_worker === 'leader-fixed';
   const paneGuard = await evaluatePaneInjectionReadiness(resolution.paneTarget, {
     skipIfScrolling: true,
-    requireRunningAgent: false,
+    requireRunningAgent: leaderTargeted,
     requireReady: false,
     requireIdle: false,
+    requireObservableState: leaderTargeted,
   });
   if (!paneGuard.ok) {
-    return { ok: false, reason: paneGuard.reason };
+    return {
+      ok: false,
+      reason: paneGuard.reason,
+      pane: resolution.paneTarget,
+      pane_source: resolution.source || null,
+      readiness_evidence: paneGuard.readinessEvidence || null,
+      pane_current_command: paneGuard.paneCurrentCommand || null,
+      tmux_injection_attempted: false,
+    };
   }
 
   const attemptCountAtStart = Number.isFinite(request.attempt_count)
@@ -428,7 +439,15 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
     typePrompt: shouldTypePrompt,
   });
   if (!sendResult.ok) {
-    return { ok: false, reason: sendResult.error || sendResult.reason };
+    return {
+      ok: false,
+      reason: sendResult.error || sendResult.reason,
+      pane: resolution.paneTarget,
+      pane_source: resolution.source || null,
+      readiness_evidence: paneGuard.readinessEvidence || null,
+      pane_current_command: paneGuard.paneCurrentCommand || null,
+      tmux_injection_attempted: true,
+    };
   }
 
   // Post-injection verification: confirm the trigger text was consumed.
@@ -449,7 +468,15 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
       // Worker is actively processing (mirrors sync path tmux-session.ts:1292-1294)
       if (paneHasActiveTask(wideCap.stdout)) {
         runtimeExec({ command: 'MarkDelivered', request_id: request.request_id }, stateDir);
-        return { ok: true, reason: 'tmux_send_keys_confirmed_active_task', pane: resolution.paneTarget };
+        return {
+          ok: true,
+          reason: 'tmux_send_keys_confirmed_active_task',
+          pane: resolution.paneTarget,
+          pane_source: resolution.source || null,
+          readiness_evidence: paneGuard.readinessEvidence || null,
+          pane_current_command: paneGuard.paneCurrentCommand || null,
+          tmux_injection_attempted: true,
+        };
       }
       // Do not declare success while a *worker* pane is still bootstrapping / not
       // input-ready. Otherwise a pre-ready send can be marked "confirmed" and later
@@ -462,7 +489,15 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
       const triggerNearTail = capturedPaneContainsTriggerNearTail(wideCap.stdout, request.trigger_message);
       if (!triggerInNarrow && !triggerNearTail) {
         runtimeExec({ command: 'MarkDelivered', request_id: request.request_id }, stateDir);
-        return { ok: true, reason: 'tmux_send_keys_confirmed', pane: resolution.paneTarget };
+        return {
+          ok: true,
+          reason: 'tmux_send_keys_confirmed',
+          pane: resolution.paneTarget,
+          pane_source: resolution.source || null,
+          readiness_evidence: paneGuard.readinessEvidence || null,
+          pane_current_command: paneGuard.paneCurrentCommand || null,
+          tmux_injection_attempted: true,
+        };
       }
     } catch {
       // capture failed; fall through to retry C-m
@@ -477,7 +512,15 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
   }
 
   // Trigger text is still visible after all retry rounds.
-  return { ok: true, reason: 'tmux_send_keys_unconfirmed', pane: resolution.paneTarget };
+  return {
+    ok: true,
+    reason: 'tmux_send_keys_unconfirmed',
+    pane: resolution.paneTarget,
+    pane_source: resolution.source || null,
+    readiness_evidence: paneGuard.readinessEvidence || null,
+    pane_current_command: paneGuard.paneCurrentCommand || null,
+    tmux_injection_attempted: true,
+  };
 }
 
 function shouldSkipRequest(request) {
@@ -511,6 +554,19 @@ async function appendDeliveryTelemetry(logsDir, event) {
     source: 'notify-hook.team-dispatch',
     ...event,
   }).catch(() => {});
+}
+
+function buildDispatchAttemptEvidence(result, fallback = {}) {
+  return {
+    pane_target: safeString(result?.pane || fallback.pane || '').trim() || null,
+    pane_source: safeString(result?.pane_source || fallback.pane_source || '').trim() || null,
+    readiness_evidence: safeString(result?.readiness_evidence || fallback.readiness_evidence || '').trim() || null,
+    pane_current_command: safeString(result?.pane_current_command || fallback.pane_current_command || '').trim() || null,
+    tmux_injection_attempted:
+      typeof result?.tmux_injection_attempted === 'boolean'
+        ? result.tmux_injection_attempted
+        : (typeof fallback.tmux_injection_attempted === 'boolean' ? fallback.tmux_injection_attempted : null),
+  };
 }
 
 export async function drainPendingTeamDispatch({
@@ -589,6 +645,10 @@ export async function drainPendingTeamDispatch({
               tmux_session: safeString(config?.tmux_session).trim() || null,
               leader_pane_id: safeString(config?.leader_pane_id).trim() || null,
               tmux_injection_attempted: false,
+              pane_target: null,
+              pane_source: null,
+              readiness_evidence: null,
+              pane_current_command: null,
             });
             await appendDeliveryTelemetry(logsDir, {
               event: 'dispatch_result',
@@ -669,6 +729,7 @@ export async function drainPendingTeamDispatch({
               worker: request.to_worker,
               attempt: request.attempt_count,
               reason: result.reason,
+              ...buildDispatchAttemptEvidence(result),
             });
             await appendDeliveryTelemetry(logsDir, {
               event: 'dispatch_result',
@@ -706,6 +767,7 @@ export async function drainPendingTeamDispatch({
               worker: request.to_worker,
               message_id: request.message_id || null,
               reason: request.last_reason,
+              ...buildDispatchAttemptEvidence(result),
             });
             await appendDeliveryTelemetry(logsDir, {
               event: 'dispatch_result',
@@ -748,6 +810,7 @@ export async function drainPendingTeamDispatch({
             worker: request.to_worker,
             message_id: request.message_id || null,
             reason: result.reason,
+            ...buildDispatchAttemptEvidence(result),
           });
           await appendDeliveryTelemetry(logsDir, {
             event: 'dispatch_result',
@@ -774,6 +837,7 @@ export async function drainPendingTeamDispatch({
             worker: request.to_worker,
             message_id: request.message_id || null,
             reason: result.reason,
+            ...buildDispatchAttemptEvidence(result),
           });
           await appendDeliveryTelemetry(logsDir, {
             event: 'dispatch_result',

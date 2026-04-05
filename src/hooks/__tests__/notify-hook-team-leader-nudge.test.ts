@@ -1184,6 +1184,102 @@ exit 0
     });
   });
 
+  it('injects leader nudge when capture-pane fails but the leader pane is a live codex pane', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'capture-failure-live-leader';
+      const teamDir = join(stateDir, 'team', teamName);
+      const mailboxDir = join(teamDir, 'mailbox');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(mailboxDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(stateDir, 'team-state.json'), {
+        active: true,
+        team_name: teamName,
+        current_phase: 'team-exec',
+      });
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'capture-failure-live-leader:0',
+        leader_pane_id: '%74',
+      });
+      await writeJson(join(mailboxDir, 'leader-fixed.json'), {
+        worker: 'leader-fixed',
+        messages: [
+          {
+            message_id: 'm1',
+            from_worker: 'worker-1',
+            to_worker: 'leader-fixed',
+            body: 'please review capture failure path',
+            created_at: '2026-03-12T00:00:00.000Z',
+          },
+        ],
+      });
+
+      const fakeTmux = `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while (($#)); do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$format" == "#{pane_in_mode}" && "$target" == "%74" ]]; then
+    echo "0"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_current_command}" && "$target" == "%74" ]]; then
+    echo "codex"
+    exit 0
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "capture-pane" ]]; then
+  echo "capture failed" >&2
+  exit 1
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  echo "%1 12345"
+  exit 0
+fi
+exit 0
+`;
+      await writeFile(fakeTmuxPath, fakeTmux);
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHook(cwd, fakeBinDir);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /capture-pane -t %74 -p -S -80/);
+      assert.match(tmuxLog, /send-keys -t %74/, 'capture failures should not suppress leader injection into a live codex pane');
+
+      const eventsPath = join(teamDir, 'events', 'events.ndjson');
+      if (existsSync(eventsPath)) {
+        const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        const deferred = events.find((entry: { type?: string }) => entry.type === 'leader_notification_deferred');
+        assert.equal(deferred, undefined, 'capture failure alone should not defer a live codex leader pane');
+      }
+    });
+  });
+
   it('does not inject leader nudge while leader pane is in copy-mode', async () => {
     await withTempWorkingDir(async (cwd) => {
       const omxDir = join(cwd, '.omx');

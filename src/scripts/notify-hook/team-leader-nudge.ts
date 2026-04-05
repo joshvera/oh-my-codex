@@ -11,6 +11,7 @@ import { readJsonIfExists, getScopedStateDirsForCurrentSession } from './state-i
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
 import { evaluatePaneInjectionReadiness, sendPaneInput } from './team-tmux-guard.js';
+import { resolvePaneTarget } from './tmux-injection.js';
 import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
 import { isLeaderRuntimeStale } from '../../team/leader-activity.js';
 import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
@@ -610,7 +611,21 @@ export async function maybeNudgeTeamLeader({
       : [];
     const canonicalLeaderPaneId = safeString(leaderPaneId).trim();
     if (!tmuxSession && !canonicalLeaderPaneId) continue;
-    const tmuxTarget = canonicalLeaderPaneId;
+    let tmuxTarget = canonicalLeaderPaneId;
+    if (canonicalLeaderPaneId) {
+      const resolvedLeaderTarget = await resolvePaneTarget(
+        { type: 'pane', value: canonicalLeaderPaneId },
+        '',
+        canonicalLeaderPaneId,
+        '',
+        {},
+      ).catch(() => null);
+      if (resolvedLeaderTarget?.paneTarget) {
+        tmuxTarget = safeString(resolvedLeaderTarget.paneTarget).trim();
+      } else if (resolvedLeaderTarget && ['target_is_hud_pane', 'pane_cwd_mismatch'].includes(safeString(resolvedLeaderTarget.reason).trim())) {
+        tmuxTarget = '';
+      }
+    }
     const paneStatus = tmuxSession
       ? await checkWorkerPanesAlive(tmuxSession, workerPaneIds)
       : { alive: false, paneCount: 0 };
@@ -814,6 +829,8 @@ export async function maybeNudgeTeamLeader({
           leader_pane_id: leaderPaneId || null,
           tmux_session: tmuxSession || null,
           tmux_injection_attempted: false,
+          pane_target: tmuxTarget,
+          readiness_evidence: paneGuard.readinessEvidence || null,
           pane_current_command: paneGuard.paneCurrentCommand || null,
           injection_skip_reason: paneGuard.reason,
           source_type: 'leader_nudge',
