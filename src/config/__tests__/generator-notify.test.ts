@@ -49,6 +49,7 @@ describe('config generator', () => {
       const toml = await readFile(configPath, 'utf-8');
 
       assert.match(toml, /^notify = \["node", ".*notify-hook\.js"\]$/m);
+      assert.match(toml, /^codex_hooks = true$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -157,6 +158,7 @@ describe('config generator', () => {
 
       // Top-level keys present and before [features]
       assert.match(rerun, /^notify = \["node", ".*notify-hook\.js"\]$/m);
+      assert.match(rerun, /^codex_hooks = true$/m);
       assert.match(rerun, /^model_reasoning_effort = "high"$/m);
       const notifyIdx = rerun.indexOf('notify =');
       const featuresIdx = rerun.indexOf('[features]');

@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-04-06
+
+Minor release for native Codex hook ownership, first-party Bash pre/post tool guidance, runtime/team delivery hardening, and workflow-doc refresh after `0.11.13`.
+
+### Added
+- **First-party native Bash pre/post hooks** — OMX now ships documented `PreToolUse` / `PostToolUse` Bash guidance and supporting native-hook wiring so operators can extend tool lifecycle behavior without relying on ad hoc shell glue. (PR [#1316](https://github.com/Yeachan-Heo/oh-my-codex/pull/1316))
+
+### Fixed
+- **Native hook ownership + continuity** — repo-local native Codex hook ownership now survives session-start and stop-state continuity more reliably, and setup/uninstall flows align with the landed runtime contract. (PRs [#1306](https://github.com/Yeachan-Heo/oh-my-codex/pull/1306), [#1314](https://github.com/Yeachan-Heo/oh-my-codex/pull/1314))
+- **Team/runtime delivery + steering reliability** — mailbox delivery, next-action steering, false handoff signals, persist-error surfacing, and diagnostics-without-tsconfig behavior are hardened across the live operator path. (PRs [#1293](https://github.com/Yeachan-Heo/oh-my-codex/pull/1293), [#1294](https://github.com/Yeachan-Heo/oh-my-codex/pull/1294), [#1300](https://github.com/Yeachan-Heo/oh-my-codex/pull/1300), [#1303](https://github.com/Yeachan-Heo/oh-my-codex/pull/1303), [#1304](https://github.com/Yeachan-Heo/oh-my-codex/pull/1304), [#1305](https://github.com/Yeachan-Heo/oh-my-codex/pull/1305))
+- **Windows / tmux / launcher supervision** — detached launches, shift-enter handling, PowerShell command resolution, and tmux child binding stay more predictable across platform-specific edges. (PRs [#1265](https://github.com/Yeachan-Heo/oh-my-codex/pull/1265), [#1273](https://github.com/Yeachan-Heo/oh-my-codex/pull/1273), [#1275](https://github.com/Yeachan-Heo/oh-my-codex/pull/1275), [#1282](https://github.com/Yeachan-Heo/oh-my-codex/pull/1282))
+
+### Changed
+- **Quality-first guidance defaults** — generated AGENTS/prompt guidance now leans harder on intent-deepening, evidence, and verification sequencing instead of compact-first satisficing. (PR [#1281](https://github.com/Yeachan-Heo/oh-my-codex/pull/1281))
+- **Docs + localization refresh** — README variants live under `docs/readme/`, Ukrainian OpenClaw/docs coverage is added, and user-facing docs are refreshed around the modern deep-interview → ralplan → team/ralph workflow. (PRs [#1270](https://github.com/Yeachan-Heo/oh-my-codex/pull/1270), [#1308](https://github.com/Yeachan-Heo/oh-my-codex/pull/1308))
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release notes, QA/readiness notes, and release body are aligned to `0.12.0`.
+
+### Verified
+- `npm ci`
+- `npm run build`
+- `node dist/cli/omx.js version`
+- `node --test dist/cli/__tests__/version-sync-contract.test.js`
+- `npm run lint`
+- `npm test`
+- `cargo test -p omx-runtime-core`
+- `npm run smoke:packed-install`
+- `git diff --check origin/main...HEAD`
+
 ## [0.11.13] - 2026-04-04
 
 Patch release for team/runtime delivery integrity, busy-leader nudge handling, release hygiene fixes, and Windows/worktree reliability follow-through after `0.11.12`.

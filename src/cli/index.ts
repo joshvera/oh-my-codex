@@ -5,7 +5,7 @@
 
 import { execFileSync, spawn } from "child_process";
 import { basename, dirname, join } from "path";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { constants as osConstants } from "os";
 import { setup, SETUP_SCOPES, type SetupScope } from "./setup.js";
 import { uninstall } from "./uninstall.js";
@@ -75,9 +75,11 @@ import {
   isTmuxAvailable,
 } from "../team/tmux-session.js";
 import { getPackageRoot } from "../utils/package.js";
-import { codexConfigPath } from "../utils/paths.js";
+import { codexConfigPath, rememberOmxLaunchContext, resolveOmxEntryPath } from "../utils/paths.js";
 import { repairConfigIfNeeded } from "../config/generator.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
+
+rememberOmxLaunchContext();
 import {
   classifySpawnError,
   spawnPlatformCommandSync,
@@ -217,6 +219,11 @@ const ALLOWED_SHELLS = new Set([
 ]);
 const WINDOWS_DETACHED_BOOTSTRAP_DELAY_MS = 2500;
 const CODEX_VERSION_FLAGS = new Set(["--version", "-V"]);
+const TMUX_EXTENDED_KEYS_MODE = "always";
+const TMUX_EXTENDED_KEYS_FALLBACK_MODE = "off";
+const TMUX_EXTENDED_KEYS_LEASE_DIR = "tmux-extended-keys";
+const TMUX_EXTENDED_KEYS_LOCK_RETRY_MS = 20;
+const TMUX_EXTENDED_KEYS_LOCK_MAX_ATTEMPTS = 100;
 
 type CliCommand =
   | "launch"
@@ -888,7 +895,7 @@ export async function launchWithHud(args: string[]): Promise<void> {
       getPackageRoot(),
     );
     if (repaired) {
-      console.log("[omx] Repaired duplicate [tui] section in config.toml.");
+      console.log("[omx] Repaired managed config.toml compatibility issue.");
     }
   } catch {
     // Non-fatal: repair failure must not block launch
@@ -968,7 +975,7 @@ export async function execWithOverlay(args: string[]): Promise<void> {
       getPackageRoot(),
     );
     if (repaired) {
-      console.log("[omx] Repaired duplicate [tui] section in config.toml.");
+      console.log("[omx] Repaired managed config.toml compatibility issue.");
     }
   } catch {
     // Non-fatal
@@ -1378,18 +1385,260 @@ function escapeShellDoubleQuotedValue(value: string): string {
   return value.replace(/["\\$`]/g, "\\$&");
 }
 
+interface TmuxExtendedKeysLeaseState {
+  originalMode: string;
+  holders: string[];
+}
+
+function sanitizeTmuxLeaseKey(value: string): string {
+  const cleaned = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "default";
+}
+
+function blockMs(ms: number): void {
+  const delay = Math.max(1, Math.floor(ms));
+  const shared = new SharedArrayBuffer(4);
+  const view = new Int32Array(shared);
+  Atomics.wait(view, 0, 0, delay);
+}
+
+function tmuxExtendedKeysLeaseRoot(cwd: string): string {
+  return join(cwd, ".omx", "state", TMUX_EXTENDED_KEYS_LEASE_DIR);
+}
+
+function resolveTmuxSocketPath(
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+    }) as string,
+): string {
+  return (
+    execTmuxSync(["display-message", "-p", "#{socket_path}"], execFileSyncImpl) ||
+    "default"
+  );
+}
+
+function tmuxExtendedKeysLeasePath(cwd: string, socketPath: string): string {
+  return join(
+    tmuxExtendedKeysLeaseRoot(cwd),
+    `${sanitizeTmuxLeaseKey(socketPath)}.json`,
+  );
+}
+
+function readTmuxExtendedKeysLeaseState(
+  leasePath: string,
+): TmuxExtendedKeysLeaseState | null {
+  if (!existsSync(leasePath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(leasePath, "utf-8")) as {
+      originalMode?: unknown;
+      holders?: unknown;
+    };
+    if (
+      typeof parsed.originalMode !== "string" ||
+      !Array.isArray(parsed.holders) ||
+      !parsed.holders.every((holder) => typeof holder === "string")
+    ) {
+      return null;
+    }
+    return {
+      originalMode: parsed.originalMode,
+      holders: [...parsed.holders],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeTmuxExtendedKeysLeaseState(
+  leasePath: string,
+  state: TmuxExtendedKeysLeaseState,
+): void {
+  mkdirSync(dirname(leasePath), { recursive: true });
+  writeFileSync(leasePath, JSON.stringify(state, null, 2));
+}
+
+function withTmuxExtendedKeysLeaseLock<T>(
+  cwd: string,
+  socketPath: string,
+  run: () => T,
+): T {
+  const leaseRoot = tmuxExtendedKeysLeaseRoot(cwd);
+  mkdirSync(leaseRoot, { recursive: true });
+  const lockPath = join(
+    leaseRoot,
+    `${sanitizeTmuxLeaseKey(socketPath)}.lock`,
+  );
+  for (let attempt = 0; attempt < TMUX_EXTENDED_KEYS_LOCK_MAX_ATTEMPTS; attempt++) {
+    try {
+      mkdirSync(lockPath);
+      try {
+        return run();
+      } finally {
+        rmSync(lockPath, { recursive: true, force: true });
+      }
+    } catch (err) {
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? String((err as NodeJS.ErrnoException).code)
+          : "";
+      if (code !== "EEXIST") throw err;
+      blockMs(TMUX_EXTENDED_KEYS_LOCK_RETRY_MS);
+    }
+  }
+  throw new Error(`timed out waiting for tmux extended-keys lease lock: ${lockPath}`);
+}
+
 function buildDetachedSessionLeaderCommand(
+  cwd: string,
   sessionName: string,
   codexCmd: string,
 ): string {
-  const cleanupTrap = [
+  const wrapped = [
+    buildTmuxExtendedKeysAcquireShellSnippet(cwd),
+    "omx_detached_session_cleanup() {",
     "status=$?;",
     "trap - 0 INT TERM HUP;",
+    buildTmuxExtendedKeysReleaseShellSnippet(cwd),
     `tmux kill-session -t "${escapeShellDoubleQuotedValue(sessionName)}" >/dev/null 2>&1 || true;`,
     "exit $status;",
+    "};",
+    "trap omx_detached_session_cleanup 0 INT TERM HUP;",
+    codexCmd,
   ].join(" ");
-  const wrapped = [`trap '${cleanupTrap}' 0 INT TERM HUP;`, codexCmd].join(" ");
   return `/bin/sh -lc ${quoteShellArg(wrapped)}`;
+}
+
+type TmuxExecSync = (file: string, args: readonly string[]) => string;
+
+function execTmuxSync(
+  args: readonly string[],
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+    }) as string,
+): string {
+  return execFileSyncImpl("tmux", [...args]).trim();
+}
+
+export function acquireTmuxExtendedKeysLease(
+  cwd: string,
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+    }) as string,
+): string | null {
+  try {
+    const socketPath = resolveTmuxSocketPath(execFileSyncImpl);
+    const leasePath = tmuxExtendedKeysLeasePath(cwd, socketPath);
+    const leaseId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    withTmuxExtendedKeysLeaseLock(cwd, socketPath, () => {
+      const state = readTmuxExtendedKeysLeaseState(leasePath);
+      if (!state || state.holders.length === 0) {
+        const previousMode =
+          execTmuxSync(["show-options", "-sv", "extended-keys"], execFileSyncImpl) ||
+          TMUX_EXTENDED_KEYS_FALLBACK_MODE;
+        execTmuxSync(
+          ["set-option", "-sq", "extended-keys", TMUX_EXTENDED_KEYS_MODE],
+          execFileSyncImpl,
+        );
+        writeTmuxExtendedKeysLeaseState(leasePath, {
+          originalMode: previousMode,
+          holders: [leaseId],
+        });
+        return;
+      }
+
+      state.holders.push(leaseId);
+      writeTmuxExtendedKeysLeaseState(leasePath, state);
+    });
+    return `${socketPath}\t${leaseId}`;
+  } catch (err) {
+    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    return null;
+  }
+}
+
+export function releaseTmuxExtendedKeysLease(
+  cwd: string,
+  leaseHandle: string,
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+    }) as string,
+): void {
+  if (!leaseHandle.trim()) return;
+  const [socketPathRaw = "", leaseId = ""] = leaseHandle.split("\t");
+  const socketPath = socketPathRaw.trim() || "default";
+  if (!leaseId) return;
+
+  try {
+    const leasePath = tmuxExtendedKeysLeasePath(cwd, socketPath);
+    withTmuxExtendedKeysLeaseLock(cwd, socketPath, () => {
+      const state = readTmuxExtendedKeysLeaseState(leasePath);
+      if (!state || state.holders.length === 0) {
+        rmSync(leasePath, { force: true });
+        return;
+      }
+
+      const holders = state.holders.filter((holder) => holder !== leaseId);
+      if (holders.length > 0) {
+        writeTmuxExtendedKeysLeaseState(leasePath, {
+          originalMode: state.originalMode,
+          holders,
+        });
+        return;
+      }
+
+      execTmuxSync(
+        ["set-option", "-sq", "extended-keys", state.originalMode],
+        execFileSyncImpl,
+      );
+      rmSync(leasePath, { force: true });
+    });
+  } catch (err) {
+    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+  }
+}
+
+function buildTmuxExtendedKeysHelperCommand(
+  cwd: string,
+  operation: "acquire" | "release",
+): string {
+  const cwdLiteral = JSON.stringify(cwd);
+  const moduleUrlLiteral = JSON.stringify(import.meta.url);
+  const script =
+    operation === "acquire"
+      ? `const mod = await import(${moduleUrlLiteral}); const lease = mod.acquireTmuxExtendedKeysLease(${cwdLiteral}); if (lease) process.stdout.write(lease);`
+      : `const mod = await import(${moduleUrlLiteral}); mod.releaseTmuxExtendedKeysLease(${cwdLiteral}, process.argv[1] ?? "");`;
+  return `${quoteShellArg(process.execPath)} --input-type=module -e ${quoteShellArg(script)}`;
+}
+
+function buildTmuxExtendedKeysAcquireShellSnippet(cwd: string): string {
+  return `OMX_TMUX_EXTENDED_KEYS_LEASE=$(${buildTmuxExtendedKeysHelperCommand(cwd, "acquire")} 2>/dev/null || true);`;
+}
+
+function buildTmuxExtendedKeysReleaseShellSnippet(cwd: string): string {
+  return `if [ -n "\${OMX_TMUX_EXTENDED_KEYS_LEASE:-}" ]; then ${buildTmuxExtendedKeysHelperCommand(cwd, "release")} "\${OMX_TMUX_EXTENDED_KEYS_LEASE}" >/dev/null 2>&1 || true; fi;`;
+}
+
+export function withTmuxExtendedKeys<T>(
+  cwd: string,
+  run: () => T,
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+    }) as string,
+): T {
+  const leaseHandle = acquireTmuxExtendedKeysLease(cwd, execFileSyncImpl);
+  try {
+    return run();
+  } finally {
+    if (leaseHandle) releaseTmuxExtendedKeysLease(cwd, leaseHandle, execFileSyncImpl);
+  }
 }
 
 export function buildDetachedSessionBootstrapSteps(
@@ -1405,7 +1654,7 @@ export function buildDetachedSessionBootstrapSteps(
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
-    : buildDetachedSessionLeaderCommand(sessionName, codexCmd);
+    : buildDetachedSessionLeaderCommand(cwd, sessionName, codexCmd);
   const newSessionArgs: string[] = [
     "new-session",
     "-d",
@@ -1598,6 +1847,17 @@ export function buildNotifyFallbackWatcherEnv(
   };
 }
 
+export function shouldEnableNotifyFallbackWatcher(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const toggle = String(env.OMX_NOTIFY_FALLBACK ?? "").trim();
+  if (platform === "win32") {
+    return toggle === "1";
+  }
+  return toggle !== "0";
+}
+
 export async function cleanupLaunchOrphanedMcpProcesses(
   dependencies: CleanupDependencies = {},
 ): Promise<CleanupResult> {
@@ -1745,7 +2005,10 @@ function runCodex(
     sessionModelInstructionsPath(cwd, sessionId),
   );
   const nativeWindows = isNativeWindows();
-  const omxBin = process.argv[1];
+  const omxBin = resolveOmxEntryPath();
+  if (!omxBin) {
+    throw new Error("Unable to resolve OMX launcher path for tmux HUD bootstrap");
+  }
   const hudCmd = nativeWindows
     ? buildWindowsPromptCommand("node", [omxBin, "hud", "--watch"])
     : buildTmuxPaneCommand("node", [omxBin, "hud", "--watch"]);
@@ -1824,7 +2087,9 @@ function runCodex(
     }
 
     try {
-      runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+      withTmuxExtendedKeys(cwd, () => {
+        runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+      });
     } finally {
       const cleanupPaneIds = buildHudPaneCleanupTargets(
         listHudWatchPaneIdsInCurrentWindow(currentPaneId),
@@ -2221,6 +2486,15 @@ async function postLaunch(
     // Non-fatal: notification failures must never block session cleanup
   }
 
+  // 4.5. Persist team leader attention when an active leader session exits.
+  try {
+    const { markOwnedTeamsLeaderSessionStopped } = await import("../team/state.js");
+    await markOwnedTeamsLeaderSessionStopped(cwd, sessionId);
+  } catch (err) {
+    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    // Non-fatal
+  }
+
   // 5. Dispatch native hook event (best effort)
   try {
     const durationMs = sessionStartedAt
@@ -2398,6 +2672,43 @@ function parseWatcherPidFile(content: string): number | null {
   }
 }
 
+export async function reapStaleNotifyFallbackWatcher(
+  pidPath: string,
+  deps: {
+    exists?: (path: string) => boolean;
+    readFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
+    tryKillPid?: (pid: number, signal?: NodeJS.Signals) => boolean;
+    hasErrnoCode?: (error: unknown, code: string) => boolean;
+    warn?: (message?: unknown, ...optionalParams: unknown[]) => void;
+  } = {},
+): Promise<void> {
+  const exists = deps.exists ?? existsSync;
+  if (!exists(pidPath)) return;
+
+  const { readFile } = await import("fs/promises");
+  const readFileImpl = deps.readFile ?? readFile;
+  const tryKillPidImpl = deps.tryKillPid ?? tryKillPid;
+  const hasErrnoCodeImpl = deps.hasErrnoCode ?? hasErrnoCode;
+  const warn = deps.warn ?? console.warn;
+
+  try {
+    const prevPid = parseWatcherPidFile(await readFileImpl(pidPath, "utf-8"));
+    if (prevPid) {
+      tryKillPidImpl(prevPid, "SIGTERM");
+    }
+  } catch (error: unknown) {
+    if (!hasErrnoCodeImpl(error, "ESRCH")) {
+      warn(
+        "[omx] warning: failed to stop stale notify fallback watcher",
+        {
+          path: pidPath,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  }
+}
+
 function tryKillPid(pid: number, signal: NodeJS.Signals = "SIGTERM"): boolean {
   try {
     process.kill(pid, signal);
@@ -2413,34 +2724,16 @@ async function startNotifyFallbackWatcher(
   cwd: string,
   options: { codexHomeOverride?: string; enableAuthority?: boolean; sessionId?: string } = {},
 ): Promise<void> {
-  if (process.env.OMX_NOTIFY_FALLBACK === "0") return;
-
-  const { mkdir, writeFile, readFile } = await import("fs/promises");
+  const { mkdir, writeFile } = await import("fs/promises");
   const pidPath = notifyFallbackPidPath(cwd);
+  await reapStaleNotifyFallbackWatcher(pidPath);
+
+  if (!shouldEnableNotifyFallbackWatcher(process.env, process.platform)) return;
+
   const pkgRoot = getPackageRoot();
   const watcherScript = resolveNotifyFallbackWatcherScript(pkgRoot);
   const notifyScript = resolveNotifyHookScript(pkgRoot);
   if (!existsSync(watcherScript) || !existsSync(notifyScript)) return;
-
-  // Stop stale watcher from a previous run.
-  if (existsSync(pidPath)) {
-    try {
-      const prevPid = parseWatcherPidFile(await readFile(pidPath, "utf-8"));
-      if (prevPid) {
-        tryKillPid(prevPid, "SIGTERM");
-      }
-    } catch (error: unknown) {
-      if (!hasErrnoCode(error, "ESRCH")) {
-        console.warn(
-          "[omx] warning: failed to stop stale notify fallback watcher",
-          {
-            path: pidPath,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        );
-      }
-    }
-  }
 
   await mkdir(join(cwd, ".omx", "state"), { recursive: true }).catch(
     (error: unknown) => {
@@ -2648,6 +2941,7 @@ async function flushNotifyFallbackOnce(
   cwd: string,
   options: { codexHomeOverride?: string; enableAuthority?: boolean; sessionId?: string } = {},
 ): Promise<void> {
+  if (!shouldEnableNotifyFallbackWatcher(process.env, process.platform)) return;
   const { spawnSync } = await import("child_process");
   const pkgRoot = getPackageRoot();
   const watcherScript = resolveNotifyFallbackWatcherScript(pkgRoot);

@@ -49,7 +49,7 @@ const POSTURE_OVERLAYS: Record<AgentDefinition["posture"], string> = {
     "- Optimize for fast triage, search, lightweight synthesis, and narrow routing decisions.",
     "- Do not start deep implementation unless the task is tightly bounded and obvious.",
     "- If the task expands beyond quick classification or lightweight execution, escalate to a frontier-orchestrator or deep-worker role.",
-    "- Keep responses concise, scope-aware, and conservative under ambiguity.",
+    "- Keep responses quality-first, scope-aware, and conservative under ambiguity; avoid empty verbosity and reflexive tool escalation.",
     "",
     "</posture_overlay>",
   ].join("\n"),

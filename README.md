@@ -11,8 +11,9 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 [![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/PUwSMR9XNk)
 
-**Website:** https://yeachan-heo.github.io/oh-my-codex-website/  
+**Website:** https://yeachan-heo.github.io/oh-my-codex-website/
 **Docs:** [Getting Started](./docs/getting-started.html) · [Agents](./docs/agents.html) · [Skills](./docs/skills.html) · [Integrations](./docs/integrations.html) · [Demo](./DEMO.md) · [OpenClaw guide](./docs/openclaw-integration.md)
+**Community:** [Discord](https://discord.gg/PUwSMR9XNk) — shared OMX/community server for oh-my-codex and related tooling.
 
 OMX is a workflow layer for [OpenAI Codex CLI](https://github.com/openai/codex).
 
@@ -160,9 +161,16 @@ omx team shutdown <team-name>
 ### Setup, doctor, and HUD
 
 These are operator/support surfaces:
-- `omx setup` installs prompts, skills, config, and AGENTS scaffolding
+- `omx setup` installs prompts, skills, AGENTS scaffolding, `.codex/config.toml`, and OMX-managed native Codex hooks in `.codex/hooks.json`
 - `omx doctor` verifies the install when something seems wrong
 - `omx hud --watch` is a monitoring/status surface, not the primary user workflow
+
+For non-team sessions, native Codex hooks are now the canonical lifecycle surface:
+- `.codex/hooks.json` = native Codex hook registrations
+- `.omx/hooks/*.mjs` = OMX plugin hooks
+- `omx tmux-hook` / notify-hook / derived watcher = tmux + runtime fallback paths
+
+See [Codex native hook mapping](./docs/codex-native-hooks.md) for the current native / fallback matrix.
 
 ### Explore and sparkshell
 
@@ -207,6 +215,7 @@ If this happens, try:
 - [Demo guide](./DEMO.md)
 - [Agent catalog](./docs/agents.html)
 - [Skills reference](./docs/skills.html)
+- [Codex native hook mapping](./docs/codex-native-hooks.md)
 - [Integrations](./docs/integrations.html)
 - [OpenClaw / notification gateway guide](./docs/openclaw-integration.md)
 - [Contributing](./CONTRIBUTING.md)
@@ -215,20 +224,21 @@ If this happens, try:
 ## Languages
 
 - [English](./README.md)
-- [한국어](./README.ko.md)
-- [日本語](./README.ja.md)
-- [简体中文](./README.zh.md)
-- [繁體中文](./README.zh-TW.md)
-- [Tiếng Việt](./README.vi.md)
-- [Español](./README.es.md)
-- [Português](./README.pt.md)
-- [Русский](./README.ru.md)
-- [Türkçe](./README.tr.md)
-- [Deutsch](./README.de.md)
-- [Français](./README.fr.md)
-- [Italiano](./README.it.md)
-- [Ελληνικά](./README.el.md)
-- [Polski](./README.pl.md)
+- [한국어](./docs/readme/README.ko.md)
+- [日本語](./docs/readme/README.ja.md)
+- [简体中文](./docs/readme/README.zh.md)
+- [繁體中文](./docs/readme/README.zh-TW.md)
+- [Tiếng Việt](./docs/readme/README.vi.md)
+- [Español](./docs/readme/README.es.md)
+- [Português](./docs/readme/README.pt.md)
+- [Русский](./docs/readme/README.ru.md)
+- [Türkçe](./docs/readme/README.tr.md)
+- [Deutsch](./docs/readme/README.de.md)
+- [Français](./docs/readme/README.fr.md)
+- [Italiano](./docs/readme/README.it.md)
+- [Ελληνικά](./docs/readme/README.el.md)
+- [Polski](./docs/readme/README.pl.md)
+- [Українська](./docs/readme/README.uk.md)
 
 ## Contributors
 

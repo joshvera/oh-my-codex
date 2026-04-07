@@ -180,6 +180,7 @@ describe("omx setup scope behavior", () => {
       const localPrompts = join(wd, ".codex", "prompts");
       const localSkills = join(wd, ".codex", "skills");
       const localConfig = join(wd, ".codex", "config.toml");
+      const localHooks = join(wd, ".codex", "hooks.json");
       const localAgents = join(wd, ".codex", "agents");
       const scopeFile = join(wd, ".omx", "setup-scope.json");
       const agentsMdPath = join(wd, "AGENTS.md");
@@ -187,6 +188,7 @@ describe("omx setup scope behavior", () => {
       assert.equal(existsSync(localPrompts), true);
       assert.equal(existsSync(localSkills), true);
       assert.equal(existsSync(localConfig), true);
+      assert.equal(existsSync(localHooks), true);
       assert.equal(existsSync(localAgents), true);
       assert.equal(existsSync(join(localAgents, "executor.toml")), true);
       assert.equal(
@@ -213,6 +215,14 @@ describe("omx setup scope behavior", () => {
       assert.match(configToml, /^max_depth = 2$/m);
       assert.match(configToml, /^\[env\]$/m);
       assert.match(configToml, /^USE_OMX_EXPLORE_CMD = "1"$/m);
+      assert.match(configToml, /^codex_hooks = true$/m);
+      const hooksJson = JSON.parse(await readFile(localHooks, "utf-8")) as {
+        hooks?: Record<string, unknown>;
+      };
+      assert.ok(hooksJson.hooks, "hooks.json should include a hooks object");
+      assert.ok(hooksJson.hooks?.SessionStart, "hooks.json should register SessionStart");
+      assert.ok(hooksJson.hooks?.UserPromptSubmit, "hooks.json should register UserPromptSubmit");
+      assert.ok(hooksJson.hooks?.Stop, "hooks.json should register Stop");
       const agentsMd = await readFile(agentsMdPath, "utf-8");
       assert.match(agentsMd, /prompts\/\*\.md/);
       assert.match(agentsMd, /\.\/\.codex\/skills/);
@@ -244,6 +254,7 @@ describe("omx setup scope behavior", () => {
       assert.equal(existsSync(join(home, ".codex", "prompts")), true);
       assert.equal(existsSync(join(home, ".codex", "skills")), true);
       assert.equal(existsSync(join(home, ".codex", "agents")), true);
+      assert.equal(existsSync(join(home, ".codex", "hooks.json")), true);
       assert.equal(existsSync(join(home, ".codex", "AGENTS.md")), true);
       assert.equal(existsSync(join(wd, ".omx", "setup-scope.json")), true);
       const persistedScope = JSON.parse(

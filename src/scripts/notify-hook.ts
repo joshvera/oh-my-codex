@@ -145,6 +145,11 @@ function buildIdleNotificationFingerprint(payload: Record<string, unknown>): str
   });
 }
 
+function isTurnCompletePayload(payload: Record<string, unknown>): boolean {
+  const type = safeString(payload.type || '').trim().toLowerCase();
+  return type === '' || type === 'agent-turn-complete' || type === 'turn-complete';
+}
+
 async function main() {
   const rawPayload = process.argv[process.argv.length - 1];
   if (!rawPayload || rawPayload.startsWith('-')) {
@@ -163,6 +168,7 @@ async function main() {
   const payloadThreadId = safeString(payload['thread-id'] || payload.thread_id || '');
   const inputMessages = normalizeInputMessages(payload);
   const latestUserInput = safeString(inputMessages.length > 0 ? inputMessages[inputMessages.length - 1] : '');
+  const isTurnComplete = isTurnCompletePayload(payload);
 
   // Team worker detection via environment variable
   const teamWorkerEnv = process.env.OMX_TEAM_WORKER; // e.g., "fix-ts/worker-1"
@@ -238,6 +244,10 @@ async function main() {
 
   const logFile = join(logsDir, `turns-${new Date().toISOString().split('T')[0]}.jsonl`);
   await appendFile(logFile, JSON.stringify(logEntry) + '\n').catch(() => {});
+
+  if (!isTurnComplete) {
+    return;
+  }
 
   // Reconcile Ralph ownership for same-Codex-session continuation before
   // lifecycle counters or injection read the active scope.
@@ -556,7 +566,12 @@ async function main() {
   if (!isTeamWorker) {
     try {
       const { notifyLifecycle } = await import('../notifications/index.js');
-      const { shouldSendIdleNotification, recordIdleNotificationSent } = await import('../notifications/idle-cooldown.js');
+      const {
+        shouldSendIdleNotification,
+        recordIdleNotificationSent,
+        shouldSendSessionIdleHookEvent,
+        recordSessionIdleHookEventSent,
+      } = await import('../notifications/idle-cooldown.js');
       const sessionJsonPath = join(stateDir, 'session.json');
       const idleFingerprint = buildIdleNotificationFingerprint(payload);
       let notifySessionId = '';
@@ -565,37 +580,50 @@ async function main() {
         notifySessionId = safeString(sessionData && sessionData.session_id ? sessionData.session_id : '');
       } catch { /* no session file */ }
 
-      if (notifySessionId && shouldSendIdleNotification(stateDir, notifySessionId, idleFingerprint)) {
-        const idleResult = await notifyLifecycle('session-idle', {
-          sessionId: notifySessionId,
-          projectPath: cwd,
-        });
-        if (idleResult && idleResult.anySuccess) {
-          recordIdleNotificationSent(stateDir, notifySessionId, idleFingerprint);
-        }
-        try {
-          const { buildNativeHookEvent } = await import('../hooks/extensibility/events.js');
-          const { dispatchHookEvent } = await import('../hooks/extensibility/dispatcher.js');
-          const event = buildNativeHookEvent('session-idle', {
-            ...buildOperationalContext({
-              cwd,
-              normalizedEvent: 'blocked',
-              sessionId: notifySessionId,
-              status: 'blocked',
-              extra: {
-                project_path: cwd,
-                reason: 'post_turn_idle_notification',
-              },
-            }),
-          }, {
-            session_id: notifySessionId,
-            thread_id: safeString(payload['thread-id'] || payload.thread_id || ''),
-            turn_id: safeString(payload['turn-id'] || payload.turn_id || ''),
-            mode: safeString(payload.mode || ''),
+      const shouldNotifyLifecycle = notifySessionId
+        && shouldSendIdleNotification(stateDir, notifySessionId, idleFingerprint);
+      const shouldDispatchSessionIdleHookEvent = notifySessionId
+        && shouldSendSessionIdleHookEvent(stateDir, notifySessionId, idleFingerprint);
+
+      if (shouldNotifyLifecycle || shouldDispatchSessionIdleHookEvent) {
+        if (shouldNotifyLifecycle) {
+          const idleResult = await notifyLifecycle('session-idle', {
+            sessionId: notifySessionId,
+            projectPath: cwd,
           });
-          await dispatchHookEvent(event, { cwd });
-        } catch {
-          // Non-fatal
+          if (idleResult && idleResult.anySuccess) {
+            recordIdleNotificationSent(stateDir, notifySessionId, idleFingerprint);
+          }
+        }
+
+        if (shouldDispatchSessionIdleHookEvent) {
+          try {
+            const { buildNativeHookEvent } = await import('../hooks/extensibility/events.js');
+            const { dispatchHookEvent } = await import('../hooks/extensibility/dispatcher.js');
+            const event = buildNativeHookEvent('session-idle', {
+              ...buildOperationalContext({
+                cwd,
+                normalizedEvent: 'blocked',
+                sessionId: notifySessionId,
+                status: 'blocked',
+                extra: {
+                  project_path: cwd,
+                  reason: 'post_turn_idle_notification',
+                },
+              }),
+            }, {
+              session_id: notifySessionId,
+              thread_id: safeString(payload['thread-id'] || payload.thread_id || ''),
+              turn_id: safeString(payload['turn-id'] || payload.turn_id || ''),
+              mode: safeString(payload.mode || ''),
+            });
+            const hookDispatchResult = await dispatchHookEvent(event, { cwd });
+            if (hookDispatchResult.results.some((result) => result.ok)) {
+              recordSessionIdleHookEventSent(stateDir, notifySessionId, idleFingerprint);
+            }
+          } catch {
+            // Non-fatal
+          }
         }
       }
     } catch {
@@ -685,4 +713,8 @@ async function main() {
   }
 }
 
-main().catch(() => process.exit(0));
+main().catch((err) => {
+  process.exitCode = 1;
+  // eslint-disable-next-line no-console
+  console.error('[notify-hook] fatal error:', err);
+});

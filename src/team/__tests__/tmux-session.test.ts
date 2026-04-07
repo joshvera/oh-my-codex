@@ -51,6 +51,7 @@ import {
 } from '../tmux-session.js';
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../../hud/constants.js';
 import * as tmuxSessionModule from '../tmux-session.js';
+import { OMX_ENTRY_PATH_ENV, OMX_STARTUP_CWD_ENV } from '../../utils/paths.js';
 
 function withEmptyPath<T>(fn: () => T): T {
   const prev = process.env.PATH;
@@ -1822,6 +1823,107 @@ esac
 });
 
 describe('native Windows HUD reconciliation', () => {
+  it('allows team startup on native Windows when current tmux client is reachable without TMUX env vars', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-win32-no-env-'));
+    const prevTmux = process.env.TMUX;
+    const prevTmuxPane = process.env.TMUX_PANE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevMsystem = process.env.MSYSTEM;
+    const prevOstype = process.env.OSTYPE;
+    const prevWsl = process.env.WSL_DISTRO_NAME;
+    const prevWslInterop = process.env.WSL_INTEROP;
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-win32-no-env-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{window_width}"*)
+        echo "120"
+        ;;
+      *)
+        echo "leader:0 %1"
+        ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    printf "%%1\\tnode\\t'codex'\\n"
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *" -h "*)
+        echo "%2"
+        ;;
+      *)
+        echo "%3"
+        ;;
+    esac
+    exit 0
+    ;;
+  resize-pane|select-layout|set-window-option|select-pane|kill-pane|set-hook|run-shell)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        async ({ logPath }) => {
+          const fakeBinDir = join(logPath, '..');
+          const geminiPath = join(fakeBinDir, 'gemini');
+          await writeFile(geminiPath, '#!/bin/sh\nexit 0\n');
+          await chmod(geminiPath, 0o755);
+
+          delete process.env.TMUX;
+          delete process.env.TMUX_PANE;
+          process.env.OMX_TEAM_WORKER_CLI = 'gemini';
+          delete process.env.MSYSTEM;
+          delete process.env.OSTYPE;
+          delete process.env.WSL_DISTRO_NAME;
+          delete process.env.WSL_INTEROP;
+          Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+          const session = createTeamSession('Windows Team', 1, cwd);
+          assert.equal(session.name, 'leader:0');
+          assert.equal(session.leaderPaneId, '%1');
+          assert.equal(session.hudPaneId, '%3');
+
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          assert.match(tmuxLog, /display-message -p #S:#I #{pane_id}/);
+          assert.match(tmuxLog, new RegExp(`resize-pane -t %3 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
+        },
+      );
+    } finally {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevTmuxPane === 'string') process.env.TMUX_PANE = prevTmuxPane;
+      else delete process.env.TMUX_PANE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
+      else delete process.env.MSYSTEM;
+      if (typeof prevOstype === 'string') process.env.OSTYPE = prevOstype;
+      else delete process.env.OSTYPE;
+      if (typeof prevWsl === 'string') process.env.WSL_DISTRO_NAME = prevWsl;
+      else delete process.env.WSL_DISTRO_NAME;
+      if (typeof prevWslInterop === 'string') process.env.WSL_INTEROP = prevWslInterop;
+      else delete process.env.WSL_INTEROP;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('avoids nested tmux run-shell hooks during team HUD startup on native Windows', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-team-win32-hud-'));
     const prevTmux = process.env.TMUX;
@@ -1993,6 +2095,61 @@ esac
       if (typeof prevWslInterop === 'string') process.env.WSL_INTEROP = prevWslInterop;
       else delete process.env.WSL_INTEROP;
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('restores standalone HUD panes with an absolute OMX entry path after cwd drift', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-standalone-relative-hud-'));
+    const startupCwd = await mkdtemp(join(tmpdir(), 'omx-standalone-relative-start-'));
+    const previousEntryPath = process.env[OMX_ENTRY_PATH_ENV];
+    const previousStartupCwd = process.env[OMX_STARTUP_CWD_ENV];
+    const previousArgv = process.argv;
+
+    try {
+      const launcherDir = join(startupCwd, 'dist', 'cli');
+      const launcherPath = join(launcherDir, 'omx.js');
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, '#!/usr/bin/env node\n');
+
+      await withMockTmuxFixture(
+        'omx-tmux-relative-standalone-hud-',
+        (logPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${logPath}"
+case "\${1:-}" in
+  split-window)
+    echo "%44"
+    exit 0
+    ;;
+  run-shell|select-pane|resize-pane|set-hook)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        async ({ logPath }) => {
+          delete process.env[OMX_ENTRY_PATH_ENV];
+          process.env[OMX_STARTUP_CWD_ENV] = startupCwd;
+          process.argv = [previousArgv[0] || 'node', 'dist/cli/omx.js'];
+
+          const paneId = restoreStandaloneHudPane('%11', cwd);
+          assert.equal(paneId, '%44');
+
+          const tmuxLog = await readFile(logPath, 'utf-8');
+          assert.match(tmuxLog, new RegExp(escapeRegExp(launcherPath)));
+          assert.doesNotMatch(tmuxLog, /'dist\/cli\/omx\.js' hud --watch/);
+        },
+      );
+    } finally {
+      process.argv = previousArgv;
+      if (typeof previousEntryPath === 'string') process.env[OMX_ENTRY_PATH_ENV] = previousEntryPath;
+      else delete process.env[OMX_ENTRY_PATH_ENV];
+      if (typeof previousStartupCwd === 'string') process.env[OMX_STARTUP_CWD_ENV] = previousStartupCwd;
+      else delete process.env[OMX_STARTUP_CWD_ENV];
+      await rm(cwd, { recursive: true, force: true });
+      await rm(startupCwd, { recursive: true, force: true });
     }
   });
 });

@@ -19,6 +19,10 @@ import {
   omxPlansDir,
   omxLogsDir,
   packageRoot,
+  OMX_ENTRY_PATH_ENV,
+  OMX_STARTUP_CWD_ENV,
+  rememberOmxLaunchContext,
+  resolveOmxEntryPath,
 } from "../paths.js";
 
 describe("codexHome", () => {
@@ -392,5 +396,71 @@ describe("packageRoot", () => {
   it("resolves to a directory containing package.json", () => {
     const root = packageRoot();
     assert.equal(existsSync(join(root, "package.json")), true);
+  });
+});
+
+describe("OMX launcher path resolution", () => {
+  const originalEntryPath = process.env[OMX_ENTRY_PATH_ENV];
+  const originalStartupCwd = process.env[OMX_STARTUP_CWD_ENV];
+
+  afterEach(() => {
+    if (typeof originalEntryPath === "string") {
+      process.env[OMX_ENTRY_PATH_ENV] = originalEntryPath;
+    } else {
+      delete process.env[OMX_ENTRY_PATH_ENV];
+    }
+    if (typeof originalStartupCwd === "string") {
+      process.env[OMX_STARTUP_CWD_ENV] = originalStartupCwd;
+    } else {
+      delete process.env[OMX_STARTUP_CWD_ENV];
+    }
+  });
+
+  it("resolves relative launcher paths against the recorded startup cwd", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-start-"));
+    const laterCwd = await mkdtemp(join(tmpdir(), "omx-launcher-later-"));
+    try {
+      const launcherDir = join(startupCwd, "dist", "cli");
+      const launcherPath = join(launcherDir, "omx.js");
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, "#!/usr/bin/env node\n", "utf-8");
+
+      const resolved = resolveOmxEntryPath({
+        argv1: "dist/cli/omx.js",
+        cwd: laterCwd,
+        env: {
+          ...process.env,
+          [OMX_STARTUP_CWD_ENV]: startupCwd,
+        },
+      });
+
+      assert.equal(resolved, launcherPath);
+    } finally {
+      await rm(startupCwd, { recursive: true, force: true });
+      await rm(laterCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records launcher context once so later cwd changes keep the absolute entry path", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-record-"));
+    try {
+      const launcherDir = join(startupCwd, "dist", "cli");
+      const launcherPath = join(launcherDir, "omx.js");
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, "#!/usr/bin/env node\n", "utf-8");
+
+      delete process.env[OMX_ENTRY_PATH_ENV];
+      delete process.env[OMX_STARTUP_CWD_ENV];
+      rememberOmxLaunchContext({
+        argv1: "dist/cli/omx.js",
+        cwd: startupCwd,
+        env: process.env,
+      });
+
+      assert.equal(process.env[OMX_STARTUP_CWD_ENV], startupCwd);
+      assert.equal(process.env[OMX_ENTRY_PATH_ENV], launcherPath);
+    } finally {
+      await rm(startupCwd, { recursive: true, force: true });
+    }
   });
 });

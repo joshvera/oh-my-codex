@@ -29,6 +29,7 @@ import {
   omxLogsDir,
 } from "../utils/paths.js";
 import { buildMergedConfig, getRootModelName } from "../config/generator.js";
+import { buildManagedCodexHooksConfig } from "../config/codex-hooks.js";
 import {
   getLegacyUnifiedMcpRegistryCandidate,
   getUnifiedMcpRegistryCandidates,
@@ -82,6 +83,7 @@ export type SetupScope = (typeof SETUP_SCOPES)[number];
 export interface ScopeDirectories {
   codexConfigFile: string;
   codexHomeDir: string;
+  codexHooksFile: string;
   nativeAgentsDir: string;
   promptsDir: string;
   skillsDir: string;
@@ -123,7 +125,18 @@ export interface SkillFrontmatterMetadata {
   description: string;
 }
 
-const PROJECT_GITIGNORE_ENTRIES = [".omx/", ".codex/"] as const;
+const PROJECT_GITIGNORE_ENTRIES = [
+  ".omx/",
+  ".codex/*",
+  "!.codex/agents/",
+  "!.codex/agents/**",
+  "!.codex/skills/",
+  "!.codex/skills/**",
+  ".codex/skills/.system/**",
+  "!.codex/prompts/",
+  "!.codex/prompts/**",
+] as const;
+const LEGACY_PROJECT_GITIGNORE_ENTRIES = [".codex/"] as const;
 
 function applyScopePathRewritesToAgentsTemplate(
   content: string,
@@ -374,6 +387,7 @@ export function resolveScopeDirectories(
     return {
       codexConfigFile: join(codexHomeDir, "config.toml"),
       codexHomeDir,
+      codexHooksFile: join(codexHomeDir, "hooks.json"),
       nativeAgentsDir: join(codexHomeDir, "agents"),
       promptsDir: join(codexHomeDir, "prompts"),
       skillsDir: join(codexHomeDir, "skills"),
@@ -382,6 +396,7 @@ export function resolveScopeDirectories(
   return {
     codexConfigFile: codexConfigPath(),
     codexHomeDir: codexHome(),
+    codexHooksFile: join(codexHome(), "hooks.json"),
     nativeAgentsDir: codexAgentsDir(),
     promptsDir: codexPromptsDir(),
     skillsDir: userSkillsDir(),
@@ -551,6 +566,21 @@ function hasGitignoreEntry(content: string, entry: string): boolean {
     .some((line) => line === entry);
 }
 
+function stripLegacyGitignoreEntries(
+  content: string,
+  legacyEntries: readonly string[],
+): { content: string; removed: boolean } {
+  const legacyEntrySet = new Set(legacyEntries);
+  const lines = content.split(/\r?\n/);
+  const filteredLines = lines.filter((line) => !legacyEntrySet.has(line.trim()));
+  const removed = filteredLines.length !== lines.length;
+
+  return {
+    content: filteredLines.join("\n").replace(/\n+$/, "\n"),
+    removed,
+  };
+}
+
 async function ensureProjectGitignore(
   projectRoot: string,
   backupContext: SetupBackupContext,
@@ -561,17 +591,21 @@ async function ensureProjectGitignore(
   const existing = destinationExists
     ? await readFile(gitignorePath, "utf-8")
     : "";
-
-  const missingEntries = PROJECT_GITIGNORE_ENTRIES.filter(
-    (entry) => !hasGitignoreEntry(existing, entry),
+  const normalized = stripLegacyGitignoreEntries(
+    existing,
+    LEGACY_PROJECT_GITIGNORE_ENTRIES,
   );
 
-  if (missingEntries.length === 0) {
+  const missingEntries = PROJECT_GITIGNORE_ENTRIES.filter(
+    (entry) => !hasGitignoreEntry(normalized.content, entry),
+  );
+
+  if (missingEntries.length === 0 && !normalized.removed) {
     return "unchanged";
   }
 
   const nextContent = destinationExists
-    ? `${existing}${existing.endsWith("\n") || existing.length === 0 ? "" : "\n"}${missingEntries.join("\n")}\n`
+    ? `${normalized.content}${normalized.content.endsWith("\n") || normalized.content.length === 0 ? "" : "\n"}${missingEntries.join("\n")}${missingEntries.length > 0 ? "\n" : ""}`
     : `${PROJECT_GITIGNORE_ENTRIES.join("\n")}\n`;
 
   if (
@@ -585,8 +619,14 @@ async function ensureProjectGitignore(
   }
 
   if (options.verbose) {
+    const changedDetails = [
+      normalized.removed ? "removed legacy .codex/" : "",
+      missingEntries.length > 0 ? missingEntries.join(", ") : "",
+    ]
+      .filter(Boolean)
+      .join("; ");
     console.log(
-      `  ${options.dryRun ? "would update" : destinationExists ? "updated" : "created"} .gitignore (${missingEntries.join(", ")})`,
+      `  ${options.dryRun ? "would update" : destinationExists ? "updated" : "created"} .gitignore${changedDetails ? ` (${changedDetails})` : ""}`,
     );
   }
 
@@ -662,11 +702,11 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     );
     if (gitignoreResult === "created") {
       console.log(
-        "  Created .gitignore with .omx/ and .codex/ so local OMX runtime/config state stays out of source control.\n",
+        "  Created .gitignore with OMX project ignore rules so local runtime state stays out of source control while .codex agents, skills, and prompts remain trackable.\n",
       );
     } else if (gitignoreResult === "updated") {
       console.log(
-        "  Added .omx/ and/or .codex/ to .gitignore so local OMX runtime/config state stays out of source control.\n",
+        "  Updated .gitignore with OMX project ignore rules so local runtime state stays out of source control while .codex agents, skills, and prompts remain trackable.\n",
       );
     }
   }
@@ -795,6 +835,23 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
     );
   }
   console.log(`  Config refresh complete (${scopeDirs.codexConfigFile}).\n`);
+
+  const hooksConfig = JSON.stringify(
+    buildManagedCodexHooksConfig(pkgRoot),
+    null,
+    2,
+  ) + "\n";
+  await syncManagedContent(
+    hooksConfig,
+    scopeDirs.codexHooksFile,
+    summary.config,
+    backupContext,
+    { dryRun, verbose },
+    `native hooks ${scopeDirs.codexHooksFile}`,
+  );
+  console.log(
+    `  Native Codex hooks refresh complete (${scopeDirs.codexHooksFile}).\n`,
+  );
 
   // Step 5.5: Verify team CLI interop surface is available.
   console.log("[5.5/8] Verifying Team CLI API interop...");

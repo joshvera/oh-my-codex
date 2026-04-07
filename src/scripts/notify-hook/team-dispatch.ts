@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'node:url';
 import { safeString } from './utils.js';
 import { resolveBridgeStateDir, resolveRuntimeBinaryPath } from '../../runtime/bridge.js';
+import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -372,6 +373,7 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
   if (!target) {
     return { ok: false, reason: 'missing_tmux_target' };
   }
+  const leaderTargeted = request.to_worker === 'leader-fixed';
   let resolution;
   if (target.type === 'session') {
     const paneId = await resolveSessionToPane(target.value).catch(() => null);
@@ -384,14 +386,24 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
   if (!resolution.paneTarget) {
     return { ok: false, reason: `target_resolution_failed:${resolution.reason}` };
   }
+  const isLeaderMailboxDispatch = request.to_worker === 'leader-fixed';
   const paneGuard = await evaluatePaneInjectionReadiness(resolution.paneTarget, {
     skipIfScrolling: true,
-    requireRunningAgent: false,
+    requireRunningAgent: leaderTargeted,
     requireReady: false,
     requireIdle: false,
+    requireObservableState: leaderTargeted,
   });
   if (!paneGuard.ok) {
-    return { ok: false, reason: paneGuard.reason };
+    return {
+      ok: false,
+      reason: paneGuard.reason,
+      pane: resolution.paneTarget,
+      pane_source: resolution.source || null,
+      readiness_evidence: paneGuard.readinessEvidence || null,
+      pane_current_command: paneGuard.paneCurrentCommand || null,
+      tmux_injection_attempted: false,
+    };
   }
 
   const attemptCountAtStart = Number.isFinite(request.attempt_count)
@@ -427,7 +439,15 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
     typePrompt: shouldTypePrompt,
   });
   if (!sendResult.ok) {
-    return { ok: false, reason: sendResult.error || sendResult.reason };
+    return {
+      ok: false,
+      reason: sendResult.error || sendResult.reason,
+      pane: resolution.paneTarget,
+      pane_source: resolution.source || null,
+      readiness_evidence: paneGuard.readinessEvidence || null,
+      pane_current_command: paneGuard.paneCurrentCommand || null,
+      tmux_injection_attempted: true,
+    };
   }
 
   // Post-injection verification: confirm the trigger text was consumed.
@@ -448,7 +468,15 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
       // Worker is actively processing (mirrors sync path tmux-session.ts:1292-1294)
       if (paneHasActiveTask(wideCap.stdout)) {
         runtimeExec({ command: 'MarkDelivered', request_id: request.request_id }, stateDir);
-        return { ok: true, reason: 'tmux_send_keys_confirmed_active_task', pane: resolution.paneTarget };
+        return {
+          ok: true,
+          reason: 'tmux_send_keys_confirmed_active_task',
+          pane: resolution.paneTarget,
+          pane_source: resolution.source || null,
+          readiness_evidence: paneGuard.readinessEvidence || null,
+          pane_current_command: paneGuard.paneCurrentCommand || null,
+          tmux_injection_attempted: true,
+        };
       }
       // Do not declare success while a *worker* pane is still bootstrapping / not
       // input-ready. Otherwise a pre-ready send can be marked "confirmed" and later
@@ -461,7 +489,15 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
       const triggerNearTail = capturedPaneContainsTriggerNearTail(wideCap.stdout, request.trigger_message);
       if (!triggerInNarrow && !triggerNearTail) {
         runtimeExec({ command: 'MarkDelivered', request_id: request.request_id }, stateDir);
-        return { ok: true, reason: 'tmux_send_keys_confirmed', pane: resolution.paneTarget };
+        return {
+          ok: true,
+          reason: 'tmux_send_keys_confirmed',
+          pane: resolution.paneTarget,
+          pane_source: resolution.source || null,
+          readiness_evidence: paneGuard.readinessEvidence || null,
+          pane_current_command: paneGuard.paneCurrentCommand || null,
+          tmux_injection_attempted: true,
+        };
       }
     } catch {
       // capture failed; fall through to retry C-m
@@ -476,7 +512,15 @@ async function injectDispatchRequest(request, config, cwd, stateDir) {
   }
 
   // Trigger text is still visible after all retry rounds.
-  return { ok: true, reason: 'tmux_send_keys_unconfirmed', pane: resolution.paneTarget };
+  return {
+    ok: true,
+    reason: 'tmux_send_keys_unconfirmed',
+    pane: resolution.paneTarget,
+    pane_source: resolution.source || null,
+    readiness_evidence: paneGuard.readinessEvidence || null,
+    pane_current_command: paneGuard.paneCurrentCommand || null,
+    tmux_injection_attempted: true,
+  };
 }
 
 function shouldSkipRequest(request) {
@@ -505,12 +549,38 @@ async function appendDispatchLog(logsDir, event) {
   await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`).catch(() => {});
 }
 
+async function appendDeliveryTelemetry(logsDir, event) {
+  await appendTeamDeliveryLog(logsDir, {
+    source: 'notify-hook.team-dispatch',
+    ...event,
+  }).catch(() => {});
+}
+
+function buildDispatchAttemptEvidence(result, fallback = {}) {
+  return {
+    pane_target: safeString(result?.pane || fallback.pane || '').trim() || null,
+    pane_source: safeString(result?.pane_source || fallback.pane_source || '').trim() || null,
+    readiness_evidence: safeString(result?.readiness_evidence || fallback.readiness_evidence || '').trim() || null,
+    pane_current_command: safeString(result?.pane_current_command || fallback.pane_current_command || '').trim() || null,
+    tmux_injection_attempted:
+      typeof result?.tmux_injection_attempted === 'boolean'
+        ? result.tmux_injection_attempted
+        : (typeof fallback.tmux_injection_attempted === 'boolean' ? fallback.tmux_injection_attempted : null),
+  };
+}
+
 export async function drainPendingTeamDispatch({
   cwd,
   stateDir = resolveBridgeStateDir(cwd),
   logsDir = join(cwd, '.omx', 'logs'),
   maxPerTick = 5,
   injector = injectDispatchRequest,
+}: {
+  cwd?: string;
+  stateDir?: string;
+  logsDir?: string;
+  maxPerTick?: number;
+  injector?: typeof injectDispatchRequest;
 } = {}) {
   if (safeString(process.env.OMX_TEAM_WORKER)) {
     return { processed: 0, skipped: 0, failed: 0, reason: 'worker_context' };
@@ -575,6 +645,20 @@ export async function drainPendingTeamDispatch({
               tmux_session: safeString(config?.tmux_session).trim() || null,
               leader_pane_id: safeString(config?.leader_pane_id).trim() || null,
               tmux_injection_attempted: false,
+              pane_target: null,
+              pane_source: null,
+              readiness_evidence: null,
+              pane_current_command: null,
+            });
+            await appendDeliveryTelemetry(logsDir, {
+              event: 'dispatch_result',
+              team: teamName,
+              request_id: request.request_id,
+              message_id: request.message_id || null,
+              to_worker: request.to_worker,
+              transport: 'send-keys',
+              result: 'deferred',
+              reason: LEADER_PANE_MISSING_DEFERRED_REASON,
             });
             // On the legacy fallback lane, requests.json still carries the queue
             // state for this deferred request; this event stays a progress
@@ -645,6 +729,17 @@ export async function drainPendingTeamDispatch({
               worker: request.to_worker,
               attempt: request.attempt_count,
               reason: result.reason,
+              ...buildDispatchAttemptEvidence(result),
+            });
+            await appendDeliveryTelemetry(logsDir, {
+              event: 'dispatch_result',
+              team: teamName,
+              request_id: request.request_id,
+              message_id: request.message_id || null,
+              to_worker: request.to_worker,
+              transport: 'send-keys',
+              result: 'retry',
+              reason: result.reason,
             });
             await emitOperationalHookEvent(cwd, 'retry-needed', {
               team: teamName,
@@ -671,6 +766,17 @@ export async function drainPendingTeamDispatch({
               request_id: request.request_id,
               worker: request.to_worker,
               message_id: request.message_id || null,
+              reason: request.last_reason,
+              ...buildDispatchAttemptEvidence(result),
+            });
+            await appendDeliveryTelemetry(logsDir, {
+              event: 'dispatch_result',
+              team: teamName,
+              request_id: request.request_id,
+              message_id: request.message_id || null,
+              to_worker: request.to_worker,
+              transport: 'send-keys',
+              result: 'failed',
               reason: request.last_reason,
             });
             await emitOperationalHookEvent(cwd, 'failed', {
@@ -704,6 +810,17 @@ export async function drainPendingTeamDispatch({
             worker: request.to_worker,
             message_id: request.message_id || null,
             reason: result.reason,
+            ...buildDispatchAttemptEvidence(result),
+          });
+          await appendDeliveryTelemetry(logsDir, {
+            event: 'dispatch_result',
+            team: teamName,
+            request_id: request.request_id,
+            message_id: request.message_id || null,
+            to_worker: request.to_worker,
+            transport: 'send-keys',
+            result: 'notified',
+            reason: result.reason,
           });
         } else {
           request.status = 'failed';
@@ -719,6 +836,17 @@ export async function drainPendingTeamDispatch({
             request_id: request.request_id,
             worker: request.to_worker,
             message_id: request.message_id || null,
+            reason: result.reason,
+            ...buildDispatchAttemptEvidence(result),
+          });
+          await appendDeliveryTelemetry(logsDir, {
+            event: 'dispatch_result',
+            team: teamName,
+            request_id: request.request_id,
+            message_id: request.message_id || null,
+            to_worker: request.to_worker,
+            transport: 'send-keys',
+            result: 'failed',
             reason: result.reason,
           });
           await emitOperationalHookEvent(cwd, result.reason === LEADER_PANE_MISSING_DEFERRED_REASON ? 'handoff-needed' : 'failed', {

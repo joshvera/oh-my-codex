@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const REQUIRED_TOOLS = [
@@ -47,5 +48,38 @@ describe('mcp/code-intel-server module contract', () => {
     const src = await readFile(join(process.cwd(), 'src/mcp/code-intel-server.ts'), 'utf8');
     assert.match(src, /if \(options\.replacement\) \{/);
     assert.match(src, /else \{\s*args\.push\('--json'\);/);
+  });
+
+  it('skips tsc diagnostics when the project has no tsconfig', async () => {
+    const previous = process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START;
+    process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START = '1';
+
+    const projectDir = await mkdtemp(join(tmpdir(), 'omx-code-intel-'));
+
+    try {
+      const { runTscDiagnostics } = await import(`../code-intel-server.js?ts=${Date.now()}`);
+      let called = false;
+
+      const result = await runTscDiagnostics(
+        '',
+        projectDir,
+        undefined,
+        async () => {
+          called = true;
+          throw new Error('tsc runner should not be called without a tsconfig');
+        },
+      );
+
+      assert.equal(called, false);
+      assert.deepEqual(result.diagnostics, []);
+      assert.equal(result.command, 'tsc skipped: no tsconfig found');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START;
+      } else {
+        process.env.OMX_CODE_INTEL_SERVER_DISABLE_AUTO_START = previous;
+      }
+      await rm(projectDir, { recursive: true, force: true });
+    }
   });
 });

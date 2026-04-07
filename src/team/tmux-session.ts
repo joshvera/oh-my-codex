@@ -21,6 +21,7 @@ import {
 import { readActiveProviderEnvOverrides } from '../config/models.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
 import { classifySpawnError, resolveCommandPathForPlatform, spawnPlatformCommandSync } from '../utils/platform-command.js';
+import { resolveOmxEntryPath } from '../utils/paths.js';
 
 const execFileAsync = promisify(execFile);
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../hud/constants.js';
@@ -98,6 +99,18 @@ function runTmux(args: string[]): { ok: true; stdout: string } | { ok: false; st
   return { ok: true, stdout: (result.stdout || '').trim() };
 }
 
+export function hasCurrentTmuxClientContext(): boolean {
+  const tmuxPaneTarget = process.env.TMUX_PANE?.trim();
+  const displayArgs = tmuxPaneTarget
+    ? ['display-message', '-p', '-t', tmuxPaneTarget, '#S:#I #{pane_id}']
+    : ['display-message', '-p', '#S:#I #{pane_id}'];
+  const context = runTmux(displayArgs);
+  if (!context.ok) return false;
+  const [sessionAndWindow = '', detectedLeaderPaneId = ''] = context.stdout.split(' ');
+  const [sessionName, windowIndex] = sessionAndWindow.split(':');
+  return Boolean(sessionName && windowIndex && detectedLeaderPaneId.startsWith('%'));
+}
+
 export function isMsysOrGitBash(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
   if (platform !== 'win32') return false;
   const msystem = String(env.MSYSTEM ?? '').trim();
@@ -150,6 +163,10 @@ function listPanes(target: string): TmuxPaneInfo[] {
       return { paneId, currentCommand, startCommand };
     })
     .filter((pane) => pane.paneId.startsWith('%'));
+}
+
+export function listPaneIds(target: string): string[] {
+  return listPanes(target).map((pane) => pane.paneId);
 }
 
 function isHudWatchPane(pane: TmuxPaneInfo): boolean {
@@ -803,7 +820,7 @@ export function createTeamSession(
   if (!Number.isInteger(workerCount) || workerCount < 1) {
     throw new Error(`workerCount must be >= 1 (got ${workerCount})`);
   }
-  if (!process.env.TMUX) {
+  if (!hasCurrentTmuxClientContext()) {
     throw new Error('team mode requires running inside tmux leader pane');
   }
   const normalizedWorkerLaunchArgs = resolveWorkerLaunchArgs(workerLaunchArgs, cwd);
@@ -910,7 +927,7 @@ export function createTeamSession(
     let hudPaneId: string | null = null;
     let resizeHookName: string | null = null;
     let resizeHookTarget: string | null = null;
-    const omxEntry = process.argv[1];
+    const omxEntry = resolveOmxEntryPath();
     if (omxEntry && omxEntry.trim() !== '') {
       const hudCmd = `node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
       const hudCwd = translatePathForMsys(cwd);
@@ -1015,7 +1032,7 @@ export function restoreStandaloneHudPane(
   const normalizedLeaderPaneId = normalizePaneTarget(leaderPaneId);
   if (!normalizedLeaderPaneId) return null;
 
-  const omxEntry = process.argv[1];
+  const omxEntry = resolveOmxEntryPath();
   if (!omxEntry || omxEntry.trim() === '') return null;
 
   const hudCmd = `${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;

@@ -9,9 +9,10 @@ function rx(pattern: string): RegExp {
 }
 
 const ROOT_TEMPLATE_PATTERNS = [
-  rx('compact, information-dense responses'),
+  rx('quality-first.*intent-deepening responses'),
   rx('clear, low-risk, reversible next steps'),
   rx('local overrides?.*non-conflicting instructions'),
+  rx('reflexive web/tool escalation'),
   rx('Choose the lane before acting'),
   rx('Solo execute'),
   rx('Outside active `team`/`swarm` mode, use `executor`'),
@@ -21,35 +22,38 @@ const ROOT_TEMPLATE_PATTERNS = [
   rx('Stop / escalate'),
   rx('Default update/final shape'),
   rx('do not skip prerequisites|task is grounded and verified'),
-  rx('concise evidence summaries'),
+  rx('quality-first evidence summaries'),
 ];
 
 const CORE_ROLE_PATTERNS = {
   executor: [
-    rx('compact, information-dense outputs'),
+    rx('quality-first.*intent-deepening outputs'),
+    rx('reflexive web/tool escalation'),
     rx('local overrides?.*non-conflicting constraints'),
     rx('task is grounded and verified'),
   ],
   planner: [
-    rx('compact, information-dense plan summaries'),
+    rx('quality-first.*intent-deepening plan summaries'),
+    rx('reflexive web/tool escalation'),
     rx('local overrides?.*non-conflicting constraints'),
     rx('plan is grounded in evidence'),
   ],
   verifier: [
-    rx('concise, evidence-dense summaries'),
+    rx('quality-first, evidence-dense summaries'),
+    rx('proof that matters|tool churn'),
     rx('verdict is grounded'),
     rx('non-conflicting acceptance criteria'),
   ],
 };
 
 const WAVE_TWO_PATTERNS = [
-  rx('Default final-output shape: concise and evidence-dense'),
+  rx('Default final-output shape: quality-first and evidence-dense'),
   rx('Treat newer user task updates as local overrides'),
   rx('user says `continue`'),
 ];
 
 const CATALOG_PATTERNS = [
-  rx('Default final-output shape: concise and evidence-dense'),
+  rx('Default final-output shape: quality-first and evidence-dense'),
   rx('Treat newer user task updates as local overrides'),
   rx('user says `continue`'),
 ];
@@ -160,7 +164,7 @@ export const SPECIALIZED_PROMPT_CONTRACTS: GuidanceSurfaceContract[] = [
     id: 'sisyphus-lite',
     path: 'prompts/sisyphus-lite.md',
     requiredPatterns: [
-      rx('compact, information-dense outputs'),
+      rx('quality-first.*intent-deepening outputs'),
       rx('Treat newer user instructions as local overrides'),
       rx('No evidence = not complete'),
       rx('specialized worker behavior prompt|worker behavior prompt'),

@@ -26,6 +26,7 @@ import {
 } from './autoresearch-intake.js';
 import { CODEX_BYPASS_FLAG, MADMAX_FLAG } from './constants.js';
 import { restoreStandaloneHudPane, enableMouseScrolling } from '../team/tmux-session.js';
+import { resolveOmxEntryPath } from '../utils/paths.js';
 
 export const AUTORESEARCH_HELP = `omx autoresearch - Launch OMX autoresearch with thin-supervisor parity semantics
 
@@ -329,7 +330,7 @@ function launchAutoresearchInSplitPane(args: {
   const currentCwd = tmuxDisplay(paneId, '#{pane_current_path}') || args.repoRoot;
   const existingHudPaneIds = listHudWatchPaneIdsInCurrentWindow(paneId);
 
-  const omxPath = process.argv[1];
+  const omxPath = resolveOmxEntryPath();
   if (!omxPath) return false;
   // Re-enter through the bare compatibility alias so the new pane executes immediately
   // instead of recursively taking the split-pane branch again.

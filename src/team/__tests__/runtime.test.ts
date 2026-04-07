@@ -14,6 +14,7 @@ import {
   saveTeamConfig,
   listMailboxMessages,
   listDispatchRequests,
+  transitionDispatchRequest,
   updateWorkerHeartbeat,
   writeAtomic,
   readTask,
@@ -29,6 +30,7 @@ import {
   startTeam,
   assignTask,
   sendWorkerMessage,
+  applyCreatedInteractiveSessionToConfig,
   resolveWorkerLaunchArgsFromEnv,
   waitForWorkerStartupEvidence,
   waitForClaudeStartupEvidence,
@@ -59,6 +61,17 @@ async function addWorktree(repo: string, branchName: string, pathPrefix: string)
 function expectedLowComplexityModel(codexHomeOverride?: string): string {
   return resolveTeamLowComplexityDefaultModel(codexHomeOverride);
 }
+
+async function readTeamDeliveryLog(cwd: string): Promise<Array<Record<string, unknown>>> {
+  const path = join(cwd, '.omx', 'logs', `team-delivery-${new Date().toISOString().slice(0, 10)}.jsonl`);
+  const raw = await readFile(path, 'utf-8').catch(() => '');
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 function withEmptyPath<T>(fn: () => T): T {
   const prev = process.env.PATH;
   process.env.PATH = '';
@@ -595,8 +608,9 @@ sleep 5
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
     } finally {
-      if (runtime) {
-        await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
+      const activeRuntime = runtime;
+      if (activeRuntime) {
+        await shutdownTeam(activeRuntime.teamName, cwd, { force: true }).catch(() => {});
       }
       if (typeof prevPath === 'string') process.env.PATH = prevPath;
       else delete process.env.PATH;
@@ -633,6 +647,175 @@ sleep 5
       else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it('startTeam accepts native Windows tmux clients even when TMUX env vars are absent', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-win32-no-env-'));
+    const prevTmux = process.env.TMUX;
+    const prevTmuxPane = process.env.TMUX_PANE;
+    const prevLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const prevWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const prevSkipReadyWait = process.env.OMX_TEAM_SKIP_READY_WAIT;
+    const prevMsystem = process.env.MSYSTEM;
+    const prevOstype = process.env.OSTYPE;
+    const prevWsl = process.env.WSL_DISTRO_NAME;
+    const prevWslInterop = process.env.WSL_INTEROP;
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    let runtime: TeamRuntime | null = null;
+    let teamNameForCleanup: string | null = null;
+
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-win32-no-env-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+case "\${1:-}" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{window_width}"*)
+        echo "120"
+        ;;
+      *)
+        echo "leader:0 %1"
+        ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    printf "%%1\\tnode\\t'codex'\\n"
+    exit 0
+    ;;
+  split-window)
+    case "$*" in
+      *" -h "*)
+        echo "%2"
+        ;;
+      *)
+        echo "%3"
+        ;;
+    esac
+    exit 0
+    ;;
+  resize-pane|select-layout|set-window-option|select-pane|kill-pane|set-hook|run-shell)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+          binaries: [{
+            name: 'gemini',
+            content: '#!/bin/sh\nexit 0\n',
+          }],
+        },
+        async ({ tmuxLogPath }) => {
+          delete process.env.TMUX;
+          delete process.env.TMUX_PANE;
+          process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
+          process.env.OMX_TEAM_WORKER_CLI = 'gemini';
+          process.env.OMX_TEAM_SKIP_READY_WAIT = '1';
+          delete process.env.MSYSTEM;
+          delete process.env.OSTYPE;
+          delete process.env.WSL_DISTRO_NAME;
+          delete process.env.WSL_INTEROP;
+          Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
+          runtime = await withoutTeamWorkerEnv(() =>
+            startTeam(
+              'team-win32-no-env',
+              'native windows current-client detection',
+              'executor',
+              1,
+              [{ subject: 's', description: 'd', owner: 'worker-1' }],
+              cwd,
+            ));
+          teamNameForCleanup = runtime.teamName;
+          assert.equal(runtime.config.tmux_session, 'leader:0');
+          assert.equal(runtime.config.leader_pane_id, '%1');
+          assert.equal(runtime.config.hud_pane_id, '%3');
+
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.match(tmuxLog, /display-message -p #S:#I #{pane_id}/);
+          assert.match(tmuxLog, new RegExp(`resize-pane -t %3 -y ${HUD_TMUX_TEAM_HEIGHT_LINES}`));
+
+          if (teamNameForCleanup) {
+            await shutdownTeam(teamNameForCleanup, cwd, { force: true });
+          }
+          runtime = null;
+        },
+      );
+    } finally {
+      if (teamNameForCleanup) {
+        await shutdownTeam(teamNameForCleanup, cwd, { force: true }).catch(() => {});
+      }
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (typeof prevTmux === 'string') process.env.TMUX = prevTmux;
+      else delete process.env.TMUX;
+      if (typeof prevTmuxPane === 'string') process.env.TMUX_PANE = prevTmuxPane;
+      else delete process.env.TMUX_PANE;
+      if (typeof prevLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = prevLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof prevWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = prevWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof prevSkipReadyWait === 'string') process.env.OMX_TEAM_SKIP_READY_WAIT = prevSkipReadyWait;
+      else delete process.env.OMX_TEAM_SKIP_READY_WAIT;
+      if (typeof prevMsystem === 'string') process.env.MSYSTEM = prevMsystem;
+      else delete process.env.MSYSTEM;
+      if (typeof prevOstype === 'string') process.env.OSTYPE = prevOstype;
+      else delete process.env.OSTYPE;
+      if (typeof prevWsl === 'string') process.env.WSL_DISTRO_NAME = prevWsl;
+      else delete process.env.WSL_DISTRO_NAME;
+      if (typeof prevWslInterop === 'string') process.env.WSL_INTEROP = prevWslInterop;
+      else delete process.env.WSL_INTEROP;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('applyCreatedInteractiveSessionToConfig persists worker pane ids before readiness waits', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-pane-persist-race-'));
+    try {
+      const config = await initTeamState('team-pane-persist-race', 'persist pane ids before readiness wait', 'executor', 2, cwd);
+      const workerPaneIds = Array.from({ length: 2 }, () => undefined as string | undefined);
+      applyCreatedInteractiveSessionToConfig(config, {
+        name: 'leader:0',
+        workerCount: 2,
+        cwd,
+        workerPaneIds: ['%2', '%3'],
+        leaderPaneId: '%1',
+        hudPaneId: '%4',
+        resizeHookName: 'resize-hook',
+        resizeHookTarget: 'leader:0',
+      }, workerPaneIds);
+
+      assert.equal(config.tmux_session, 'leader:0');
+      assert.equal(config.leader_pane_id, '%1');
+      assert.equal(config.hud_pane_id, '%4');
+      assert.deepEqual(workerPaneIds, ['%2', '%3']);
+      assert.equal(config.workers[0]?.pane_id, '%2');
+      assert.equal(config.workers[1]?.pane_id, '%3');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('startTeam saves interactive pane ids before readiness waits in source order', async () => {
+    const source = await readFile(join(process.cwd(), 'src', 'team', 'runtime.ts'), 'utf-8');
+    const applyIndex = source.indexOf('applyCreatedInteractiveSessionToConfig(config, createdSession, workerPaneIds);');
+    const saveIndex = source.indexOf('await saveTeamConfig(config, leaderCwd);', applyIndex);
+    const readyIndex = source.indexOf('const ready = waitForWorkerReady(sessionName, i, workerReadyTimeoutMs, paneId);', saveIndex);
+
+    assert.notEqual(applyIndex, -1);
+    assert.notEqual(saveIndex, -1);
+    assert.notEqual(readyIndex, -1);
+    assert.equal(applyIndex < saveIndex, true);
+    assert.equal(saveIndex < readyIndex, true);
   });
 
   it('startTeam rejects dirty leader workspace before provisioning worker worktrees', async () => {
@@ -713,21 +896,25 @@ sleep 5
       assert.equal(runtime.config.worker_launch_mode, 'prompt');
       assert.equal((runtime.config.workers[0]?.pid ?? 0) > 0, true);
 
-      let argv: string[] | null = null;
-      for (let attempt = 0; attempt < 50; attempt += 1) {
-        if (existsSync(capturePath)) {
-          argv = (await readFile(capturePath, 'utf-8')).trim().split('\n');
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      assert.ok(argv, 'gemini argv capture file should be written');
-      assert.deepEqual(argv, [
+      const expectedArgv = [
         '--approval-mode',
         'yolo',
         '-i',
         'Read .omx/state/team/team-gemini-prompt/workers/worker-1/inbox.md, start work now, report concrete progress, then continue assigned work or next feasible task.',
-      ]);
+      ];
+      let argv: string[] | null = null;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        if (existsSync(capturePath)) {
+          const captured = (await readFile(capturePath, 'utf-8')).trim().split('\n').filter(Boolean);
+          if (captured.length >= expectedArgv.length) {
+            argv = captured;
+            break;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.ok(argv, 'gemini argv capture file should be written');
+      assert.deepEqual(argv, expectedArgv);
 
       await shutdownTeam(runtime.teamName, cwd, { force: true });
       runtime = null;
@@ -2218,6 +2405,77 @@ process.on('SIGTERM', () => process.exit(0));
     }
   });
 
+  it('monitorTeam does not emit INTEGRATED when merge reports success but leader HEAD never advances', async () => {
+    const repo = await initRepo();
+    let workerPath = '';
+    const fakeBinDir = await mkdtemp(join(tmpdir(), 'omx-runtime-fake-git-'));
+    const previousPath = process.env.PATH;
+    const previousFakeMode = process.env.OMX_FAKE_GIT_SUCCESS_NOOP;
+    try {
+      workerPath = await addWorktree(repo, 'wk1-merge-noadvance-branch', 'omx-runtime-wk1-merge-noadvance-');
+      await writeFile(join(workerPath, 'feature.txt'), 'new feature\n', 'utf-8');
+      execFileSync('git', ['add', 'feature.txt'], { cwd: workerPath, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'worker feature'], { cwd: workerPath, stdio: 'ignore' });
+
+      await initTeamState('team-merge-noadvance', 'merge no advance test', 'executor', 1, repo);
+      const cfg = await readTeamConfig('team-merge-noadvance', repo);
+      assert.ok(cfg);
+      if (!cfg) throw new Error('missing config');
+      cfg.leader_pane_id = '';
+      cfg.workers[0] = {
+        ...cfg.workers[0],
+        assigned_tasks: ['1'],
+        worktree_repo_root: repo,
+        worktree_path: workerPath,
+        worktree_branch: 'wk1-merge-noadvance-branch',
+        worktree_detached: false,
+        worktree_created: false,
+      };
+      await saveTeamConfig(cfg, repo);
+
+      const realGit = execFileSync('bash', ['-lc', 'command -v git'], { encoding: 'utf-8' }).trim();
+      await writeFile(
+        join(fakeBinDir, 'git'),
+        `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${OMX_FAKE_GIT_SUCCESS_NOOP:-}" == "merge" && "\${1:-}" == "merge" ]]; then
+  exit 0
+fi
+exec "${realGit}" "$@"
+`,
+        { mode: 0o755 },
+      );
+      process.env.PATH = `${fakeBinDir}:${previousPath ?? ''}`;
+      process.env.OMX_FAKE_GIT_SUCCESS_NOOP = 'merge';
+
+      const leaderHeadBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim();
+      await monitorTeam('team-merge-noadvance', repo);
+      const leaderHeadAfter = execFileSync(realGit, ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim();
+      assert.equal(leaderHeadAfter, leaderHeadBefore, 'leader HEAD should stay unchanged in regression setup');
+
+      const snapshot = await readMonitorSnapshot('team-merge-noadvance', repo);
+      assert.equal(snapshot?.integrationByWorker?.['worker-1']?.status, 'integration_failed');
+      assert.equal(snapshot?.integrationByWorker?.['worker-1']?.last_integrated_head, undefined);
+
+      const leaderMailbox = await listMailboxMessages('team-merge-noadvance', 'leader-fixed', repo);
+      assert.equal(leaderMailbox.some((message) => /INTEGRATED:/.test(message.body)), false);
+      assert.equal(leaderMailbox.some((message) => /INTEGRATION FAILED:/.test(message.body)), true);
+
+      const events = await readTeamEvents('team-merge-noadvance', repo, { wakeableOnly: false });
+      assert.equal(events.some((event) => event.type === 'worker_integration_failed'), true);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousFakeMode === 'string') process.env.OMX_FAKE_GIT_SUCCESS_NOOP = previousFakeMode;
+      else delete process.env.OMX_FAKE_GIT_SUCCESS_NOOP;
+      await rm(fakeBinDir, { recursive: true, force: true });
+      if (workerPath) {
+        await rm(workerPath, { recursive: true, force: true });
+      }
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it('monitorTeam uses cherry-pick for diverged worker (hybrid cherry-pick path)', async () => {
     const repo = await initRepo();
     let workerPath = '';
@@ -2999,6 +3257,95 @@ esac
     }
   });
 
+  it('shutdownTeam reconciles persisted worker panes with live tmux panes before teardown', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-pane-reconcile-'));
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-shutdown-pane-reconcile-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+restored_marker="${tmuxLogPath}.restored"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  list-panes)
+    case "$*" in
+      *"-t leader:0 -F #{pane_dead} #{pane_pid}"*)
+        exit 1
+        ;;
+      *"-t %13 -F #{pane_pid}"*)
+        echo "1013"
+        exit 0
+        ;;
+      *"-t %14 -F #{pane_pid}"*)
+        echo "1014"
+        exit 0
+        ;;
+      *"-t leader:0 -F #{pane_id}"*"#{pane_current_command}"*)
+        printf "%%11\\tzsh\\tzsh\\n%%12\\tnode\\tnode /tmp/bin/omx.js hud --watch\\n%%13\\tcodex\\tcodex\\n%%14\\tcodex\\tcodex\\n"
+        if [ -f "$restored_marker" ]; then
+          printf "%%44\\tnode\\tnode /tmp/bin/omx.js hud --watch\\n"
+        fi
+        exit 0
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  split-window)
+    : > "$restored_marker"
+    printf '%%44\\n'
+    exit 0
+    ;;
+  kill-pane)
+    if [ "\${3:-}" = "%999" ]; then
+      echo "missing pane" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  kill-session|select-pane|run-shell)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        },
+        async ({ tmuxLogPath }) => {
+          await initTeamState('team-shutdown-pane-reconcile', 'shutdown pane reconcile test', 'executor', 2, cwd);
+          const config = await readTeamConfig('team-shutdown-pane-reconcile', cwd);
+          assert.ok(config);
+          if (!config) return;
+          config.tmux_session = 'leader:0';
+          config.leader_pane_id = '%11';
+          config.hud_pane_id = '%12';
+          config.workers[0]!.pane_id = '';
+          config.workers[1]!.pane_id = '%999';
+          await saveTeamConfig(config, cwd);
+
+          await shutdownTeam('team-shutdown-pane-reconcile', cwd, { force: true });
+          const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %11/);
+          assert.match(tmuxLog, /kill-pane -t %12/);
+          assert.match(tmuxLog, /kill-pane -t %13/);
+          assert.match(tmuxLog, /kill-pane -t %14/);
+          assert.match(tmuxLog, /kill-pane -t %999/);
+          assert.match(tmuxLog, new RegExp(`split-window -v -l ${HUD_TMUX_TEAM_HEIGHT_LINES} -t %11 -d -P -F #\{pane_id\}`));
+          assert.doesNotMatch(tmuxLog, /kill-pane -t %44/);
+        },
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
 
   it('shutdownTeam restores a standalone HUD pane after tearing down the team HUD', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-shutdown-restore-hud-'));
@@ -3591,6 +3938,89 @@ esac
           const latest = requests[requests.length - 1];
           assert.equal(latest?.status, 'notified');
           assert.equal(latest?.last_reason, 'fallback_confirmed:leader_mailbox_notified');
+
+          const deliveryLog = await readTeamDeliveryLog(cwd);
+          const runtimeEntries = deliveryLog.filter((entry) =>
+            entry.event === 'dispatch_result'
+            && entry.source === 'team.runtime'
+            && entry.to_worker === 'leader-fixed'
+            && entry.transport === 'mailbox'
+            && entry.result === 'confirmed'
+            && typeof entry.reason === 'string'
+            && String(entry.reason).includes('leader_mailbox_notified'));
+          assert.equal(runtimeEntries.length, 1, 'leader hook-preferred confirmation should emit exactly one runtime dispatch_result entry');
+        },
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('sendWorkerMessage keeps failed hook receipts failed when fallback mailbox persistence confirms delivery', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-leader-failed-receipt-'));
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-leader-failed-receipt-bin-',
+          tmuxScript: (tmuxLogPath) => `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${tmuxLogPath}"
+case "\${1:-}" in
+  send-keys)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        },
+        async () => {
+          await initTeamState('team-leader-failed-receipt', 'leader failed receipt fallback test', 'executor', 1, cwd);
+          const cfg = await readTeamConfig('team-leader-failed-receipt', cwd);
+          assert.ok(cfg);
+          if (!cfg) throw new Error('missing team config');
+          cfg.leader_pane_id = '%55';
+          await saveTeamConfig(cfg, cwd);
+
+          const manifestPath = teamStateTestPath(cwd, 'team', 'team-leader-failed-receipt', 'manifest.v2.json');
+          const manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
+          manifest.policy = { ...(manifest.policy || {}), dispatch_ack_timeout_ms: 250 };
+          await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+          const sendPromise = sendWorkerMessage('team-leader-failed-receipt', 'worker-1', 'leader-fixed', 'hello failed receipt', cwd);
+
+          const deadline = Date.now() + 2_000;
+          let requestId: string | null = null;
+          while (Date.now() < deadline && !requestId) {
+            const requests = await listDispatchRequests('team-leader-failed-receipt', cwd, { kind: 'mailbox', to_worker: 'leader-fixed' });
+            requestId = requests[requests.length - 1]?.request_id ?? null;
+            if (!requestId) await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          assert.ok(requestId, 'expected mailbox dispatch request to be queued');
+          if (!requestId) throw new Error('missing request id');
+
+          await transitionDispatchRequest(
+            'team-leader-failed-receipt',
+            requestId,
+            'pending',
+            'failed',
+            { last_reason: 'hook_failed:test_receipt' },
+            cwd,
+          );
+
+          const outcome = await sendPromise;
+          assert.equal(outcome.ok, true);
+          assert.equal(outcome.reason, 'fallback_confirmed_after_failed_receipt:leader_mailbox_notified');
+
+          const requests = await listDispatchRequests('team-leader-failed-receipt', cwd, { kind: 'mailbox', to_worker: 'leader-fixed' });
+          const latest = requests[requests.length - 1];
+          assert.equal(latest?.request_id, requestId);
+          assert.equal(latest?.status, 'failed');
+          assert.equal(latest?.last_reason, 'fallback_confirmed_after_failed_receipt:leader_mailbox_notified');
+
+          const mailbox = await listMailboxMessages('team-leader-failed-receipt', 'leader-fixed', cwd);
+          assert.ok(mailbox[0]?.notified_at, 'fallback mailbox persistence should still mark notified_at');
         },
       );
     } finally {
@@ -3620,6 +4050,15 @@ esac
         r.status === 'pending' && r.to_worker === 'leader-fixed');
       assert.ok(pending, 'expected a pending leader-fixed dispatch request');
       assert.equal(pending?.last_reason, 'leader_pane_missing_deferred');
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      const runtimeEntries = deliveryLog.filter((entry) =>
+        entry.event === 'dispatch_result'
+        && entry.source === 'team.runtime'
+        && entry.to_worker === 'leader-fixed'
+        && entry.transport === 'mailbox'
+        && entry.reason === 'leader_pane_missing_mailbox_persisted');
+      assert.equal(runtimeEntries.length, 1, 'leader missing-pane fallback should emit exactly one runtime dispatch_result entry');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

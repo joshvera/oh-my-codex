@@ -1,36 +1,40 @@
-# oh-my-codex v0.11.13
+# oh-my-codex v0.12.0
 
-**Patch release for team/runtime delivery integrity, busy-leader nudge handling, release-hygiene repairs, and Windows/worktree reliability follow-through**
+**Minor release for native Codex hook ownership, first-party Bash pre/post guidance, runtime/team delivery hardening, and workflow-doc refresh**
 
-`0.11.13` follows `0.11.12` with a focused patch train from `v0.11.12..dev`: it restores a corrupted test file on the release branch, tightens team/runtime delivery behavior around leader nudges and mailbox handoff, and keeps Windows/worktree supervision stable while syncing release metadata for the new patch cut.
+`0.12.0` follows `0.11.13` with a broad release train from `v0.11.13..release/0.12.0`: it promotes native Codex hook ownership into the repo/runtime contract, ships first-party Bash `PreToolUse` / `PostToolUse` guidance, hardens team/runtime delivery and operator steering, and refreshes docs/prompt guidance for the modern OMX workflow.
 
 ## Highlights
 
-- Team leader delivery is more reliable across runtime/CLI seams, including busy Codex leader panes that should queue nudges instead of dropping them.
-- False team-coordination signals during runtime handoff are suppressed, reducing noisy or misleading orchestration state.
-- Windows/worktree HUD and leader activity polling paths stay stable in detached/worktree scenarios.
-- Release metadata and collateral are aligned to `0.11.13`, and the accidental placeholder corruption in `src/hooks/__tests__/notify-fallback-watcher.test.ts` is repaired before ship.
+- Native Codex hook ownership now lives in the repo/runtime contract for non-team OMX sessions.
+- First-party Bash `PreToolUse` / `PostToolUse` guidance is now supported and documented.
+- Team runtime delivery, mailbox handling, pane-status visibility, and next-action steering are more robust.
+- Windows/tmux launch reliability and worker supervision are improved.
+- Prompt/AGENTS guidance now emphasizes quality-first, verification-heavy execution.
+- Release metadata and collateral are aligned to `0.12.0`.
 
 ## What’s Changed
 
 ### Fixes
-- harden leader mailbox delivery across runtime + CLI seams and keep busy leader nudges deliverable
-- suppress false team coordination signals during runtime handoff
-- preserve Windows worktree/HUD/leader polling reliability across detached launches
-- honor deep-interview input locks in fallback nudges, clean up legacy-skill uninstall warnings, and reap detached worker descendants more safely on shutdown
+- harden repo-local native hook ownership, session-start continuity, and stop-state persistence
+- strengthen team/runtime delivery, mailbox, persist-error, and next-action steering behavior
+- preserve Windows/tmux launch reliability, shift-enter handling, and launcher command resolution
+- keep notification/reminder/session continuity paths more reliable during live operator workflows
 
 ### Changed
-- bump release metadata from `0.11.12` to `0.11.13` across Node and Cargo workspace manifests/lockfiles
-- refresh `CHANGELOG.md`, `docs/release-notes-0.11.13.md`, and `RELEASE_BODY.md` for the release cut
-- restore the malformed `notify-fallback-watcher` regression test file so the release branch builds cleanly again
+- add first-party Bash `PreToolUse` / `PostToolUse` guidance for the native hook lane
+- refresh prompt/AGENTS defaults toward quality-first, evidence-backed execution
+- reorganize translated README/docs collateral under `docs/readme/` and extend Ukrainian docs coverage
+- bump release metadata from `0.11.13` to `0.12.0` across Node/Cargo workspace manifests, lockfiles, and release collateral
 
 ## Verification
 
+- `npm ci`
+- `node dist/cli/omx.js version`
+- `node --test dist/cli/__tests__/version-sync-contract.test.js`
 - `cargo test -p omx-runtime-core`
 - `npm run build`
 - `npm run lint`
-- `node --test dist/hooks/__tests__/notify-fallback-watcher.test.js`
-- `node --test dist/cli/__tests__/version-sync-contract.test.js`
 - `npm test`
 - `npm run smoke:packed-install`
 - `git diff --check origin/main...HEAD`
@@ -38,10 +42,10 @@
 ## Remaining risk
 
 - This release verification is still a local release gate, not a full GitHub Actions matrix rerun.
-- The patch train remains relatively broad for a patch cut, so future follow-up should keep an eye on the team/runtime and notify-hook surfaces touched since `0.11.12`.
+- The release train is intentionally broad, so post-release monitoring should keep an eye on native hook setup/uninstall behavior, stop-state continuity, and team delivery/runtime behavior.
 
 ## Contributors
 
 - [@Yeachan-Heo](https://github.com/Yeachan-Heo) (Bellman)
 
-**Full Changelog**: [`v0.11.12...v0.11.13`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.11.12...v0.11.13)
+**Full Changelog**: [`v0.11.13...v0.12.0`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.11.13...v0.12.0)

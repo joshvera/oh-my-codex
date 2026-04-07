@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseSandboxContract } from '../../autoresearch/contracts.js';
@@ -17,8 +17,10 @@ import {
   parseInitArgs,
   checkTmuxAvailable,
   runAutoresearchNoviceBridge,
+  spawnAutoresearchTmux,
   type AutoresearchQuestionIO,
 } from '../autoresearch-guided.js';
+import { OMX_ENTRY_PATH_ENV, OMX_STARTUP_CWD_ENV } from '../../utils/paths.js';
 
 async function initRepo(): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), 'omx-autoresearch-guided-test-'));
@@ -52,6 +54,10 @@ function makeFakeIo(answers: string[]): AutoresearchQuestionIO {
     },
     close(): void {},
   };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 describe('initAutoresearchMission', () => {
@@ -203,6 +209,76 @@ describe('checkTmuxAvailable', () => {
   it('returns a boolean', () => {
     const result = checkTmuxAvailable();
     assert.equal(typeof result, 'boolean');
+  });
+
+  it('launches background tmux sessions with an absolute omx entry path even from a relative launcher', async () => {
+    const repo = await initRepo();
+    const fakeBin = await mkdtemp(join(tmpdir(), 'omx-autoresearch-guided-bin-'));
+    const startupCwd = await mkdtemp(join(tmpdir(), 'omx-autoresearch-guided-start-'));
+    const missionDir = join(repo, 'missions', 'demo');
+    const tmuxLog = join(repo, 'tmux.log');
+    const previousPath = process.env.PATH;
+    const previousEntryPath = process.env[OMX_ENTRY_PATH_ENV];
+    const previousStartupCwd = process.env[OMX_STARTUP_CWD_ENV];
+
+    try {
+      await mkdir(missionDir, { recursive: true });
+      const launcherDir = join(startupCwd, 'dist', 'cli');
+      const launcherPath = join(launcherDir, 'omx.js');
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, '#!/usr/bin/env node\n', 'utf-8');
+
+      const fakeTmuxPath = join(fakeBin, 'tmux');
+      await writeFile(
+        fakeTmuxPath,
+        `#!/bin/sh
+printf '%s\n' "$*" >>"${tmuxLog}"
+case "$1" in
+  -V)
+    exit 0
+    ;;
+  has-session)
+    exit 1
+    ;;
+  new-session)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        'utf-8',
+      );
+      execFileSync('chmod', ['+x', fakeTmuxPath], { stdio: 'ignore' });
+
+      process.env.PATH = `${fakeBin}:${previousPath || ''}`;
+      delete process.env[OMX_ENTRY_PATH_ENV];
+      process.env[OMX_STARTUP_CWD_ENV] = startupCwd;
+
+      const previousArgv = process.argv;
+      process.argv = [previousArgv[0] || 'node', 'dist/cli/omx.js'];
+      try {
+        spawnAutoresearchTmux(missionDir, 'demo');
+      } finally {
+        process.argv = previousArgv;
+      }
+
+      const tmuxOutput = await readFile(tmuxLog, 'utf-8');
+      assert.match(tmuxOutput, /new-session -d -s omx-autoresearch-demo/);
+      assert.match(tmuxOutput, new RegExp(escapeRegExp(launcherPath)));
+      assert.doesNotMatch(tmuxOutput, /dist\/cli\/omx\.js autoresearch/);
+    } finally {
+      if (typeof previousPath === 'string') process.env.PATH = previousPath;
+      else delete process.env.PATH;
+      if (typeof previousEntryPath === 'string') process.env[OMX_ENTRY_PATH_ENV] = previousEntryPath;
+      else delete process.env[OMX_ENTRY_PATH_ENV];
+      if (typeof previousStartupCwd === 'string') process.env[OMX_STARTUP_CWD_ENV] = previousStartupCwd;
+      else delete process.env[OMX_STARTUP_CWD_ENV];
+      await rm(repo, { recursive: true, force: true });
+      await rm(fakeBin, { recursive: true, force: true });
+      await rm(startupCwd, { recursive: true, force: true });
+    }
   });
 });
 

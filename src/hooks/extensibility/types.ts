@@ -3,6 +3,7 @@ export type HookEventSource = 'native' | 'derived';
 
 export type HookEventName =
   | 'session-start'
+  | 'stop'
   | 'session-end'
   | 'session-idle'
   | 'turn-complete'

@@ -89,6 +89,11 @@ interface SessionStaleCheckOptions {
   readLinuxIdentity?: (pid: number) => LinuxProcessIdentity | null;
 }
 
+interface SessionStartOptions {
+  pid?: number;
+  platform?: NodeJS.Platform;
+}
+
 function defaultIsPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -177,19 +182,27 @@ export function isSessionStale(
 /**
  * Write session start state.
  */
-export async function writeSessionStart(cwd: string, sessionId: string): Promise<void> {
+export async function writeSessionStart(
+  cwd: string,
+  sessionId: string,
+  options: SessionStartOptions = {},
+): Promise<void> {
   const stateDir = omxStateDir(cwd);
   await mkdir(stateDir, { recursive: true });
-  const linuxIdentity = process.platform === 'linux'
-    ? readLinuxProcessIdentity(process.pid)
+  const pid = Number.isInteger(options.pid) && options.pid && options.pid > 0
+    ? options.pid
+    : process.pid;
+  const platform = options.platform ?? process.platform;
+  const linuxIdentity = platform === 'linux'
+    ? readLinuxProcessIdentity(pid)
     : null;
 
   const state: SessionState = {
     session_id: sessionId,
     started_at: new Date().toISOString(),
     cwd,
-    pid: process.pid,
-    platform: process.platform,
+    pid,
+    platform,
     pid_start_ticks: linuxIdentity?.startTicks,
     pid_cmdline: linuxIdentity?.cmdline ?? undefined,
   };
@@ -198,7 +211,7 @@ export async function writeSessionStart(cwd: string, sessionId: string): Promise
   await appendToLog(cwd, {
     event: 'session_start',
     session_id: sessionId,
-    pid: process.pid,
+    pid,
     timestamp: state.started_at,
   });
 }

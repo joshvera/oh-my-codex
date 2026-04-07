@@ -33,6 +33,7 @@ interface UninstallSummary {
   tuiSectionRemoved: boolean;
   topLevelKeysRemoved: boolean;
   featureFlagsRemoved: boolean;
+  hooksFileRemoved: boolean;
   promptsRemoved: number;
   skillsRemoved: number;
   agentConfigsRemoved: number;
@@ -80,7 +81,8 @@ function detectOmxConfigArtifacts(config: string): {
 
   const hasFeatureFlags =
     /^\s*multi_agent\s*=\s*true/m.test(config) ||
-    /^\s*child_agents_md\s*=\s*true/m.test(config);
+    /^\s*child_agents_md\s*=\s*true/m.test(config) ||
+    /^\s*codex_hooks\s*=\s*true/m.test(config);
   const hasExploreRoutingEnv = /^\s*USE_OMX_EXPLORE_CMD\s*=/m.test(config);
 
   return {
@@ -286,6 +288,23 @@ async function removeAgentsMd(
   return true;
 }
 
+async function removeHooksFile(
+  hooksFilePath: string,
+  options: Pick<UninstallOptions, "dryRun" | "verbose">,
+): Promise<boolean> {
+  if (!existsSync(hooksFilePath)) return false;
+
+  if (!options.dryRun) {
+    await rm(hooksFilePath, { force: true });
+  }
+  if (options.verbose) {
+    console.log(
+      `  ${options.dryRun ? "Would remove" : "Removed"} ${basename(hooksFilePath)}`,
+    );
+  }
+  return true;
+}
+
 async function removeCacheDirectory(
   projectRoot: string,
   options: Pick<UninstallOptions, "dryRun" | "verbose">,
@@ -353,10 +372,14 @@ function printSummary(summary: UninstallSummary, dryRun: boolean): void {
       );
     }
     if (summary.featureFlagsRemoved) {
-      console.log("    Feature flags (multi_agent, child_agents_md)");
+      console.log("    Feature flags (multi_agent, child_agents_md, codex_hooks)");
     }
   } else if (!summary.configCleaned && summary.mcpServersRemoved.length === 0) {
     console.log("  config.toml: no OMX entries found (or --keep-config used)");
+  }
+
+  if (summary.hooksFileRemoved) {
+    console.log(`  ${prefix} .codex/hooks.json`);
   }
 
   if (summary.promptsRemoved > 0) {
@@ -382,6 +405,7 @@ function printSummary(summary: UninstallSummary, dryRun: boolean): void {
 
   const totalActions =
     (summary.configCleaned ? 1 : 0) +
+    (summary.hooksFileRemoved ? 1 : 0) +
     summary.promptsRemoved +
     summary.skillsRemoved +
     summary.agentConfigsRemoved +
@@ -424,6 +448,7 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
     tuiSectionRemoved: false,
     topLevelKeysRemoved: false,
     featureFlagsRemoved: false,
+    hooksFileRemoved: false,
     promptsRemoved: 0,
     skillsRemoved: 0,
     agentConfigsRemoved: 0,
@@ -448,7 +473,18 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   console.log();
 
   // Step 2: Remove installed prompts
-  console.log("[2/5] Removing agent prompts...");
+  console.log("[2/6] Removing native hooks artifact...");
+  summary.hooksFileRemoved = await removeHooksFile(scopeDirs.codexHooksFile, {
+    dryRun,
+    verbose,
+  });
+  console.log(
+    `  ${dryRun ? "Would remove" : "Removed"} ${summary.hooksFileRemoved ? 1 : 0} hooks file(s).`,
+  );
+  console.log();
+
+  // Step 3: Remove installed prompts
+  console.log("[3/6] Removing agent prompts...");
   summary.promptsRemoved = await removeInstalledPrompts(
     scopeDirs.promptsDir,
     pkgRoot,
@@ -459,8 +495,8 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   );
   console.log();
 
-  // Step 3: Remove native agent configs
-  console.log("[3/5] Removing native agent configs...");
+  // Step 4: Remove native agent configs
+  console.log("[4/6] Removing native agent configs...");
   summary.agentConfigsRemoved = await removeAgentConfigs(
     scopeDirs.nativeAgentsDir,
     { dryRun, verbose },
@@ -470,8 +506,8 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   );
   console.log();
 
-  // Step 4: Remove installed skills
-  console.log("[4/5] Removing skills...");
+  // Step 5: Remove installed skills
+  console.log("[5/6] Removing skills...");
   summary.skillsRemoved = await removeInstalledSkills(
     scopeDirs.skillsDir,
     pkgRoot,
@@ -482,8 +518,8 @@ export async function uninstall(options: UninstallOptions = {}): Promise<void> {
   );
   console.log();
 
-  // Step 5: Remove AGENTS.md and optionally .omx/ cache directory
-  console.log("[5/5] Cleaning up...");
+  // Step 6: Remove AGENTS.md and optionally .omx/ cache directory
+  console.log("[6/6] Cleaning up...");
   const agentsMdPath =
     scope === "project"
       ? join(projectRoot, "AGENTS.md")

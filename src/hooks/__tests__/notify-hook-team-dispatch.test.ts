@@ -37,7 +37,9 @@ if [[ "$cmd" == "capture-pane" ]]; then
   fi
   if [[ -n "\${OMX_TEST_CAPTURE_FILE:-}" && -f "\${OMX_TEST_CAPTURE_FILE}" ]]; then
     cat "\${OMX_TEST_CAPTURE_FILE}"
+    exit 0
   fi
+  printf "› ready\\n"
   exit 0
 fi
 if [[ "$cmd" == "display-message" ]]; then
@@ -90,6 +92,16 @@ if [[ "$cmd" == "list-panes" ]]; then
 fi
 exit 0
 `;
+}
+
+async function readTeamDeliveryLog(cwd: string): Promise<Array<Record<string, unknown>>> {
+  const path = join(cwd, '.omx', 'logs', `team-delivery-${new Date().toISOString().slice(0, 10)}.jsonl`);
+  const raw = await readFile(path, 'utf-8').catch(() => '');
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 async function writeCompatRuntimeFixture(runtimePath: string): Promise<void> {
@@ -293,6 +305,14 @@ describe('notify-hook team dispatch consumer', () => {
       assert.ok(deferredLog.tmux_session.length > 0);
       assert.equal(deferredLog.leader_pane_id, null);
       assert.equal(deferredLog.tmux_injection_attempted, false);
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      assert.ok(deliveryLog.some((entry) =>
+        entry.event === 'dispatch_result'
+        && entry.source === 'notify-hook.team-dispatch'
+        && entry.request_id === queued.request.request_id
+        && entry.result === 'deferred'
+        && entry.reason === 'leader_pane_missing_deferred'));
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -326,6 +346,14 @@ describe('notify-hook team dispatch consumer', () => {
       const deferredLogs = dispatchLogs.filter((entry: { type?: string; request_id?: string }) =>
         entry.type === 'dispatch_deferred' && entry.request_id === queued.request.request_id);
       assert.equal(deferredLogs.length, 1, 'should only log one dispatch_deferred artifact per missing-pane request until state changes');
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      const deferredDeliveryLogs = deliveryLog.filter((entry) =>
+        entry.event === 'dispatch_result'
+        && entry.source === 'notify-hook.team-dispatch'
+        && entry.request_id === queued.request.request_id
+        && entry.result === 'deferred');
+      assert.equal(deferredDeliveryLogs.length, 1, 'should only log one deferred team-delivery artifact per missing-pane request until state changes');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -594,6 +622,109 @@ exit 0
       else delete process.env.PATH;
       if (typeof prevTmuxPane === 'string') process.env.TMUX_PANE = prevTmuxPane;
       else delete process.env.TMUX_PANE;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('leader-fixed dispatch fails without false notification when the resolved leader pane is in copy-mode', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-hook-team-dispatch-'));
+    const fakeBinDir = join(cwd, 'fake-bin');
+    const tmuxLogPath = join(cwd, 'tmux.log');
+    const prevPath = process.env.PATH;
+    try {
+      await mkdir(fakeBinDir, { recursive: true });
+      await writeFile(
+        join(fakeBinDir, 'tmux'),
+        `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  fmt=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -t)
+        shift
+        target="$1"
+        ;;
+      *)
+        fmt="$1"
+        ;;
+    esac
+    shift || true
+  done
+  if [[ "$fmt" == "#{pane_in_mode}" && "$target" == "%77" ]]; then
+    echo "1"
+    exit 0
+  fi
+  if [[ "$fmt" == "#{pane_id}" && "$target" == "%77" ]]; then
+    echo "%77"
+    exit 0
+  fi
+  if [[ "$fmt" == "#{pane_current_path}" ]]; then
+    dirname "${tmuxLogPath}"
+    exit 0
+  fi
+  if [[ "$fmt" == "#{pane_current_command}" && "$target" == "%77" ]]; then
+    echo "codex"
+    exit 0
+  fi
+  if [[ "$fmt" == "#S" ]]; then
+    echo "devsess"
+    exit 0
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  printf "%%77\\t1\\tcodex\\tcodex\\n"
+  exit 0
+fi
+exit 0
+`,
+      );
+      await chmod(join(fakeBinDir, 'tmux'), 0o755);
+      process.env.PATH = `${fakeBinDir}:${prevPath || ''}`;
+
+      await initTeamState('alpha', 'task', 'executor', 1, cwd);
+      const cfg = await readTeamConfig('alpha', cwd);
+      assert.ok(cfg);
+      if (!cfg) throw new Error('missing team config');
+      cfg.leader_pane_id = '%77';
+      await saveTeamConfig(cfg, cwd);
+
+      const msg = await sendDirectMessage('alpha', 'worker-1', 'leader-fixed', 'hello leader', cwd);
+      const queued = await enqueueDispatchRequest('alpha', {
+        kind: 'mailbox',
+        to_worker: 'leader-fixed',
+        message_id: msg.message_id,
+        trigger_message: 'Read .omx/state/team/alpha/mailbox/leader-fixed.json; worker-1 sent a new message. Review it and decide the next concrete step.',
+      }, cwd);
+
+      const modulePath = new URL('../../../dist/scripts/notify-hook/team-dispatch.js', import.meta.url).pathname;
+      const mod = await import(pathToFileURL(modulePath).href);
+      const result = await mod.drainPendingTeamDispatch({ cwd, maxPerTick: 5 });
+      assert.equal(result.processed, 1);
+      assert.equal(result.failed, 1);
+
+      const request = await readDispatchRequest('alpha', queued.request.request_id, cwd);
+      assert.equal(request?.status, 'failed');
+      assert.equal(request?.last_reason, 'scroll_active');
+
+      const mailbox = await listMailboxMessages('alpha', 'leader-fixed', cwd);
+      const mailboxMessage = mailbox.find((entry) => entry.message_id === msg.message_id);
+      assert.equal(mailboxMessage?.notified_at, undefined, 'guard failure should not mark leader mailbox message notified');
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf8');
+      assert.match(tmuxLog, /display-message -p -t %77 #\{pane_in_mode\}/);
+      assert.doesNotMatch(tmuxLog, /send-keys -t %77/, 'copy-mode leader pane must not receive injected keys');
+    } finally {
+      if (typeof prevPath === 'string') process.env.PATH = prevPath;
+      else delete process.env.PATH;
       await rm(cwd, { recursive: true, force: true });
     }
   });

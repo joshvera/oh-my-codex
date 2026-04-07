@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   buildPlatformCommandSpec,
@@ -143,7 +143,7 @@ describe('buildPlatformCommandSpec', () => {
     }
   });
 
-  it('still prefers PowerShell shims over cmd shims when no node-hosted entrypoint exists', async () => {
+  it('prefers cmd shims over PowerShell shims when no node-hosted entrypoint exists', async () => {
     const fakeBin = await mkdtemp(join(tmpdir(), 'omx-platform-ps1-fallback-'));
     try {
       const ps1Path = join(fakeBin, 'codex.ps1');
@@ -160,11 +160,46 @@ describe('buildPlatformCommandSpec', () => {
         },
       );
 
-      assert.match(spec.command, /powershell(?:\.exe)?$/i);
-      assert.deepEqual(spec.args.slice(0, 5), ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File']);
-      assert.equal(spec.args[5], ps1Path);
+      assert.match(spec.command, /cmd(?:\.exe)?$/i);
+      assert.deepEqual(spec.args.slice(0, 3), ['/d', '/s', '/c']);
+      assert.match(spec.args[3] || '', /codex\.cmd/i);
+      assert.equal(spec.resolvedPath, cmdPath);
+      assert.notEqual(spec.resolvedPath, ps1Path);
     } finally {
       await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('skips directory PATH candidates when resolving the PowerShell executable for .ps1 shims', async () => {
+    const shimBin = await mkdtemp(join(tmpdir(), 'omx-platform-ps1-shim-'));
+    const badPowerShellBin = await mkdtemp(join(tmpdir(), 'omx-platform-bad-powershell-'));
+    const goodPowerShellBin = await mkdtemp(join(tmpdir(), 'omx-platform-good-powershell-'));
+    try {
+      const ps1Path = join(shimBin, 'codex.ps1');
+      const powershellDirectory = join(badPowerShellBin, 'powershell');
+      const powershellExePath = join(goodPowerShellBin, 'powershell.exe');
+      await writeFile(ps1Path, '');
+      await mkdir(powershellDirectory, { recursive: true });
+      await writeFile(powershellExePath, '');
+
+      const spec = buildPlatformCommandSpec(
+        ps1Path,
+        ['--version'],
+        'win32',
+        {
+          PATH: [badPowerShellBin, goodPowerShellBin].join(delimiter),
+          PATHEXT: '.EXE;.CMD;.PS1',
+        },
+      );
+
+      assert.equal(spec.command, powershellExePath);
+      assert.deepEqual(spec.args.slice(0, 5), ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File']);
+      assert.equal(spec.args[5], ps1Path);
+      assert.notEqual(spec.command, powershellDirectory);
+    } finally {
+      await rm(shimBin, { recursive: true, force: true });
+      await rm(badPowerShellBin, { recursive: true, force: true });
+      await rm(goodPowerShellBin, { recursive: true, force: true });
     }
   });
 });
@@ -188,6 +223,32 @@ describe('resolveCommandPathForPlatform', () => {
       );
     } finally {
       await rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores directory candidates on Windows even when they appear before a real executable', async () => {
+    const badPowerShellBin = await mkdtemp(join(tmpdir(), 'omx-platform-path-dir-'));
+    const goodPowerShellBin = await mkdtemp(join(tmpdir(), 'omx-platform-path-exe-'));
+    try {
+      const powershellDirectory = join(badPowerShellBin, 'powershell');
+      const powershellExePath = join(goodPowerShellBin, 'powershell.exe');
+      await mkdir(powershellDirectory, { recursive: true });
+      await writeFile(powershellExePath, '');
+
+      assert.equal(
+        resolveCommandPathForPlatform(
+          'powershell',
+          'win32',
+          {
+            PATH: [badPowerShellBin, goodPowerShellBin].join(delimiter),
+            PATHEXT: '.EXE;.CMD;.PS1',
+          },
+        ),
+        powershellExePath,
+      );
+    } finally {
+      await rm(badPowerShellBin, { recursive: true, force: true });
+      await rm(goodPowerShellBin, { recursive: true, force: true });
     }
   });
 

@@ -4,15 +4,71 @@
  */
 
 import { createHash } from "crypto";
-import { existsSync } from "fs";
+import { existsSync, realpathSync } from "fs";
 import { readdir, readFile, realpath } from "fs/promises";
-import { dirname, join } from "path";
+import { dirname, isAbsolute, join, resolve } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
 
 /** Codex CLI home directory (~/.codex/) */
 export function codexHome(): string {
   return process.env.CODEX_HOME || join(homedir(), ".codex");
+}
+
+export const OMX_ENTRY_PATH_ENV = "OMX_ENTRY_PATH";
+export const OMX_STARTUP_CWD_ENV = "OMX_STARTUP_CWD";
+
+function resolveLauncherPath(rawPath: string, baseCwd: string): string {
+  const absolutePath = isAbsolute(rawPath) ? rawPath : resolve(baseCwd, rawPath);
+  if (!existsSync(absolutePath)) return absolutePath;
+  try {
+    return typeof realpathSync.native === "function"
+      ? realpathSync.native(absolutePath)
+      : realpathSync(absolutePath);
+  } catch {
+    return absolutePath;
+  }
+}
+
+export function resolveOmxEntryPath(
+  options: {
+    argv1?: string | null;
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): string | null {
+  const { argv1 = process.argv[1], cwd = process.cwd(), env = process.env } = options;
+  const fromEnv = String(env[OMX_ENTRY_PATH_ENV] ?? "").trim();
+  if (fromEnv !== "") return fromEnv;
+
+  const rawPath = typeof argv1 === "string" ? argv1.trim() : "";
+  if (rawPath === "") return null;
+
+  const startupCwd = String(env[OMX_STARTUP_CWD_ENV] ?? "").trim() || cwd;
+  return resolveLauncherPath(rawPath, startupCwd);
+}
+
+export function rememberOmxLaunchContext(
+  options: {
+    argv1?: string | null;
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): void {
+  const { cwd = process.cwd(), env = process.env } = options;
+  if (String(env[OMX_STARTUP_CWD_ENV] ?? "").trim() === "") {
+    env[OMX_STARTUP_CWD_ENV] = cwd;
+  }
+  if (String(env[OMX_ENTRY_PATH_ENV] ?? "").trim() !== "") return;
+
+  const resolved = resolveOmxEntryPath({
+    argv1: options.argv1,
+    cwd,
+    env,
+  });
+  if (resolved) {
+    env[OMX_ENTRY_PATH_ENV] = resolved;
+  }
 }
 
 /** Codex config file path (~/.codex/config.toml) */

@@ -5,6 +5,7 @@ import { mkdir, writeFile } from 'fs/promises';
 import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { type AutoresearchKeepPolicy, parseSandboxContract, slugifyMissionName } from '../autoresearch/contracts.js';
+import { resolveOmxEntryPath } from '../utils/paths.js';
 import {
   buildMissionContent,
   buildSandboxContent,
@@ -264,7 +265,7 @@ export function spawnAutoresearchTmux(missionDir: string, slug: string): void {
     );
   }
 
-  const omxPath = resolve(join(__dirname, '..', '..', 'bin', 'omx.js'));
+  const omxPath = resolveOmxEntryPath() ?? resolve(join(__dirname, 'omx.js'));
   const cmd = `${shellQuote(process.execPath)} ${shellQuote(omxPath)} autoresearch ${shellQuote(missionDir)}`;
 
   execFileSync('tmux', ['new-session', '-d', '-s', sessionName, cmd], { stdio: 'ignore',

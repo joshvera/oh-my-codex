@@ -1,4 +1,4 @@
-import { existsSync } from 'fs';
+import { statSync } from 'fs';
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from 'child_process';
 import { basename, delimiter, dirname, extname, join, resolve } from 'path';
 
@@ -21,11 +21,19 @@ export interface ProbedPlatformCommand {
 const WINDOWS_DEFAULT_PATHEXT = ['.com', '.exe', '.bat', '.cmd', '.ps1'];
 const WINDOWS_DIRECT_EXTENSIONS = new Set(['.com', '.exe']);
 const WINDOWS_CMD_EXTENSIONS = new Set(['.bat', '.cmd']);
-const WINDOWS_EXTENSION_PRIORITY = ['.exe', '.com', '.ps1', '.cmd', '.bat'];
+const WINDOWS_EXTENSION_PRIORITY = ['.exe', '.com', '.cmd', '.bat', '.ps1'];
 const NODE_HOSTED_SCRIPT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const WINDOWS_NODE_HOSTED_COMMANDS: Record<string, string[]> = {
   codex: ['node_modules', '@openai', 'codex', 'bin', 'codex.js'],
 };
+
+function existsFileSync(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
 
 function isWindowsPathLike(command: string): boolean {
   return /^[A-Za-z]:/.test(command) || /[\\/]/.test(command);
@@ -175,7 +183,7 @@ export function resolveCommandPathForPlatform(
   command: string,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  existsImpl: ExistsSyncLike = existsSync,
+  existsImpl: ExistsSyncLike = existsFileSync,
 ): string | null {
   if (platform === 'win32') {
     return resolveWindowsCommandPath(command, env, existsImpl);
@@ -188,7 +196,7 @@ export function buildPlatformCommandSpec(
   args: string[],
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  existsImpl: ExistsSyncLike = existsSync,
+  existsImpl: ExistsSyncLike = existsFileSync,
 ): PlatformCommandSpec {
   if (platform !== 'win32') {
     return { command, args: [...args] };
@@ -238,7 +246,7 @@ export function spawnPlatformCommandSync(
   options: SpawnSyncOptionsWithStringEncoding = { encoding: 'utf-8' },
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  existsImpl: ExistsSyncLike = existsSync,
+  existsImpl: ExistsSyncLike = existsFileSync,
   spawnImpl: SpawnSyncLike = spawnSync,
 ): ProbedPlatformCommand {
   const spec = buildPlatformCommandSpec(command, args, platform, env, existsImpl);

@@ -16,6 +16,7 @@ import type { HudFlags, HudPreset, HudRenderContext, ResolvedHudConfig } from '.
 import { HUD_TMUX_HEIGHT_LINES } from './constants.js';
 import { sleep } from '../utils/sleep.js';
 import { runHudAuthorityTick } from './authority.js';
+import { resolveOmxEntryPath } from '../utils/paths.js';
 
 export const HUD_USAGE = [
   'Usage:',
@@ -263,7 +264,11 @@ async function launchTmuxPane(cwd: string, flags: HudFlags): Promise<void> {
     process.exit(1);
   }
 
-  const omxBin = process.argv[1]; // path to bin/omx.js
+  const omxBin = resolveOmxEntryPath();
+  if (!omxBin) {
+    console.error('Failed to resolve OMX launcher path for tmux HUD startup.');
+    process.exit(1);
+  }
   const args = buildTmuxSplitArgs(cwd, omxBin, flags.preset);
 
   try {
