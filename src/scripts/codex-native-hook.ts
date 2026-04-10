@@ -639,10 +639,31 @@ async function buildModeBasedStopOutput(
   };
 }
 
+async function readTeamModeStateForStop(
+  cwd: string,
+  sessionId?: string,
+): Promise<Record<string, unknown> | null> {
+  const normalizedSessionId = safeString(sessionId).trim();
+  if (!normalizedSessionId) {
+    return await readModeState("team", cwd);
+  }
+
+  const scopedState = await readStopSessionPinnedState("team-state.json", cwd, normalizedSessionId);
+  if (scopedState) return scopedState;
+
+  const rootState = await readJsonIfExists(join(cwd, ".omx", "state", "team-state.json"));
+  if (rootState?.active !== true) return null;
+
+  const ownerSessionId = safeString(rootState.session_id).trim();
+  if (ownerSessionId && ownerSessionId !== normalizedSessionId) {
+    return null;
+  }
+
+  return rootState;
+}
+
 async function buildTeamStopOutput(cwd: string, sessionId?: string): Promise<Record<string, unknown> | null> {
-  const teamState = sessionId
-    ? await readModeStateForSession("team", sessionId, cwd)
-    : await readModeState("team", cwd);
+  const teamState = await readTeamModeStateForStop(cwd, sessionId);
   if (teamState?.active !== true) return null;
   const teamName = safeString(teamState.team_name).trim();
   const coarsePhase = teamState.current_phase;
