@@ -402,9 +402,62 @@ esac
     );
   });
 
-  it('keeps nudging Codex when the trigger is queued for the next tool call instead of executing immediately', async () => {
+  it('ignores stale queued-next-tool-call banner text that only survives in scrollback history', async () => {
     await withMockTmuxFixture(
-      'omx-tmux-codex-queued-submit-',
+      'omx-tmux-codex-stale-queued-scrollback-',
+      (logPath) => `#!/bin/sh
+set -eu
+state_dir="$(dirname "${logPath}")"
+text_sent_file="$state_dir/text-sent"
+printf '%s\n' "$*" >> "${logPath}"
+case "$1" in
+  capture-pane)
+    if printf '%s\n' "$*" | grep -q -- ' -S -80'; then
+      if [ -f "$text_sent_file" ]; then
+        cat <<'EOF'
+${QUEUED_AFTER_TOOL_CALL_CAPTURE}
+EOF
+      else
+        cat <<'EOF'
+${READY_HELPER_CAPTURE}
+EOF
+      fi
+    else
+      cat <<'EOF'
+${READY_HELPER_CAPTURE}
+EOF
+    fi
+    exit 0
+    ;;
+  send-keys)
+    if [ "\${4:-}" = "-l" ] && [ "\${6:-}" = "check inbox" ]; then
+      : > "$text_sent_file"
+    fi
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+      async ({ logPath }) => {
+        await sendToWorker('omx-team-x', 1, 'check inbox');
+        const log = await readFile(logPath, 'utf-8');
+        const enterCount = (log.match(/send-keys -t omx-team-x:1 C-m/g) || []).length;
+        assert.equal(
+          enterCount,
+          2,
+          `expected only the baseline submit presses when the queued banner is stale scrollback:\n${log}`,
+        );
+        assert.match(log, /capture-pane -t omx-team-x:1 -p/);
+        assert.match(log, /capture-pane -t omx-team-x:1 -p -S -80/);
+      },
+    );
+  });
+
+  it('keeps nudging Codex when the visible pane still shows a live queued-next-tool-call banner', async () => {
+    await withMockTmuxFixture(
+      'omx-tmux-codex-visible-queued-submit-',
       (logPath) => `#!/bin/sh
 set -eu
 state_dir="$(dirname "${logPath}")"
@@ -417,20 +470,26 @@ case "$1" in
     if [ -f "$enter_count_file" ]; then
       enter_count=$(cat "$enter_count_file")
     fi
-    if [ "$enter_count" -ge 4 ]; then
+    if printf '%s\n' "$*" | grep -q -- ' -S -80'; then
       cat <<'EOF'
+${READY_HELPER_CAPTURE}
+EOF
+    else
+      if [ "$enter_count" -ge 4 ]; then
+        cat <<'EOF'
 initialized in .
 
 ◦ Waiting for background terminal (59s…)
 EOF
-    elif [ -f "$text_sent_file" ]; then
-      cat <<'EOF'
+      elif [ -f "$text_sent_file" ]; then
+        cat <<'EOF'
 ${QUEUED_AFTER_TOOL_CALL_CAPTURE}
 EOF
-    else
-      cat <<'EOF'
+      else
+        cat <<'EOF'
 ${READY_HELPER_CAPTURE}
 EOF
+      fi
     fi
     exit 0
     ;;

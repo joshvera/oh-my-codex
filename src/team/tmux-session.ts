@@ -295,6 +295,12 @@ async function capturePaneAsync(target: string): Promise<string> {
   return result.stdout;
 }
 
+async function captureVisiblePaneAsync(target: string): Promise<string> {
+  const result = await runTmuxAsync(sharedBuildVisibleCapturePaneArgv(target));
+  if (!result.ok) return '';
+  return result.stdout;
+}
+
 async function isWorkerAliveAsync(sessionName: string, workerIndex: number, workerPaneId?: string): Promise<boolean> {
   const result = await runTmuxAsync([
     'list-panes',
@@ -1375,11 +1381,14 @@ async function attemptSubmitRounds(
       }
     }
     await sleep(140);
-    const captured = await capturePaneAsync(target);
+    const [captured, visibleCapture] = await Promise.all([
+      capturePaneAsync(target),
+      captureVisiblePaneAsync(target),
+    ]);
     const normalizedCapture = normalizeTmuxCapture(captured);
     if (
       !normalizedCapture.includes(normalizeTmuxCapture(text))
-      && !paneHasQueuedCodexSubmission(captured)
+      && !paneHasQueuedCodexSubmission(visibleCapture)
     ) {
       return true;
     }
@@ -1593,12 +1602,15 @@ export async function sendToWorker(
   // Post-submit verification: wait briefly and confirm the worker consumed the
   // trigger (draft disappeared or active-task indicator appeared). Fixes #391.
   await sleep(300);
-  const verifyCapture = await capturePaneAsync(target);
+  const [verifyCapture, verifyVisibleCapture] = await Promise.all([
+    capturePaneAsync(target),
+    captureVisiblePaneAsync(target),
+  ]);
   if (verifyCapture) {
     if (paneHasActiveTask(verifyCapture)) return;
     if (
       !normalizeTmuxCapture(verifyCapture).includes(normalizeTmuxCapture(text))
-      && !paneHasQueuedCodexSubmission(verifyCapture)
+      && !paneHasQueuedCodexSubmission(verifyVisibleCapture)
     ) {
       return;
     }
@@ -1606,8 +1618,8 @@ export async function sendToWorker(
     await sendKeyAsync(target, 'C-m');
     await sleep(150);
     await sendKeyAsync(target, 'C-m');
-    const finalCapture = await capturePaneAsync(target);
-    if (paneHasQueuedCodexSubmission(finalCapture)) {
+    const finalVisibleCapture = await captureVisiblePaneAsync(target);
+    if (paneHasQueuedCodexSubmission(finalVisibleCapture)) {
       throw new Error('sendToWorker: submit_queued_after_tool_call');
     }
   }
