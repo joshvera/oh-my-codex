@@ -23,6 +23,8 @@ import { getMissingManagedCodexHookEvents } from '../config/codex-hooks.js';
 import { getDefaultBridge, isBridgeEnabled } from '../runtime/bridge.js';
 import { OMX_EXPLORE_CMD_ENV, isExploreCommandRoutingEnabled } from '../hooks/explore-routing.js';
 import { isLeaderRuntimeStale } from '../team/leader-activity.js';
+import { triagePrompt } from '../hooks/triage-heuristic.js';
+import { readTriageConfig } from '../hooks/triage-config.js';
 
 interface DoctorOptions {
   verbose?: boolean;
@@ -164,6 +166,9 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
 
   // Check 9: MCP servers configured
   checks.push(await checkMcpServers(paths.configPath));
+
+  // Check 10: Prompt triage
+  checks.push(checkPromptTriage());
 
   // Print results
   let passCount = 0;
@@ -839,6 +844,49 @@ function checkAgentsMd(scope: DoctorSetupScope, codexHomeDir: string): Check {
     status: 'warn',
     message: 'not found in project root (run omx agents-init . or omx setup --scope project)',
   };
+}
+
+function checkPromptTriage(): Check {
+  try {
+    const config = readTriageConfig();
+
+    if (config.status === 'disabled') {
+      return {
+        name: 'Prompt triage',
+        status: 'warn',
+        message: `disabled via ${config.path}`,
+      };
+    }
+
+    if (config.status === 'invalid') {
+      return {
+        name: 'Prompt triage',
+        status: 'warn',
+        message: `config file malformed at ${config.path} — fails closed to disabled`,
+      };
+    }
+
+    // Smoke test: verify the classifier is callable and returns the expected shape.
+    const decision = triagePrompt('hello');
+    const validLanes = new Set(['HEAVY', 'LIGHT', 'PASS']);
+    if (!decision || typeof decision !== 'object' || !validLanes.has(decision.lane)) {
+      return {
+        name: 'Prompt triage',
+        status: 'fail',
+        message: `classifier returned unexpected shape (lane: ${String(decision?.lane)})`,
+      };
+    }
+
+    const sourceLabel = config.status === 'defaulted' ? 'enabled (default)' : 'enabled';
+    return {
+      name: 'Prompt triage',
+      status: 'pass',
+      message: `config: ${sourceLabel}`,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { name: 'Prompt triage', status: 'fail', message: `module load error — ${msg}` };
+  }
 }
 
 async function checkMcpServers(configPath: string): Promise<Check> {

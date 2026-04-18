@@ -238,6 +238,27 @@ Detection rules:
 - Runtime-only keywords must pass the runtime availability gate before activation.
 - The rest of the user message becomes the task description.
 
+<triage_routing>
+## Triage: advisory prompt-routing context
+
+The keyword detector is the first and deterministic routing surface. Triage runs only when no keyword matches.
+
+When active, triage emits **advisory prompt-routing context** — a developer-context string that the model may follow. It does not activate a skill or workflow by itself. It is a best-effort hint, not a guarantee.
+
+Triage lanes:
+- **HEAVY** — complex, multi-step, or open-ended prompts: adds autopilot-shaped guidance toward full autonomous execution.
+- **LIGHT/explore** — read-only lookups, search, or investigation prompts: suggests the `explore` role-prompt surface (`prompts/explore.md`).
+- **LIGHT/executor** — scoped implementation or code-change prompts: suggests the `executor` role-prompt surface (`prompts/executor.md`).
+- **LIGHT/designer** — UI, visual, or frontend prompts: suggests the `designer` role-prompt surface (`prompts/designer.md`).
+- **PASS** — simple conversational or factual prompts: no context injection.
+
+Note: `explore`, `executor`, and `designer` are agent role-prompt files under `prompts/`, not workflow skills.
+
+Explicit keywords remain the deterministic control surface when you want explicit, guaranteed routing — use them whenever exact behavior matters.
+
+To opt out per prompt with phrases such as `no workflow`, `just chat`, or `plain answer` — the triage layer will suppress context injection for that prompt.
+</triage_routing>
+
 Ralph / Ralplan execution gate:
 - Enforce **ralplan-first** when ralph is active and planning is not complete.
 - Planning is complete only after both `.omx/plans/prd-*.md` and `.omx/plans/test-spec-*.md` exist.

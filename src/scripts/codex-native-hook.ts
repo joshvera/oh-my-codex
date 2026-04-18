@@ -45,6 +45,15 @@ import { dispatchHookEvent } from "../hooks/extensibility/dispatcher.js";
 import { reconcileHudForPromptSubmit } from "../hud/reconcile.js";
 import { onSessionStart as buildWikiSessionStartContext } from "../wiki/lifecycle.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeState } from "../autoresearch/skill-validation.js";
+import { triagePrompt } from "../hooks/triage-heuristic.js";
+import { readTriageConfig } from "../hooks/triage-config.js";
+import {
+  readTriageState,
+  writeTriageState,
+  shouldSuppressFollowup,
+  promptSignature,
+  type TriageStateFile,
+} from "../hooks/triage-state.js";
 
 type CodexHookEventName =
   | "SessionStart"
@@ -1471,6 +1480,7 @@ export async function dispatchCodexNativeHook(
 
   const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
   let skillState: SkillActiveState | null = null;
+  let triageAdditionalContext: string | null = null;
 
   const nativeSessionId = safeString(payload.session_id ?? payload.sessionId).trim();
   const threadId = safeString(payload.thread_id ?? payload.threadId).trim();
@@ -1499,6 +1509,73 @@ export async function dispatchCodexNativeHook(
         threadId,
         turnId,
       });
+    }
+    // --- Triage classifier (advisory-only, non-keyword prompts) ---
+    if (prompt && skillState === null) {
+      try {
+        if (readTriageConfig().enabled) {
+          const normalized = prompt.trim().toLowerCase();
+          const previous = readTriageState({ cwd, sessionId: sessionIdForState || null });
+          const suppress = shouldSuppressFollowup({
+            previous,
+            currentPrompt: normalized,
+            currentHasKeyword: false,
+          });
+          if (!suppress) {
+            const decision = triagePrompt(prompt);
+            const nowIso = new Date().toISOString();
+            const effectiveTurnId = turnId || nowIso;
+            if (decision.lane === "HEAVY") {
+              triageAdditionalContext =
+                "OMX native UserPromptSubmit triage detected a multi-step goal with no workflow keyword. This is advisory prompt-routing context only; it did not activate autopilot or initialize workflow state. Prefer the existing autopilot-style workflow if AGENTS.md/runtime conditions allow it, unless newer user context narrows or opts out.";
+              const newState: TriageStateFile = {
+                version: 1,
+                last_triage: {
+                  lane: "HEAVY",
+                  destination: "autopilot",
+                  reason: decision.reason,
+                  prompt_signature: promptSignature(normalized),
+                  turn_id: effectiveTurnId,
+                  created_at: nowIso,
+                },
+                suppress_followup: true,
+              };
+              writeTriageState({ cwd, sessionId: sessionIdForState || null, state: newState });
+            } else if (decision.lane === "LIGHT") {
+              if (decision.destination === "explore") {
+                triageAdditionalContext =
+                  "OMX native UserPromptSubmit triage detected a read-only/question-shaped request with no workflow keyword. This is advisory prompt-routing context only. Prefer the explore role surface rather than escalating to autopilot.";
+              } else if (decision.destination === "executor") {
+                triageAdditionalContext =
+                  "OMX native UserPromptSubmit triage detected a narrow edit-shaped request with no workflow keyword. This is advisory prompt-routing context only. Prefer the executor role surface rather than autopilot.";
+              } else if (decision.destination === "designer") {
+                triageAdditionalContext =
+                  "OMX native UserPromptSubmit triage detected a visual/style request with no workflow keyword. This is advisory prompt-routing context only. Prefer the designer role surface.";
+              }
+              if (triageAdditionalContext !== null) {
+                const dest = decision.destination as "explore" | "executor" | "designer";
+                const newState: TriageStateFile = {
+                  version: 1,
+                  last_triage: {
+                    lane: "LIGHT",
+                    destination: dest,
+                    reason: decision.reason,
+                    prompt_signature: promptSignature(normalized),
+                    turn_id: effectiveTurnId,
+                    created_at: nowIso,
+                  },
+                  suppress_followup: true,
+                };
+                writeTriageState({ cwd, sessionId: sessionIdForState || null, state: newState });
+              }
+            }
+            // lane === "PASS": no context, no state write
+          }
+        }
+      } catch {
+        // Swallow all triage errors; never break the hook
+        triageAdditionalContext = null;
+      }
     }
     const reconcileHudForPromptSubmitFn = options.reconcileHudForPromptSubmitFn ?? reconcileHudForPromptSubmit;
     await reconcileHudForPromptSubmitFn(cwd, { sessionId: canonicalSessionId || sessionIdForState || undefined }).catch(() => {});
@@ -1530,7 +1607,7 @@ export async function dispatchCodexNativeHook(
   if (hookEventName === "SessionStart" || hookEventName === "UserPromptSubmit") {
     const additionalContext = hookEventName === "SessionStart"
       ? await buildSessionStartContext(cwd, canonicalSessionId || nativeSessionId)
-      : buildAdditionalContextMessage(readPromptText(payload), skillState);
+      : (buildAdditionalContextMessage(readPromptText(payload), skillState) ?? triageAdditionalContext);
     if (additionalContext) {
       outputJson = {
         hookSpecificOutput: {

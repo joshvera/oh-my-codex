@@ -16,6 +16,7 @@ Resolved setup scope: user
   [!!] AGENTS.md: not found in <CODEX_HOME>/AGENTS.md (run omx setup --scope user)
   [!!] State dir: <REPO_STATE_DIR> (not created yet)
   [!!] MCP Servers: 1 servers but no OMX servers yet (expected before first setup; run "omx setup --force" once)
+  [OK] Prompt triage: config: enabled (default)
 
 Results: <RESULTS>
 

@@ -18,6 +18,7 @@ import {
   resolveSessionOwnerPidFromAncestry,
 } from "../codex-native-hook.js";
 import { writeSessionStart } from "../../hooks/session.js";
+import { resetTriageConfigCache } from "../../hooks/triage-config.js";
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true }).catch(() => {});
@@ -521,7 +522,14 @@ describe("codex native hook dispatch", () => {
 
       assert.equal(result.omxEventName, "keyword-detector");
       assert.equal(result.skillState, null);
-      assert.equal(result.outputJson, null);
+      // Triage may inject advisory LIGHT/explore context for the question-shaped
+      // prompt, but the invariant this test guards is that no Ralph workflow state
+      // is seeded and no Ralph-activation message is emitted.
+      const advisoryContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext || "",
+      );
+      assert.doesNotMatch(advisoryContext, /skill:\s*ralph/i);
+      assert.doesNotMatch(advisoryContext, /ralph-state\.json/i);
       assert.equal(existsSync(join(cwd, ".omx", "state", "skill-active-state.json")), false);
       assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", "sess-ralph-plain-text", "skill-active-state.json")), false);
       assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", "sess-ralph-plain-text", "ralph-state.json")), false);
@@ -4131,6 +4139,694 @@ esac
 
       assert.equal(result.omxEventName, "stop");
       assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Triage layer integration tests
+// ---------------------------------------------------------------------------
+
+describe("codex native hook triage integration", () => {
+  const priorCodexHome = process.env.CODEX_HOME;
+
+  beforeEach(() => {
+    resetTriageConfigCache();
+  });
+
+  afterEach(() => {
+    if (typeof priorCodexHome === "string") process.env.CODEX_HOME = priorCodexHome;
+    else delete process.env.CODEX_HOME;
+    resetTriageConfigCache();
+  });
+
+  // ── Group 1: Keyword bypass (triage must NOT run) ────────────────────────
+
+  it("does not inject triage advisory for $ralplan keyword prompts", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-keyword-ralplan-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-kw-ralplan-1",
+          thread_id: "thread-triage-kw-1",
+          turn_id: "turn-triage-kw-1",
+          prompt: "$ralplan implement issue #1307",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(additionalContext, /multi-step goal with no workflow keyword/);
+      assert.doesNotMatch(additionalContext, /read-only\/question-shaped/);
+      assert.doesNotMatch(additionalContext, /narrow edit-shaped/);
+      assert.doesNotMatch(additionalContext, /visual\/style request/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-kw-ralplan-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not inject triage advisory for autopilot keyword prompts", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-keyword-autopilot-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-kw-autopilot-1",
+          thread_id: "thread-triage-kw-ap-1",
+          turn_id: "turn-triage-kw-ap-1",
+          prompt: "$autopilot build this",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(additionalContext, /multi-step goal with no workflow keyword/);
+      assert.doesNotMatch(additionalContext, /read-only\/question-shaped/);
+      assert.doesNotMatch(additionalContext, /narrow edit-shaped/);
+      assert.doesNotMatch(additionalContext, /visual\/style request/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-kw-autopilot-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // ── Group 2: HEAVY injection ─────────────────────────────────────────────
+
+  it("injects HEAVY advisory and writes prompt-routing-state for a multi-step goal prompt", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-heavy-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-heavy-1",
+          thread_id: "thread-triage-heavy-1",
+          turn_id: "turn-triage-heavy-1",
+          prompt: "add dark mode toggle to the settings page",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /multi-step goal with no workflow keyword/);
+      assert.match(additionalContext, /Prefer the existing autopilot-style workflow/);
+
+      // skill-active-state.json must NOT be written (triage is advisory only)
+      assert.equal(existsSync(join(cwd, ".omx", "state", "skill-active-state.json")), false);
+
+      // prompt-routing-state.json must be written with lane=HEAVY
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-heavy-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), true);
+      const state = JSON.parse(await readFile(stateFile, "utf-8")) as {
+        version?: number;
+        last_triage?: { lane?: string; destination?: string };
+        suppress_followup?: boolean;
+      };
+      assert.equal(state.version, 1);
+      assert.equal(state.last_triage?.lane, "HEAVY");
+      assert.equal(state.last_triage?.destination, "autopilot");
+      assert.equal(state.suppress_followup, true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // ── Group 3: LIGHT/explore ────────────────────────────────────────────────
+
+  it("injects LIGHT/explore advisory and writes state for a question-shaped prompt", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-light-explore-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-explore-1",
+          thread_id: "thread-triage-explore-1",
+          turn_id: "turn-triage-explore-1",
+          prompt: "explain this function",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /read-only\/question-shaped/);
+      assert.match(additionalContext, /Prefer the explore role surface/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-explore-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), true);
+      const state = JSON.parse(await readFile(stateFile, "utf-8")) as {
+        last_triage?: { lane?: string; destination?: string };
+        suppress_followup?: boolean;
+      };
+      assert.equal(state.last_triage?.lane, "LIGHT");
+      assert.equal(state.last_triage?.destination, "explore");
+      assert.equal(state.suppress_followup, true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // ── Group 4: LIGHT/executor ───────────────────────────────────────────────
+
+  it("injects LIGHT/executor advisory and writes state for a narrow edit-shaped prompt", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-light-executor-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-executor-1",
+          thread_id: "thread-triage-executor-1",
+          turn_id: "turn-triage-executor-1",
+          prompt: "fix typo in src/foo.ts",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /narrow edit-shaped/);
+      assert.match(additionalContext, /Prefer the executor role surface/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-executor-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), true);
+      const state = JSON.parse(await readFile(stateFile, "utf-8")) as {
+        last_triage?: { lane?: string; destination?: string };
+      };
+      assert.equal(state.last_triage?.lane, "LIGHT");
+      assert.equal(state.last_triage?.destination, "executor");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // ── Group 5: LIGHT/designer ───────────────────────────────────────────────
+
+  it("injects LIGHT/designer advisory and writes state for a visual/style prompt", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-light-designer-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-designer-1",
+          thread_id: "thread-triage-designer-1",
+          turn_id: "turn-triage-designer-1",
+          prompt: "make the button blue",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /visual\/style request/);
+      assert.match(additionalContext, /Prefer the designer role surface/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-designer-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), true);
+      const state = JSON.parse(await readFile(stateFile, "utf-8")) as {
+        last_triage?: { lane?: string; destination?: string };
+      };
+      assert.equal(state.last_triage?.lane, "LIGHT");
+      assert.equal(state.last_triage?.destination, "designer");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // ── Group 6: PASS (no triage injection, no state) ────────────────────────
+
+  it("produces no triage advisory and no state for trivial greeting prompts", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-pass-hello-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-pass-hello-1",
+          thread_id: "thread-triage-pass-1",
+          turn_id: "turn-triage-pass-1",
+          prompt: "hello",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(additionalContext, /multi-step goal with no workflow keyword/);
+      assert.doesNotMatch(additionalContext, /read-only\/question-shaped/);
+      assert.doesNotMatch(additionalContext, /narrow edit-shaped/);
+      assert.doesNotMatch(additionalContext, /visual\/style request/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-pass-hello-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("produces no triage advisory and no state for ambiguous short prompts", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-pass-short-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-pass-short-1",
+          thread_id: "thread-triage-pass-short-1",
+          turn_id: "turn-triage-pass-short-1",
+          prompt: "fix the thing",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(additionalContext, /multi-step goal with no workflow keyword/);
+      assert.doesNotMatch(additionalContext, /read-only\/question-shaped/);
+      assert.doesNotMatch(additionalContext, /narrow edit-shaped/);
+      assert.doesNotMatch(additionalContext, /visual\/style request/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-pass-short-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // ── Group 7: Turn-2 suppression (same session across two invocations) ────
+
+  it("suppresses HEAVY triage re-injection on a short follow-up in the same session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-suppress-heavy-"));
+    const sessionId = "triage-suppress-heavy-1";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+
+      // Turn 1: HEAVY fires
+      const turn1 = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-suppress-heavy-1",
+          turn_id: "turn-suppress-heavy-1",
+          prompt: "add dark mode toggle to the settings page",
+        },
+        { cwd },
+      );
+      const ctx1 = String(
+        (turn1.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(ctx1, /multi-step goal with no workflow keyword/);
+
+      // Turn 2: short follow-up — triage suppressed
+      const turn2 = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-suppress-heavy-1",
+          turn_id: "turn-suppress-heavy-2",
+          prompt: "yes, settings page",
+        },
+        { cwd },
+      );
+      const ctx2 = String(
+        (turn2.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(ctx2, /multi-step goal/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses LIGHT/explore triage re-injection on a short follow-up in the same session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-suppress-explore-"));
+    const sessionId = "triage-suppress-explore-1";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+
+      // Turn 1: LIGHT/explore fires
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-suppress-explore-1",
+          turn_id: "turn-suppress-explore-1",
+          prompt: "explain this function",
+        },
+        { cwd },
+      );
+
+      // Turn 2: short follow-up — no duplicate LIGHT injection
+      const turn2 = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-suppress-explore-1",
+          turn_id: "turn-suppress-explore-2",
+          prompt: "the auth helper",
+        },
+        { cwd },
+      );
+      const ctx2 = String(
+        (turn2.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(ctx2, /read-only\/question-shaped/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // ── Group 8: First-turn PASS does NOT block later triage ─────────────────
+
+  it("still applies triage on turn 2 when turn 1 was a PASS with no state written", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-pass-then-light-"));
+    const sessionId = "triage-pass-then-light-1";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+
+      // Turn 1: PASS — no state written
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-pass-then-light-1",
+          turn_id: "turn-pass-then-light-1",
+          prompt: "hello",
+        },
+        { cwd },
+      );
+      assert.equal(
+        existsSync(join(cwd, ".omx", "state", "sessions", sessionId, "prompt-routing-state.json")),
+        false,
+      );
+
+      // Turn 2: LIGHT/executor should fire normally
+      const turn2 = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-pass-then-light-1",
+          turn_id: "turn-pass-then-light-2",
+          prompt: "fix typo in src/foo.ts",
+        },
+        { cwd },
+      );
+      const ctx2 = String(
+        (turn2.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(ctx2, /narrow edit-shaped/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // ── Group 9: Opt-out forces PASS ─────────────────────────────────────────
+
+  it("produces no triage advisory when prompt contains 'just chat' opt-out", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-optout-chat-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-optout-chat-1",
+          thread_id: "thread-optout-chat-1",
+          turn_id: "turn-optout-chat-1",
+          prompt: "add dark mode toggle to the settings page, but just chat about it",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(additionalContext, /multi-step goal with no workflow keyword/);
+      assert.doesNotMatch(additionalContext, /read-only\/question-shaped/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-optout-chat-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("produces no triage advisory when prompt contains 'no workflow' opt-out", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-optout-noworkflow-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-optout-noworkflow-1",
+          thread_id: "thread-optout-noworkflow-1",
+          turn_id: "turn-optout-noworkflow-1",
+          prompt: "make the button blue, no workflow",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(additionalContext, /visual\/style request/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-optout-noworkflow-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // ── Group 10: Keyword on follow-up turn wins cleanly ─────────────────────
+
+  it("keyword on turn 2 suppresses triage and writes no triage state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-kw-followup-"));
+    const sessionId = "triage-kw-followup-1";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+
+      // Turn 1: neutral prompt — triage may or may not fire, doesn't matter
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-kw-followup-1",
+          turn_id: "turn-kw-followup-1",
+          prompt: "hello",
+        },
+        { cwd },
+      );
+
+      // Turn 2: keyword prompt — keyword fast-path runs, triage does NOT add extra advisory
+      const turn2 = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-kw-followup-1",
+          turn_id: "turn-kw-followup-2",
+          prompt: "$ralph continue",
+        },
+        { cwd },
+      );
+
+      assert.equal(turn2.skillState?.skill, "ralph");
+
+      const ctx2 = String(
+        (turn2.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(ctx2, /multi-step goal with no workflow keyword/);
+      assert.doesNotMatch(ctx2, /read-only\/question-shaped/);
+      assert.doesNotMatch(ctx2, /narrow edit-shaped/);
+      assert.doesNotMatch(ctx2, /visual\/style request/);
+
+      // No triage state written on the keyword turn
+      const triageState = join(cwd, ".omx", "state", "sessions", sessionId, "prompt-routing-state.json");
+      // The state from turn 1 (if any) must not have been created either (hello = PASS)
+      assert.equal(existsSync(triageState), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // ── Group 11: Config-disabled path ───────────────────────────────────────
+
+  it("produces no triage advisory and no state when triage is disabled in config", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "omx-triage-config-disabled-home-"));
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-config-disabled-cwd-"));
+    try {
+      // Write a .omx-config.json in the fake CODEX_HOME that disables triage
+      await writeJson(join(tmpHome, ".omx-config.json"), {
+        promptRouting: { triage: { enabled: false } },
+      });
+      process.env.CODEX_HOME = tmpHome;
+      resetTriageConfigCache();
+
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-disabled-1",
+          thread_id: "thread-triage-disabled-1",
+          turn_id: "turn-triage-disabled-1",
+          prompt: "add dark mode toggle to the settings page",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.doesNotMatch(additionalContext, /multi-step goal with no workflow keyword/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-disabled-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), false);
+    } finally {
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps triage default-enabled when config omits promptRouting.triage.enabled", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "omx-triage-config-omitted-home-"));
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-config-omitted-cwd-"));
+    const previousCodexHome = process.env.CODEX_HOME;
+    try {
+      await writeJson(join(tmpHome, ".omx-config.json"), {
+        promptRouting: {},
+      });
+      process.env.CODEX_HOME = tmpHome;
+      resetTriageConfigCache();
+
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "triage-defaulted-1",
+          thread_id: "thread-triage-defaulted-1",
+          turn_id: "turn-triage-defaulted-1",
+          prompt: "add dark mode toggle to the settings page",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /multi-step goal with no workflow keyword/);
+
+      const stateFile = join(cwd, ".omx", "state", "sessions", "triage-defaulted-1", "prompt-routing-state.json");
+      assert.equal(existsSync(stateFile), true);
+    } finally {
+      if (typeof previousCodexHome === "string") process.env.CODEX_HOME = previousCodexHome;
+      else delete process.env.CODEX_HOME;
+      resetTriageConfigCache();
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not suppress a short anchored follow-up that is a new request", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-short-new-request-"));
+    const sessionId = "triage-short-new-request-1";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-short-new-request-1",
+          turn_id: "turn-short-new-request-1",
+          prompt: "add dark mode toggle to the settings page",
+        },
+        { cwd },
+      );
+
+      const turn2 = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-short-new-request-1",
+          turn_id: "turn-short-new-request-2",
+          prompt: "fix typo in src/foo.ts",
+        },
+        { cwd },
+      );
+
+      const ctx2 = String(
+        (turn2.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(ctx2, /narrow edit-shaped/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("skips triage state persistence for malformed explicit session ids without writing root state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-triage-invalid-session-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "bad/session",
+          thread_id: "thread-triage-invalid-session-1",
+          turn_id: "turn-triage-invalid-session-1",
+          prompt: "add dark mode toggle to the settings page",
+        },
+        { cwd },
+      );
+
+      const additionalContext = String(
+        (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
+      );
+      assert.match(additionalContext, /multi-step goal with no workflow keyword/);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "prompt-routing-state.json")), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
