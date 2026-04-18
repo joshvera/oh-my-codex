@@ -36,8 +36,8 @@ describe('prompt guidance wave two contract', () => {
     const explore = loadSurface('prompts/explore.md');
 
     assert.match(researcher, /Always include source URLs/i);
-    assert.match(researcher, /Prefer official documentation over third-party summaries/i);
-    assert.match(researcher, /Version compatibility is noted when relevant|Version Notes/i);
+    assert.match(researcher, /Prefer official documentation.*over third-party summaries/i);
+    assert.match(researcher, /Version compatibility or version uncertainty is noted when relevant|### Version Note/i);
 
     assert.match(dependencyExpert, /Compare at least 2 candidates|multiple candidates/i);
     assert.match(dependencyExpert, /license compatibility/i);
