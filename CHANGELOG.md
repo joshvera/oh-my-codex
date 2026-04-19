@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-04-19
+
+Minor release centered on interactive orchestration changes: the new `omx question` blocking-question entrypoint, deep-interview and autoresearch flow tightening, advisory triage routing, explicit runtime run outcomes, specialist-routing cleanup, and release-proof hardening for the shipped package.
+
+### Added
+- **`omx question` CLI entrypoint** — OMX now exposes an owned blocking-question command that accepts structured prompt payloads, records question state, renders tmux/native UI flows, and returns structured answers to the invoking agent/runtime.
+- **Structured deep-interview question obligations** — deep-interview rounds now create explicit pending-question obligations so OMX can track completion and prevent premature Stop while a required question is still unanswered.
+- **Advisory triage routing layer** — non-keyword prompts can now receive PASS/LIGHT/HEAVY routing hints backed by persisted triage state and follow-up suppression.
+
+### Changed
+- **Deep-interview uses `omx question` end-to-end** — interactive clarification now routes through the structured question UI instead of fallback ad-hoc prompting, making question ownership and lifecycle explicit.
+- **Autoresearch is now skill-first and validator-gated** — direct `omx autoresearch` invocation is hard-deprecated in favor of the prompt/skill workflow, and completion now requires validator evidence.
+- **Runtime continuation semantics are explicit** — run outcomes are normalized into a shared terminal/non-terminal contract so stop/continue behavior stays consistent across runtime loops and state surfaces.
+- **Specialist routing guidance is clearer** — repository lookup, official-doc research, and dependency-evaluation routes now have narrower ownership boundaries in prompts and role routing.
+- **Lint validation now targets tracked source roots** — `npm run lint` validates `src` and `bin` directly so nested local worktrees/runtime dirs with their own Biome roots no longer break release gating.
+
+### Fixed
+- **Stop gating around interactive work** — pending deep-interview questions and incomplete autoresearch validation now block Stop consistently until their required interactive/validator work is satisfied.
+- **Question/runtime UI integration** — renderer strategy selection, answer injection, and question-state transitions are covered by the new question runtime path instead of split ad-hoc handling.
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.14.0`.
+
 ## [0.13.2] - 2026-04-18
 
 Patch release covering security hardening, persistent-hook and Stop-handling correctness, Ralph activation and recovery safety, explore reentry guards, worker runtime identity preservation, skill UX refinements, and release-workflow metadata polish.
