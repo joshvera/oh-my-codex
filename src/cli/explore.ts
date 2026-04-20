@@ -8,7 +8,7 @@ import {
   resolveSparkShellBinaryPathWithHydration,
   runSparkShellBinary,
 } from './sparkshell.js';
-import { getMainDefaultModel, getSparkDefaultModel } from '../config/models.js';
+import { getSparkDefaultModel, getStandardDefaultModel } from '../config/models.js';
 import {
   EXPLORE_BIN_ENV as EXPLORE_BIN_ENV_SHARED,
   hydrateNativeBinary,
@@ -27,6 +27,7 @@ const PROMPT_FLAG = '--prompt';
 const PROMPT_FILE_FLAG = '--prompt-file';
 export const EXPLORE_BIN_ENV = EXPLORE_BIN_ENV_SHARED;
 const EXPLORE_SPARK_MODEL_ENV = 'OMX_EXPLORE_SPARK_MODEL';
+const EXPLORE_INSTRUCTIONS_FILE_ENV = 'OMX_EXPLORE_MODEL_INSTRUCTIONS_FILE';
 const WINDOWS_BUILTIN_EXPLORE_HARNESS_REASON =
   'the built-in explore harness is not ready on Windows because its allowlist runtime relies on POSIX sh/bash wrappers. Set OMX_EXPLORE_BIN to a compatible custom harness, prefer `omx sparkshell` for shell-native read-only lookups, or run `omx doctor` for readiness details.';
 
@@ -400,13 +401,16 @@ export function buildExploreHarnessArgs(
   packageRoot = getPackageRoot(),
 ): string[] {
   const sparkModel = env[EXPLORE_SPARK_MODEL_ENV]?.trim() || getSparkDefaultModel();
+  const instructionsFile = env[EXPLORE_INSTRUCTIONS_FILE_ENV]?.trim()
+    || join(packageRoot, 'prompts', 'explore-lightweight-AGENTS.md');
   const promptWithWikiContext = buildExplorePromptWithWikiContext(prompt, cwd);
   return [
     '--cwd', cwd,
     '--prompt', promptWithWikiContext,
     '--prompt-file', join(packageRoot, 'prompts', 'explore-harness.md'),
+    '--instructions-file', instructionsFile,
     '--model-spark', sparkModel,
-    '--model-fallback', getMainDefaultModel(),
+    '--model-fallback', getStandardDefaultModel(),
   ];
 }
 

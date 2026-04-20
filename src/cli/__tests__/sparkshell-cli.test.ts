@@ -300,6 +300,7 @@ describe('runSparkShellBinary', () => {
     await writeFile(join(codexHome, '.omx-config.json'), JSON.stringify({
       env: {
         OMX_DEFAULT_FRONTIER_MODEL: 'frontier-local',
+        OMX_DEFAULT_STANDARD_MODEL: 'standard-local',
         OMX_DEFAULT_SPARK_MODEL: 'spark-local',
       },
     }));
@@ -326,7 +327,9 @@ describe('runSparkShellBinary', () => {
       });
 
       assert.equal(invokedEnv?.OMX_DEFAULT_FRONTIER_MODEL, 'frontier-shell');
+      assert.equal(invokedEnv?.OMX_DEFAULT_STANDARD_MODEL, 'standard-local');
       assert.equal(invokedEnv?.OMX_DEFAULT_SPARK_MODEL, 'spark-local');
+      assert.match(invokedEnv?.OMX_SPARKSHELL_MODEL_INSTRUCTIONS_FILE || '', /prompts[\\/]+sparkshell-lightweight-AGENTS\.md$/);
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }

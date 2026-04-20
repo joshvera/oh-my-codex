@@ -644,10 +644,12 @@ describe('buildExploreHarnessArgs', () => {
     assert.deepEqual(args.slice(4), [
       '--prompt-file',
       '/pkg/prompts/explore-harness.md',
+      '--instructions-file',
+      '/pkg/prompts/explore-lightweight-AGENTS.md',
       '--model-spark',
       'spark-model',
       '--model-fallback',
-      'gpt-5.4',
+      'gpt-5.4-mini',
     ]);
   });
 });
@@ -853,11 +855,12 @@ describe('exploreCommand', () => {
         const captured = await readFile(capturePath, 'utf-8');
         assert.match(captured, /PATH=.*omx-explore-allowlist-/);
         assert.match(captured, /SHELL=.*omx-explore-allowlist-.*\/bin\/bash$/m);
-        assert.match(captured, /ALLOWED_STATUS=0/);
-        assert.match(captured, /BLOCKED_STATUS=(?!0)\d+/);
-        assert.match(captured, /--ARGV--[\s\S]*\nexec\n/);
-        assert.match(captured, /--ALLOWED_STDOUT--[\s\S]*ripgrep/i);
-        assert.match(captured, /--BLOCKED_STDERR--[\s\S]*not on the omx explore allowlist/);
+      assert.match(captured, /ALLOWED_STATUS=0/);
+      assert.match(captured, /BLOCKED_STATUS=(?!0)\d+/);
+      assert.match(captured, /--ARGV--[\s\S]*\nexec\n/);
+      assert.match(captured, /model_instructions_file=.*explore-lightweight-AGENTS\.md/);
+      assert.match(captured, /--ALLOWED_STDOUT--[\s\S]*ripgrep/i);
+      assert.match(captured, /--BLOCKED_STDERR--[\s\S]*not on the omx explore allowlist/);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
