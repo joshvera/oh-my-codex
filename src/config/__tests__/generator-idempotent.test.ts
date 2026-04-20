@@ -455,15 +455,15 @@ describe("config generator idempotency (#384)", () => {
         toml,
         /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
       );
-      assert.match(toml, /^model_context_window = 1000000$/m);
-      assert.match(toml, /^model_auto_compact_token_limit = 900000$/m);
+      assert.match(toml, /^model_context_window = 250000$/m);
+      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
       assert.match(toml, /^# End oh-my-codex seeded behavioral defaults$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it("can override gpt-5.3-codex to gpt-5.4 and seed 1M context defaults", async () => {
+  it("can override gpt-5.3-codex to gpt-5.4 and seed 250k context defaults", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const toml = buildMergedConfig('model = \"gpt-5.3-codex\"\n', wd, {
@@ -476,14 +476,14 @@ describe("config generator idempotency (#384)", () => {
         toml,
         /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
       );
-      assert.match(toml, /^model_context_window = 1000000$/m);
-      assert.match(toml, /^model_auto_compact_token_limit = 900000$/m);
+      assert.match(toml, /^model_context_window = 250000$/m);
+      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
       assert.match(toml, /^# End oh-my-codex seeded behavioral defaults$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
-  it("does not seed 1M context defaults for non-gpt-5.4 models", async () => {
+  it("does not seed 250k context defaults for non-gpt-5.4 models", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const configPath = join(wd, "config.toml");
@@ -493,14 +493,14 @@ describe("config generator idempotency (#384)", () => {
       const toml = await readFile(configPath, "utf-8");
 
       assert.match(toml, /^model = "o3"$/m, "user model preserved");
-      assert.doesNotMatch(toml, /^model_context_window = 1000000$/m);
-      assert.doesNotMatch(toml, /^model_auto_compact_token_limit = 900000$/m);
+      assert.doesNotMatch(toml, /^model_context_window = 250000$/m);
+      assert.doesNotMatch(toml, /^model_auto_compact_token_limit = 200000$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it("preserves partial user context config without backfilling the missing partner key", async () => {
+  it("seeds missing auto compact limit without overwriting an existing context window", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const configPath = join(wd, "config.toml");
@@ -514,7 +514,48 @@ describe("config generator idempotency (#384)", () => {
 
       assert.match(toml, /^model = "gpt-5\.4"$/m);
       assert.match(toml, /^model_context_window = 640000$/m);
-      assert.doesNotMatch(toml, /^model_auto_compact_token_limit = 900000$/m);
+      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds missing context window without overwriting an existing auto compact limit", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      await writeFile(
+        configPath,
+        ['model = "gpt-5.4"', "model_auto_compact_token_limit = 150000", ""].join("\n"),
+      );
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.match(toml, /^model = "gpt-5\.4"$/m);
+      assert.match(toml, /^model_context_window = 250000$/m);
+      assert.match(toml, /^model_auto_compact_token_limit = 150000$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not duplicate independently seeded defaults across reruns", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      await writeFile(
+        configPath,
+        ['model = "gpt-5.4"', "model_context_window = 640000", ""].join("\n"),
+      );
+
+      await mergeConfig(configPath, wd);
+      await mergeConfig(configPath, wd);
+
+      const toml = await readFile(configPath, "utf-8");
+      assert.equal(count(toml, /^model_context_window = 640000$/gm), 1);
+      assert.equal(count(toml, /^model_auto_compact_token_limit = 200000$/gm), 1);
+      assert.doesNotMatch(toml, /^model_context_window = 250000$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -534,12 +575,12 @@ describe("config generator idempotency (#384)", () => {
         "seeded model should appear once",
       );
       assert.equal(
-        count(toml, /^model_context_window = 1000000$/gm),
+        count(toml, /^model_context_window = 250000$/gm),
         1,
         "seeded context window should appear once",
       );
       assert.equal(
-        count(toml, /^model_auto_compact_token_limit = 900000$/gm),
+        count(toml, /^model_auto_compact_token_limit = 200000$/gm),
         1,
         "seeded auto compact limit should appear once",
       );

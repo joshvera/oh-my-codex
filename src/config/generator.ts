@@ -42,8 +42,8 @@ const OMX_TOP_LEVEL_KEYS = [
 ] as const;
 
 const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
-const DEFAULT_SETUP_MODEL_CONTEXT_WINDOW = 1000000;
-const DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT = 900000;
+const DEFAULT_SETUP_MODEL_CONTEXT_WINDOW = 250000;
+const DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT = 200000;
 const OMX_SEEDED_BEHAVIORAL_DEFAULTS_START_MARKER =
   "# oh-my-codex seeded behavioral defaults (uninstall removes unchanged defaults)";
 const OMX_SEEDED_BEHAVIORAL_DEFAULTS_END_MARKER =
@@ -111,17 +111,21 @@ function getOmxTopLevelLines(
     lines.push(`model = "${selectedModel}"`);
   }
 
-  if (
-    selectedModel === DEFAULT_SETUP_MODEL &&
-    !existingContextWindow &&
-    !existingAutoCompact
-  ) {
-    lines.push(OMX_SEEDED_BEHAVIORAL_DEFAULTS_START_MARKER);
-    lines.push(`model_context_window = ${DEFAULT_SETUP_MODEL_CONTEXT_WINDOW}`);
-    lines.push(
-      `model_auto_compact_token_limit = ${DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT}`,
-    );
-    lines.push(OMX_SEEDED_BEHAVIORAL_DEFAULTS_END_MARKER);
+  if (selectedModel === DEFAULT_SETUP_MODEL) {
+    const seededBehavioralDefaults: string[] = [];
+    if (!existingContextWindow) {
+      seededBehavioralDefaults.push(`model_context_window = ${DEFAULT_SETUP_MODEL_CONTEXT_WINDOW}`);
+    }
+    if (!existingAutoCompact) {
+      seededBehavioralDefaults.push(
+        `model_auto_compact_token_limit = ${DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT}`,
+      );
+    }
+    if (seededBehavioralDefaults.length > 0) {
+      lines.push(OMX_SEEDED_BEHAVIORAL_DEFAULTS_START_MARKER);
+      lines.push(...seededBehavioralDefaults);
+      lines.push(OMX_SEEDED_BEHAVIORAL_DEFAULTS_END_MARKER);
+    }
   }
 
   return lines;

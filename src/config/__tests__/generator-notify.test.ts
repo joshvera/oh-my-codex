@@ -21,8 +21,8 @@ describe('config generator', () => {
       const seededStartIdx = toml.indexOf(
         '# oh-my-codex seeded behavioral defaults (uninstall removes unchanged defaults)',
       );
-      const contextIdx = toml.indexOf('model_context_window = 1000000');
-      const compactIdx = toml.indexOf('model_auto_compact_token_limit = 900000');
+      const contextIdx = toml.indexOf('model_context_window = 250000');
+      const compactIdx = toml.indexOf('model_auto_compact_token_limit = 200000');
       const seededEndIdx = toml.indexOf('# End oh-my-codex seeded behavioral defaults');
       const featuresIdx = toml.indexOf('[features]');
 
@@ -81,8 +81,8 @@ describe('config generator', () => {
         toml,
         /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
       );
-      assert.match(toml, /^model_context_window = 1000000$/m);
-      assert.match(toml, /^model_auto_compact_token_limit = 900000$/m);
+      assert.match(toml, /^model_context_window = 250000$/m);
+      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
       assert.match(toml, /^# End oh-my-codex seeded behavioral defaults$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -101,8 +101,8 @@ describe('config generator', () => {
         toml,
         /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
       );
-      assert.match(toml, /^model_context_window = 1000000$/m);
-      assert.match(toml, /^model_auto_compact_token_limit = 900000$/m);
+      assert.match(toml, /^model_context_window = 250000$/m);
+      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
       assert.match(toml, /^# End oh-my-codex seeded behavioral defaults$/m);
 
       const modelIdx = toml.indexOf('model = "gpt-5.4"');
@@ -206,7 +206,7 @@ describe('config generator', () => {
 
       assert.match(toml, /^model = "gpt-5\.4"$/m);
       assert.match(toml, /^model_context_window = 640000$/m);
-      assert.doesNotMatch(toml, /^model_auto_compact_token_limit = 900000$/m);
+      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -115,8 +115,8 @@ function buildConfigWithSeededModelContext(): string {
     'developer_instructions = "You have oh-my-codex installed."',
     'model = "gpt-5.4"',
     '# oh-my-codex seeded behavioral defaults (uninstall removes unchanged defaults)',
-    'model_context_window = 1000000',
-    'model_auto_compact_token_limit = 900000',
+    'model_context_window = 250000',
+    'model_auto_compact_token_limit = 200000',
     '# End oh-my-codex seeded behavioral defaults',
     '',
     '[features]',
@@ -149,7 +149,7 @@ function buildConfigWithEditedSeededModelContext(): string {
     'model = "gpt-5.4"',
     '# oh-my-codex seeded behavioral defaults (uninstall removes unchanged defaults)',
     'model_context_window = 123456',
-    'model_auto_compact_token_limit = 900000',
+    'model_auto_compact_token_limit = 200000',
     '# End oh-my-codex seeded behavioral defaults',
     '',
     '[features]',
@@ -390,8 +390,8 @@ describe('omx uninstall', () => {
 
       const config = await readFile(join(codexDir, 'config.toml'), 'utf-8');
       assert.match(config, /^model = "gpt-5\.4"$/m);
-      assert.doesNotMatch(config, /^model_context_window = 1000000$/m);
-      assert.doesNotMatch(config, /^model_auto_compact_token_limit = 900000$/m);
+      assert.doesNotMatch(config, /^model_context_window = 250000$/m);
+      assert.doesNotMatch(config, /^model_auto_compact_token_limit = 200000$/m);
       assert.doesNotMatch(config, /seeded behavioral defaults/);
       assert.doesNotMatch(config, /notify\s*=/);
       assert.doesNotMatch(config, /model_reasoning_effort\s*=/);
@@ -417,7 +417,7 @@ describe('omx uninstall', () => {
       const config = await readFile(join(codexDir, 'config.toml'), 'utf-8');
       assert.match(config, /^model = "gpt-5\.4"$/m);
       assert.match(config, /^model_context_window = 123456$/m);
-      assert.match(config, /^model_auto_compact_token_limit = 900000$/m);
+      assert.match(config, /^model_auto_compact_token_limit = 200000$/m);
       assert.doesNotMatch(config, /seeded behavioral defaults/);
       assert.doesNotMatch(config, /notify\s*=/);
       assert.doesNotMatch(config, /model_reasoning_effort\s*=/);
