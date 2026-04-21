@@ -195,7 +195,7 @@ describe('mcp duplicate sibling detection', () => {
     );
   });
 
-  it('does not self-exit after traffic until the duplicate has remained safely idle long enough', () => {
+  it('does not self-exit after post-duplicate traffic until the duplicate has remained safely idle long enough', () => {
     const observation = {
       status: 'older_duplicate' as const,
       entrypoint: 'state-server.js',
@@ -209,11 +209,11 @@ describe('mcp duplicate sibling detection', () => {
     );
     assert.equal(
       shouldSelfExitForDuplicateSibling(observation, 311_000, 1_000, 10_000),
-      false,
+      true,
     );
   });
 
-  it('never self-exits after traffic even after a long idle window', () => {
+  it('uses the duplicate grace window when last traffic predates duplicate observation', () => {
     const observation = {
       status: 'older_duplicate' as const,
       entrypoint: 'state-server.js',
@@ -222,12 +222,16 @@ describe('mcp duplicate sibling detection', () => {
     };
 
     assert.equal(
-      shouldSelfExitForDuplicateSibling(observation, 600_000, 1_000, 10_000),
+      shouldSelfExitForDuplicateSibling(observation, 10_500, 9_000, 1_000),
       false,
+    );
+    assert.equal(
+      shouldSelfExitForDuplicateSibling(observation, 11_100, 9_000, 1_000),
+      true,
     );
   });
 
-  it('treats any observed client traffic as a do-not-self-kill marker', () => {
+  it('treats future or non-finite traffic timestamps as a do-not-self-kill marker', () => {
     const observation = {
       status: 'older_duplicate' as const,
       entrypoint: 'state-server.js',
@@ -236,11 +240,11 @@ describe('mcp duplicate sibling detection', () => {
     };
 
     assert.equal(
-      shouldSelfExitForDuplicateSibling(observation, 499_000, 200_000, 10_000),
+      shouldSelfExitForDuplicateSibling(observation, 499_000, 200_000, 500_000),
       false,
     );
     assert.equal(
-      shouldSelfExitForDuplicateSibling(observation, 900_000, 200_000, 200_001),
+      shouldSelfExitForDuplicateSibling(observation, 900_000, 200_000, Number.NaN),
       false,
     );
   });
