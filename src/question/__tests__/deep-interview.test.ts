@@ -164,4 +164,56 @@ describe('runDeepInterviewQuestion', () => {
     assert.equal(finalState.lifecycle_outcome, undefined);
     assert.equal(finalState.run_outcome, undefined);
   });
+
+  it('clears the pending obligation when question renderer launch fails', async () => {
+    const cwd = await makeRepo();
+    const statePath = join(cwd, '.omx', 'state', 'sessions', 'sess-di', 'deep-interview-state.json');
+
+    await assert.rejects(
+      runDeepInterviewQuestion(
+        {
+          question: 'What should happen next?',
+          options: [{ label: 'Launch', value: 'launch' }],
+          allow_other: false,
+        },
+        {
+          cwd,
+          argv1: '/repo/dist/cli/omx.js',
+          runner: async () => ({
+            code: 1,
+            stdout: JSON.stringify({
+              ok: false,
+              error: {
+                code: 'question_runtime_failed',
+                message: 'omx question cannot open a visible renderer because this process is not running inside an attached tmux pane.',
+              },
+            }),
+            stderr: '',
+          }),
+        },
+      ),
+      (error) => {
+        assert.ok(error instanceof OmxQuestionError);
+        assert.equal(error.code, 'question_runtime_failed');
+        return true;
+      },
+    );
+
+    const finalState = JSON.parse(await readFile(statePath, 'utf-8')) as {
+      lifecycle_outcome?: string;
+      question_enforcement?: {
+        lifecycle_outcome?: string;
+        status?: string;
+        clear_reason?: string;
+        cleared_at?: string;
+      };
+      run_outcome?: string;
+    };
+    assert.equal(finalState.question_enforcement?.status, 'cleared');
+    assert.equal(finalState.question_enforcement?.lifecycle_outcome, 'askuserQuestion');
+    assert.equal(finalState.question_enforcement?.clear_reason, 'error');
+    assert.ok(finalState.question_enforcement?.cleared_at);
+    assert.equal(finalState.lifecycle_outcome, undefined);
+    assert.equal(finalState.run_outcome, undefined);
+  });
 });

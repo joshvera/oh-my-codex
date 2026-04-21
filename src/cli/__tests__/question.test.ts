@@ -177,4 +177,71 @@ esac
     assert.equal(record.error?.code, 'question_runtime_failed');
     assert.match(record.error?.message || '', /pane %5 disappeared immediately after launch/i);
   });
+
+  it('fails closed outside an attached tmux pane without creating a detached session', async () => {
+    const cwd = await makeRepo();
+    const fakeBinDir = join(cwd, 'fake-bin');
+    const tmuxLogPath = join(cwd, 'tmux.log');
+    await mkdir(fakeBinDir, { recursive: true });
+    await writeFile(join(fakeBinDir, 'tmux'), `#!/bin/sh
+printf '%s\\n' "$*" >> "${tmuxLogPath}"
+exit 0
+`, { mode: 0o755 });
+
+    const input = JSON.stringify({
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }],
+      allow_other: true,
+      session_id: 'sess-q',
+    });
+
+    const childEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+      OMX_AUTO_UPDATE: '0',
+      OMX_NOTIFY_FALLBACK: '0',
+      OMX_HOOK_DERIVED_SIGNALS: '0',
+    };
+    delete childEnv.TMUX;
+    delete childEnv.TMUX_PANE;
+    delete childEnv.OMX_QUESTION_TEST_RENDERER;
+
+    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
+      const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
+        cwd,
+        env: childEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+      child.on('close', (code) => resolve({ code, stdout, stderr }));
+    });
+
+    assert.equal(result.code, 1);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.ok, false);
+    assert.equal(payload.error.code, 'question_runtime_failed');
+    assert.match(payload.error.message, /visible renderer/i);
+    assert.match(payload.error.message, /attached tmux pane/i);
+    assert.match(payload.error.message, /Run omx question from inside tmux/i);
+    assert.doesNotMatch(payload.error.message, /tmux is unavailable/i);
+
+    const entries = await readdir(join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions'));
+    assert.equal(entries.length, 1);
+    const recordPath = join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions', entries[0]!);
+    const record = JSON.parse(await readFile(recordPath, 'utf-8')) as { status: string; error?: { code?: string; message?: string } };
+    assert.equal(record.status, 'error');
+    assert.equal(record.error?.code, 'question_runtime_failed');
+    assert.match(record.error?.message || '', /visible renderer/i);
+    assert.match(record.error?.message || '', /attached tmux pane/i);
+    assert.doesNotMatch(record.error?.message || '', /tmux is unavailable/i);
+
+    let tmuxLog = '';
+    try {
+      tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+    } catch {}
+    assert.doesNotMatch(tmuxLog, /new-session/);
+  });
 });
