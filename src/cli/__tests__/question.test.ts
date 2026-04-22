@@ -317,4 +317,90 @@ exit 0
     assert.doesNotMatch(tmuxLog, /new-session/);
   });
 
+  it('uses an explicit return pane to launch from a container-like shell without TMUX', async () => {
+    const cwd = await makeRepo();
+    const fakeBinDir = join(cwd, 'fake-bin');
+    const tmuxLogPath = join(cwd, 'tmux.log');
+    await mkdir(fakeBinDir, { recursive: true });
+    await writeFile(join(fakeBinDir, 'tmux'), `#!/bin/sh
+printf '%s\n' "$*" >> "${tmuxLogPath}"
+case "$1" in
+  split-window)
+    printf '%%45\n'
+    ;;
+  list-panes)
+    printf '0\t%%45\n'
+    ;;
+esac
+`, { mode: 0o755 });
+
+    const input = JSON.stringify({
+      question: 'Pick one',
+      options: [{ label: 'A', value: 'a' }],
+      allow_other: true,
+      session_id: 'sess-q',
+    });
+
+    const childEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
+      OMX_QUESTION_RETURN_PANE: '%44',
+      OMX_AUTO_UPDATE: '0',
+      OMX_NOTIFY_FALLBACK: '0',
+      OMX_HOOK_DERIVED_SIGNALS: '0',
+    };
+    delete childEnv.TMUX;
+    delete childEnv.TMUX_PANE;
+    delete childEnv.OMX_QUESTION_TEST_RENDERER;
+
+    const child = spawn(process.execPath, [omxBin, 'question', '--input', input, '--json'], {
+      cwd,
+      env: childEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+
+    const questionsDir = join(cwd, '.omx', 'state', 'sessions', 'sess-q', 'questions');
+    let recordFile = '';
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const entries = await readdir(questionsDir);
+      recordFile = entries.find((entry) => entry.endsWith('.json')) || '';
+      if (recordFile) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.notEqual(recordFile, '', `expected question record file, stderr=${stderr}`);
+    const recordPath = join(questionsDir, recordFile);
+
+    let record = null;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      record = await readQuestionRecord(recordPath);
+      if (record?.status === 'prompting') break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(record?.status, 'prompting', `expected prompting question record, stderr=${stderr}`);
+    assert.equal(record?.renderer?.renderer, 'tmux-pane');
+    assert.equal(record?.renderer?.target, '%45');
+    assert.equal(record?.renderer?.return_target, '%44');
+
+    await markQuestionAnswered(recordPath, {
+      kind: 'option',
+      value: 'a',
+      selected_labels: ['A'],
+      selected_values: ['a'],
+    });
+
+    const exitCode = await new Promise<number | null>((resolve) => child.on('close', resolve));
+    assert.equal(exitCode, 0, stderr || stdout);
+    const payload = JSON.parse(stdout);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.answer.value, 'a');
+
+    const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+    assert.match(tmuxLog, /split-window -v -l 12 -t %44 -P -F #\{pane_id\}/);
+    assert.doesNotMatch(tmuxLog, /new-session/);
+  });
+
 });

@@ -38,14 +38,24 @@ function isPaneId(value: string | null | undefined): value is string {
   return typeof value === 'string' && /^%\d+$/.test(value.trim());
 }
 
+function hasExplicitQuestionPaneTarget(env: NodeJS.ProcessEnv): boolean {
+  return isPaneId(safeString(env.OMX_QUESTION_RETURN_PANE || env.OMX_LEADER_PANE_ID).trim());
+}
+
 export function resolveQuestionRendererStrategy(
   env: NodeJS.ProcessEnv = process.env,
   // Kept for callers/tests that used to pass detected tmux availability; default
   // strategy selection now depends only on renderer visibility signals.
   _tmuxBinary?: string | null,
+  options?: {
+    cwd?: string;
+    sessionId?: string;
+  },
 ): QuestionRendererStrategy {
   if (safeString(env.OMX_QUESTION_TEST_RENDERER).trim() === 'noop') return 'test-noop';
   if (safeString(env.TMUX).trim() !== '') return 'inside-tmux';
+  if (hasExplicitQuestionPaneTarget(env)) return 'inside-tmux';
+  if (options?.cwd && readPersistedQuestionReturnTarget(options.cwd, options.sessionId)) return 'inside-tmux';
   return 'unsupported';
 }
 
@@ -243,7 +253,10 @@ export function launchQuestionRenderer(
     sleepSync?: SleepSync;
   } = {},
 ): QuestionRendererState {
-  const strategy = deps.strategy ?? resolveQuestionRendererStrategy(options.env ?? process.env);
+  const strategy = deps.strategy ?? resolveQuestionRendererStrategy(options.env ?? process.env, undefined, {
+    cwd: options.cwd,
+    sessionId: options.sessionId,
+  });
   const execTmux = deps.execTmux ?? defaultExecTmux;
   const sleepImpl = deps.sleepSync ?? sleepSync;
   const launchedAt = options.nowIso ?? new Date().toISOString();
@@ -268,7 +281,10 @@ export function launchQuestionRenderer(
   });
 
   if (strategy === 'inside-tmux') {
-    if (!isCurrentTmuxSessionAttached(execTmux, env)) {
+    const splitTarget = returnTarget && !safeString(env.TMUX).trim()
+      ? ['-t', returnTarget]
+      : [];
+    if (splitTarget.length === 0 && !isCurrentTmuxSessionAttached(execTmux, env)) {
       throw new Error(
         'omx question cannot open a visible renderer because this tmux session has no attached client. Run omx question from an attached tmux pane.',
       );
@@ -279,6 +295,7 @@ export function launchQuestionRenderer(
       '-v',
       '-l',
       '12',
+      ...splitTarget,
       '-P',
       '-F',
       '#{pane_id}',
