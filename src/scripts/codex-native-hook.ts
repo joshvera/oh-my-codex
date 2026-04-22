@@ -1525,6 +1525,7 @@ async function buildStopHookOutput(
         safeString(autopilotOutput.stopReason),
         autopilotOutput,
         canonicalSessionId,
+        { allowRepeatDuringStopHook: false },
       );
     }
 

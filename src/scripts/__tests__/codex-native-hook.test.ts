@@ -2482,6 +2482,76 @@ esac
     }
   });
 
+  it("suppresses duplicate Autopilot planning Stop replays so stale planning state cannot loop indefinitely", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-autopilot-planning-replay-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(stateDir, { recursive: true });
+      await writeJson(join(stateDir, "autopilot-state.json"), {
+        active: true,
+        current_phase: "planning",
+      });
+      const payload = {
+        hook_event_name: "Stop",
+        cwd,
+        session_id: "sess-stop-autopilot-planning-replay",
+        thread_id: "thread-stop-autopilot-planning-replay",
+        turn_id: "turn-stop-autopilot-planning-replay",
+        last_assistant_message: "Autopilot planning is still active.",
+      };
+
+      const first = await dispatchCodexNativeHook(payload, { cwd });
+      const replay = await dispatchCodexNativeHook(
+        {
+          ...payload,
+          stop_hook_active: true,
+        },
+        { cwd },
+      );
+
+      assert.equal(first.omxEventName, "stop");
+      assert.deepEqual(first.outputJson, {
+        decision: "block",
+        reason:
+          "OMX autopilot is still active (phase: planning); continue the task and gather fresh verification evidence before stopping.",
+        stopReason: "autopilot_planning",
+        systemMessage: "OMX autopilot is still active (phase: planning).",
+      });
+      assert.equal(replay.omxEventName, "stop");
+      assert.equal(replay.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not block Stop from stale root Autopilot planning state when the explicit session has no scoped state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-stale-root-autopilot-planning-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      await mkdir(join(stateDir, "sessions", "sess-current"), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: "sess-current", cwd });
+      await writeJson(join(stateDir, "autopilot-state.json"), {
+        active: true,
+        mode: "autopilot",
+        current_phase: "planning",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: "sess-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not block Stop when an explicit blocked_on_user run_outcome is present on a mode state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-autopilot-blocked-outcome-"));
     try {
