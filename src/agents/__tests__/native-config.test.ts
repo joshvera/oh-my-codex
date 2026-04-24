@@ -5,10 +5,26 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { AgentDefinition } from "../definitions.js";
+import type { CatalogManifest } from "../../catalog/schema.js";
 import {
   generateAgentToml,
   installNativeAgentConfigs,
 } from "../native-config.js";
+
+function manifestWithAgents(names: string[]): CatalogManifest {
+  return {
+    schemaVersion: 1,
+    catalogVersion: "test",
+    skills: [
+      { name: "ralplan", category: "planning", status: "active", core: true },
+      { name: "team", category: "execution", status: "active", core: true },
+      { name: "ralph", category: "execution", status: "active", core: true },
+      { name: "ultrawork", category: "execution", status: "active", core: true },
+      { name: "autopilot", category: "execution", status: "active", core: true },
+    ],
+    agents: names.map((name) => ({ name, category: "build", status: "active" })),
+  };
+}
 
 const originalStandardModel = process.env.OMX_DEFAULT_STANDARD_MODEL;
 
@@ -86,7 +102,7 @@ describe("agents/native-config", () => {
     assert.doesNotMatch(tunedToml, /exact gpt-5\.4-mini model/);
   });
 
-  it("installs only agents with prompt files and skips existing files without force", async () => {
+  it("installs only catalog-installable agents and skips existing files without force", async () => {
     const root = await mkdtemp(join(tmpdir(), "omx-native-config-"));
     const promptsDir = join(root, "prompts");
     const outDir = join(root, "agents-out");
@@ -95,13 +111,16 @@ describe("agents/native-config", () => {
       await mkdir(promptsDir, { recursive: true });
       await writeFile(join(promptsDir, "executor.md"), "executor prompt");
       await writeFile(join(promptsDir, "planner.md"), "planner prompt");
+      await writeFile(join(promptsDir, "style-reviewer.md"), "merged prompt");
 
       const created = await installNativeAgentConfigs(root, {
         agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["executor", "planner"]),
       });
       assert.equal(created, 2);
       assert.equal(existsSync(join(outDir, "executor.toml")), true);
       assert.equal(existsSync(join(outDir, "planner.toml")), true);
+      assert.equal(existsSync(join(outDir, "style-reviewer.toml")), false);
 
       const executorToml = await readFile(
         join(outDir, "executor.toml"),
@@ -112,6 +131,7 @@ describe("agents/native-config", () => {
 
       const skipped = await installNativeAgentConfigs(root, {
         agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["executor", "planner"]),
       });
       assert.equal(skipped, 0);
     } finally {
@@ -134,7 +154,10 @@ describe("agents/native-config", () => {
       await writeFile(join(codexHome, "config.toml"), 'model = "gpt-5.2"\n');
       await writeFile(join(promptsDir, "debugger.md"), "debugger prompt");
 
-      await installNativeAgentConfigs(root, { agentsDir: outDir });
+      await installNativeAgentConfigs(root, {
+        agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["debugger"]),
+      });
       const debuggerToml = await readFile(join(outDir, "debugger.toml"), "utf8");
       assert.match(debuggerToml, /model = "gpt-5\.2"/);
       assert.doesNotMatch(debuggerToml, /model = "gpt-5\.4-mini"/);
@@ -161,7 +184,10 @@ describe("agents/native-config", () => {
       await writeFile(join(codexHome, "config.toml"), 'model = "gpt-5.2"\n');
       await writeFile(join(promptsDir, "debugger.md"), "debugger prompt");
 
-      await installNativeAgentConfigs(root, { agentsDir: outDir });
+      await installNativeAgentConfigs(root, {
+        agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["debugger"]),
+      });
       const debuggerToml = await readFile(join(outDir, "debugger.toml"), "utf8");
       assert.match(debuggerToml, /model = "gpt-5\.4-mini"/);
       assert.doesNotMatch(debuggerToml, /model = "gpt-5\.2"/);
@@ -188,7 +214,10 @@ describe("agents/native-config", () => {
       await writeFile(join(codexHome, "config.toml"), 'model = "gpt-5.2"\n');
       await writeFile(join(promptsDir, "executor.md"), "executor prompt");
 
-      await installNativeAgentConfigs(root, { agentsDir: outDir });
+      await installNativeAgentConfigs(root, {
+        agentsDir: outDir,
+        catalogManifest: manifestWithAgents(["executor"]),
+      });
       const executorToml = await readFile(join(outDir, "executor.toml"), "utf8");
       assert.match(executorToml, /model = "gpt-5\.2"/);
     } finally {

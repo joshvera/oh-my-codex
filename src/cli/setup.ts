@@ -52,6 +52,11 @@ import {
 } from "../config/mcp-registry.js";
 import { generateAgentToml } from "../agents/native-config.js";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
+import {
+  getCatalogAgentStatusByName,
+  getInstallableNativeAgentNames,
+  isNativeAgentInstallableStatus,
+} from "../agents/policy.js";
 import { getPackageRoot } from "../utils/package.js";
 import { readSessionState, isSessionStale } from "../hooks/session.js";
 import { getCatalogHeadlineCounts } from "./catalog-contract.js";
@@ -1012,14 +1017,14 @@ async function cleanupPluginModeLegacyPrompts(
 
   const manifest = tryReadCatalogManifest();
   const agentStatusByName = manifest
-    ? new Map(manifest.agents.map((agent) => [agent.name, agent.status]))
+    ? getCatalogAgentStatusByName(manifest)
     : null;
 
   for (const file of await readdir(srcDir)) {
     if (!file.endsWith(".md")) continue;
     const promptName = file.slice(0, -3);
     const status = agentStatusByName?.get(promptName);
-    if (agentStatusByName && !isCatalogInstallableStatus(status)) continue;
+    if (agentStatusByName && !isNativeAgentInstallableStatus(status)) continue;
 
     const src = join(srcDir, file);
     const dst = join(dstDir, file);
@@ -1068,12 +1073,12 @@ async function cleanupPluginModeLegacyNativeAgents(
 
   const manifest = tryReadCatalogManifest();
   const agentStatusByName = manifest
-    ? new Map(manifest.agents.map((agent) => [agent.name, agent.status]))
+    ? getCatalogAgentStatusByName(manifest)
     : null;
 
   for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
     const status = agentStatusByName?.get(name);
-    if (agentStatusByName && !isCatalogInstallableStatus(status)) continue;
+    if (agentStatusByName && !isNativeAgentInstallableStatus(status)) continue;
 
     const dst = join(agentsDir, `${name}.toml`);
     const promptPath = join(pkgRoot, "prompts", `${name}.md`);
@@ -2236,7 +2241,7 @@ async function installPrompts(
 
   const manifest = tryReadCatalogManifest();
   const agentStatusByName = manifest
-    ? new Map(manifest.agents.map((agent) => [agent.name, agent.status]))
+    ? getCatalogAgentStatusByName(manifest)
     : null;
 
   const files = await readdir(srcDir);
@@ -2250,7 +2255,7 @@ async function installPrompts(
     staleCandidatePromptNames.add(promptName);
 
     const status = agentStatusByName?.get(promptName);
-    if (agentStatusByName && !isCatalogInstallableStatus(status)) {
+    if (agentStatusByName && !isNativeAgentInstallableStatus(status)) {
       summary.skipped += 1;
       if (options.verbose) {
         const label = status ?? "unlisted";
@@ -2279,7 +2284,7 @@ async function installPrompts(
       if (!file.endsWith(".md")) continue;
       const promptName = file.slice(0, -3);
       const status = agentStatusByName?.get(promptName);
-      if (isCatalogInstallableStatus(status)) continue;
+      if (isNativeAgentInstallableStatus(status)) continue;
       if (!staleCandidatePromptNames.has(promptName) && status === undefined)
         continue;
 
@@ -2317,19 +2322,22 @@ async function refreshNativeAgentConfigs(
 
   const manifest = tryReadCatalogManifest();
   const agentStatusByName = manifest
-    ? new Map(manifest.agents.map((agent) => [agent.name, agent.status]))
+    ? getCatalogAgentStatusByName(manifest)
     : null;
   const staleCandidateNativeAgentNames = new Set(
     manifest?.agents.map((agent) => agent.name) ?? [],
   );
 
-  for (const [name, agent] of Object.entries(AGENT_DEFINITIONS)) {
+  const nativeAgentNames = manifest
+    ? [...getInstallableNativeAgentNames(manifest)].sort()
+    : Object.keys(AGENT_DEFINITIONS).sort();
+
+  for (const name of nativeAgentNames) {
     staleCandidateNativeAgentNames.add(name);
-    const status = agentStatusByName?.get(name);
-    if (agentStatusByName && !isCatalogInstallableStatus(status)) {
+    const agent = AGENT_DEFINITIONS[name];
+    if (!agent) {
       if (options.verbose) {
-        const label = status ?? "unlisted";
-        console.log(`  skipped native agent ${name}.toml (status: ${label})`);
+        console.log(`  skipped native agent ${name}.toml (missing definition)`);
       }
       summary.skipped += 1;
       continue;
@@ -2367,7 +2375,7 @@ async function refreshNativeAgentConfigs(
       if (!file.endsWith(".toml")) continue;
       const agentName = file.slice(0, -5);
       const agentStatus = agentStatusByName?.get(agentName);
-      if (isCatalogInstallableStatus(agentStatus)) continue;
+      if (isNativeAgentInstallableStatus(agentStatus)) continue;
       if (
         !staleCandidateNativeAgentNames.has(agentName) &&
         agentStatus === undefined
