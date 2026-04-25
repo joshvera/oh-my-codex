@@ -56,6 +56,7 @@ import {
   getCatalogAgentStatusByName,
   getInstallableNativeAgentNames,
   isNativeAgentInstallableStatus,
+  isSetupPromptAssetName,
 } from "../agents/policy.js";
 import { getPackageRoot } from "../utils/package.js";
 import { readSessionState, isSessionStale } from "../hooks/session.js";
@@ -1016,15 +1017,11 @@ async function cleanupPluginModeLegacyPrompts(
   if (!existsSync(srcDir) || !existsSync(dstDir)) return summary;
 
   const manifest = tryReadCatalogManifest();
-  const agentStatusByName = manifest
-    ? getCatalogAgentStatusByName(manifest)
-    : null;
 
   for (const file of await readdir(srcDir)) {
     if (!file.endsWith(".md")) continue;
     const promptName = file.slice(0, -3);
-    const status = agentStatusByName?.get(promptName);
-    if (agentStatusByName && !isNativeAgentInstallableStatus(status)) continue;
+    if (manifest && !isSetupPromptAssetName(promptName, manifest)) continue;
 
     const src = join(srcDir, file);
     const dst = join(dstDir, file);
@@ -1111,6 +1108,17 @@ async function cleanupPluginModeLegacyNativeAgents(
         `  ${options.dryRun ? "would remove" : "removed"} legacy native agent ${name}.toml`,
       );
     }
+  }
+
+  if (manifest) {
+    const generatedCleanup = await cleanupGeneratedNonInstallableNativeAgents(
+      agentsDir,
+      manifest,
+      backupContext,
+      options,
+    );
+    summary.backedUp += generatedCleanup.backedUp;
+    summary.removed += generatedCleanup.removed;
   }
 
   await removeEmptyDirectoryIfPresent(agentsDir, options);
@@ -2245,20 +2253,16 @@ async function installPrompts(
     : null;
 
   const files = await readdir(srcDir);
-  const staleCandidatePromptNames = new Set(
-    manifest?.agents.map((agent) => agent.name) ?? [],
-  );
 
   for (const file of files) {
     if (!file.endsWith(".md")) continue;
     const promptName = file.slice(0, -3);
-    staleCandidatePromptNames.add(promptName);
 
     const status = agentStatusByName?.get(promptName);
-    if (agentStatusByName && !isNativeAgentInstallableStatus(status)) {
+    if (manifest && !isSetupPromptAssetName(promptName, manifest)) {
       summary.skipped += 1;
       if (options.verbose) {
-        const label = status ?? "unlisted";
+        const label = status ?? "unclassified";
         console.log(`  skipped ${file} (status: ${label})`);
       }
       continue;
@@ -2284,13 +2288,14 @@ async function installPrompts(
       if (!file.endsWith(".md")) continue;
       const promptName = file.slice(0, -3);
       const status = agentStatusByName?.get(promptName);
-      if (isNativeAgentInstallableStatus(status)) continue;
-      if (!staleCandidatePromptNames.has(promptName) && status === undefined)
-        continue;
+      if (isSetupPromptAssetName(promptName, manifest)) continue;
 
       const stalePromptPath = join(dstDir, file);
       if (!existsSync(stalePromptPath)) continue;
 
+      if (await ensureBackup(stalePromptPath, true, backupContext, options)) {
+        summary.backedUp += 1;
+      }
       if (!options.dryRun) {
         await rm(stalePromptPath, { force: true });
       }
@@ -2302,6 +2307,72 @@ async function installPrompts(
         const label = status ?? "unlisted";
         console.log(`  ${prefix} ${file} (status: ${label})`);
       }
+    }
+  }
+
+  return summary;
+}
+
+function isGeneratedOmxNativeAgentToml(
+  content: string,
+  agentName: string,
+): boolean {
+  const firstLine = content.split(/\r?\n/, 1)[0]?.trim();
+  return firstLine === `# oh-my-codex agent: ${agentName}`;
+}
+
+async function cleanupGeneratedNonInstallableNativeAgents(
+  agentsDir: string,
+  manifest: NonNullable<ReturnType<typeof tryReadCatalogManifest>>,
+  backupContext: SetupBackupContext,
+  options: Pick<SetupOptions, "dryRun" | "verbose">,
+): Promise<SetupCategorySummary> {
+  const summary = createEmptyCategorySummary();
+  if (!existsSync(agentsDir)) return summary;
+
+  const agentStatusByName = getCatalogAgentStatusByName(manifest);
+  const installedFiles = await readdir(agentsDir);
+
+  for (const file of installedFiles) {
+    if (!file.endsWith(".toml")) continue;
+    const agentName = file.slice(0, -5);
+    const agentStatus = agentStatusByName.get(agentName);
+    if (
+      agentStatus === undefined ||
+      isNativeAgentInstallableStatus(agentStatus)
+    ) {
+      continue;
+    }
+
+    const staleAgentPath = join(agentsDir, file);
+    let content = "";
+    try {
+      content = await readFile(staleAgentPath, "utf-8");
+    } catch {
+      continue;
+    }
+
+    if (!isGeneratedOmxNativeAgentToml(content, agentName)) {
+      if (options.verbose) {
+        console.log(
+          `  skipped stale native agent ${file}: not an OMX-generated native agent`,
+        );
+      }
+      continue;
+    }
+
+    if (await ensureBackup(staleAgentPath, true, backupContext, options)) {
+      summary.backedUp += 1;
+    }
+    if (!options.dryRun) {
+      await rm(staleAgentPath, { force: true });
+    }
+    summary.removed += 1;
+    if (options.verbose) {
+      const prefix = options.dryRun
+        ? "would remove stale generated native agent"
+        : "removed stale generated native agent";
+      console.log(`  ${prefix} ${file} (status: ${agentStatus})`);
     }
   }
 
@@ -2369,6 +2440,17 @@ async function refreshNativeAgentConfigs(
     options,
   );
 
+  if (manifest) {
+    const generatedCleanup = await cleanupGeneratedNonInstallableNativeAgents(
+      agentsDir,
+      manifest,
+      backupContext,
+      options,
+    );
+    summary.backedUp += generatedCleanup.backedUp;
+    summary.removed += generatedCleanup.removed;
+  }
+
   if (options.force && manifest && existsSync(agentsDir)) {
     const installedFiles = await readdir(agentsDir);
     for (const file of installedFiles) {
@@ -2385,6 +2467,9 @@ async function refreshNativeAgentConfigs(
       const staleAgentPath = join(agentsDir, file);
       if (!existsSync(staleAgentPath)) continue;
 
+      if (await ensureBackup(staleAgentPath, true, backupContext, options)) {
+        summary.backedUp += 1;
+      }
       if (!options.dryRun) {
         await rm(staleAgentPath, { force: true });
       }
