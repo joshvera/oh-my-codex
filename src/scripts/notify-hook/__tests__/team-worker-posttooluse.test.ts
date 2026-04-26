@@ -54,7 +54,7 @@ describe('handleTeamWorkerPostToolUseSuccess', () => {
     assert.equal(result.handled, true);
     assert.equal(result.status, 'applied');
     assert.ok(result.checkpointCommit);
-    assert.deepEqual(result.operationKinds, ['auto_checkpoint', 'leader_integration_attempt']);
+    assert.deepEqual(result.operationKinds, ['auto_checkpoint', 'worker_clean_rebase', 'leader_integration_attempt']);
 
     const log = execFileSync('git', ['log', '-1', '--pretty=%s'], { cwd: fixture.cwd, encoding: 'utf-8' }).trim();
     assert.equal(log, 'omx(team): auto-checkpoint worker-1');
@@ -72,6 +72,7 @@ describe('handleTeamWorkerPostToolUseSuccess', () => {
 
     const ledger = JSON.parse(await readFile(join(fixture.cwd, '.omx', 'reports', 'team-commit-hygiene', 'demo-team.ledger.json'), 'utf-8')) as { entries: Array<{ operation: string; status: string }> };
     assert.equal(ledger.entries.some((entry) => entry.operation === 'auto_checkpoint' && entry.status === 'applied'), true);
+    assert.equal(ledger.entries.some((entry) => entry.operation === 'worker_clean_rebase' && entry.status === 'skipped'), true);
     assert.equal(ledger.entries.some((entry) => entry.operation === 'leader_integration_attempt' && entry.status === 'applied'), true);
   });
 

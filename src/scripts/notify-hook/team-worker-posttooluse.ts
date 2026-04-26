@@ -310,6 +310,21 @@ async function writeDedupeMarker(path: string, params: {
   }, null, 2));
 }
 
+
+async function classifyCleanScaffolding(cwd: string, leaderHeadObserved: string | null, workerHeadAfter: string | null): Promise<{ status: PostToolUseStatus; reason: string }> {
+  if (!leaderHeadObserved) return { status: 'skipped', reason: 'no_leader_head_observed' };
+  if (!workerHeadAfter) return { status: 'skipped', reason: 'no_worker_head' };
+  if (leaderHeadObserved === workerHeadAfter) return { status: 'noop', reason: 'worker_already_at_leader' };
+
+  const leaderAncestor = await gitMaybe(cwd, ['merge-base', '--is-ancestor', leaderHeadObserved, workerHeadAfter]);
+  if (leaderAncestor.ok) return { status: 'noop', reason: 'leader_is_worker_ancestor' };
+
+  const workerAncestor = await gitMaybe(cwd, ['merge-base', '--is-ancestor', workerHeadAfter, leaderHeadObserved]);
+  if (workerAncestor.ok) return { status: 'skipped', reason: 'worker_behind_leader_defer_to_leader_integration' };
+
+  return { status: 'skipped', reason: 'non_fast_forward_defer_to_leader_integration' };
+}
+
 async function checkpointIfEligible(cwd: string, workerName: string): Promise<{
   status: PostToolUseStatus;
   reason?: string;
@@ -405,6 +420,21 @@ export async function handleTeamWorkerPostToolUseSuccess(
       operationalCommit: checkpoint.checkpointCommit,
       sourceCommit: workerHeadBefore,
       detail: checkpoint.reason ? `posttooluse:${checkpoint.reason}` : 'posttooluse',
+    });
+
+    const cleanScaffolding = await classifyCleanScaffolding(cwd, leaderHeadObserved, workerHeadAfter);
+    operationKinds.push('worker_clean_rebase');
+    await appendLedger({
+      teamName,
+      workerName,
+      cwd,
+      operation: 'worker_clean_rebase',
+      status: cleanScaffolding.status,
+      workerHeadBefore,
+      workerHeadAfter,
+      leaderHeadObserved,
+      sourceCommit: workerHeadAfter,
+      detail: `posttooluse:${cleanScaffolding.reason}`,
     });
 
     if (workerHeadAfter) operationKinds.push('leader_integration_attempt');
