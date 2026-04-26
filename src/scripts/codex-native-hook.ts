@@ -43,6 +43,7 @@ import {
   buildNativePreToolUseOutput,
   detectMcpTransportFailure,
 } from "./codex-native-pre-post.js";
+import { handleTeamWorkerPostToolUseSuccess } from "./notify-hook/team-worker-posttooluse.js";
 import {
   resolveCodexExecutionSurface,
   type CodexLauncherKind,
@@ -2037,6 +2038,7 @@ export async function dispatchCodexNativeHook(
       await markTeamTransportFailure(cwd, payload);
     }
     outputJson = buildNativePostToolUseOutput(payload);
+    await handleTeamWorkerPostToolUseSuccess(payload, cwd);
   } else if (hookEventName === "Stop") {
     outputJson = await buildStopHookOutput(payload, cwd, stateDir);
   }
