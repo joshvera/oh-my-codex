@@ -1490,13 +1490,13 @@ esac
     }
   });
 
-  it('startTeam saves interactive pane ids before readiness waits in source order', async () => {
+  it('startTeam saves interactive pane ids before concurrent readiness attempts', async () => {
     const source = await readFile(join(process.cwd(), 'src', 'team', 'runtime.ts'), 'utf-8');
     const applyMatch = source.match(
       /applyCreatedInteractiveSessionToConfig\(\s*config,\s*createdSession,\s*workerPaneIds\s*\);/m,
     );
     const saveMatch = source.match(/await saveTeamConfig\(config, leaderCwd\);/m);
-    const readyMatch = source.match(/const ready = waitForWorkerReady\(/m);
+    const readyMatch = source.match(/waitForWorkerReadyAsync\(/m);
 
     const applyIndex = applyMatch?.index ?? -1;
     const saveIndex = saveMatch?.index ?? -1;
@@ -1507,6 +1507,137 @@ esac
     assert.notEqual(readyMatch, null);
     assert.equal(applyIndex < saveIndex, true);
     assert.equal(saveIndex < readyIndex, true);
+  });
+
+  it('startTeam starts worker-2 readiness before delayed worker-1 readiness settles', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-parallel-ready-'));
+    const previousTmux = process.env.TMUX;
+    const previousTmuxPane = process.env.TMUX_PANE;
+    const previousLaunchMode = process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+    const previousWorkerCli = process.env.OMX_TEAM_WORKER_CLI;
+    const previousReadyTimeout = process.env.OMX_TEAM_READY_TIMEOUT_MS;
+    const previousStartupEvidenceTimeout = process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS;
+    let runtime: TeamRuntime | null = null;
+
+    try {
+      await withMockTmuxFixture(
+        {
+          dirPrefix: 'omx-runtime-parallel-ready-bin-',
+          tmuxScript: () => `#!/bin/sh
+set -eu
+order_file="${cwd}/ready-order.log"
+case "$1" in
+  -V)
+    echo "tmux 3.4"
+    exit 0
+    ;;
+  display-message)
+    case "$*" in
+      *"#{window_width}"*) echo "120" ;;
+      *) echo "leader:0 %1" ;;
+    esac
+    exit 0
+    ;;
+  list-panes)
+    case "$*" in
+      *"pane_current_command"*) printf "%%1\tnode\t'codex'\n" ;;
+      *"#{pane_dead} #{pane_pid}"*) echo "0 4242" ;;
+      *"-t %2"*"#{pane_pid}"*) echo "4242" ;;
+      *"-t %3"*"#{pane_pid}"*) echo "4343" ;;
+      *"#{pane_pid}"*) echo "4141" ;;
+      *) exit 0 ;;
+    esac
+    exit 0
+    ;;
+  capture-pane)
+    case "$*" in
+      *"-t %2"*)
+        printf '%s\n' w1-ready-start >> "$order_file"
+        sleep 0.4
+        printf '%s\n' w1-ready-done >> "$order_file"
+        printf 'OpenAI Codex\nmodel: test\n› \n'
+        ;;
+      *"-t %3"*)
+        printf '%s\n' w2-ready-start >> "$order_file"
+        printf 'OpenAI Codex\nmodel: test\n› \n'
+        ;;
+      *)
+        printf 'OpenAI Codex\nmodel: test\n› \n'
+        ;;
+    esac
+    exit 0
+    ;;
+  split-window)
+    count_file="${cwd}/split-window-count"
+    count=0
+    if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
+    count=$((count + 1))
+    printf '%s' "$count" > "$count_file"
+    case "$count" in
+      1) echo "%2" ;;
+      2) echo "%3" ;;
+      *) echo "%4" ;;
+    esac
+    exit 0
+    ;;
+  set-hook|run-shell|select-layout|set-window-option|select-pane|send-keys|kill-pane|kill-session|resize-pane)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+          binaries: [{ name: 'codex', content: '#!/usr/bin/env node\nprocess.stdin.resume();\n' }],
+        },
+        async () => {
+          delete process.env.TMUX;
+          process.env.TMUX_PANE = '%1';
+          process.env.OMX_TEAM_WORKER_LAUNCH_MODE = 'interactive';
+          process.env.OMX_TEAM_WORKER_CLI = 'codex';
+          process.env.OMX_TEAM_READY_TIMEOUT_MS = '2000';
+          process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = '50';
+
+          runtime = await withoutTeamWorkerEnv(() =>
+            startTeam(
+              'team-parallel-ready',
+              'worker-2 readiness should not wait for worker-1 readiness settle',
+              'executor',
+              2,
+              [
+                { subject: 'w1', description: 'worker one', owner: 'worker-1' },
+                { subject: 'w2', description: 'worker two', owner: 'worker-2' },
+              ],
+              cwd,
+            ));
+
+          const order = (await readFile(join(cwd, 'ready-order.log'), 'utf-8')).trim().split('\n');
+          assert.ok(order.includes('w1-ready-start'));
+          assert.ok(order.includes('w2-ready-start'));
+          assert.ok(order.includes('w1-ready-done'));
+          assert.equal(
+            order.indexOf('w2-ready-start') < order.indexOf('w1-ready-done'),
+            true,
+            `expected worker-2 readiness attempt before worker-1 readiness settled, got ${order.join(',')}`,
+          );
+        },
+      );
+    } finally {
+      if (runtime) await shutdownTeam(runtime.teamName, cwd, { force: true }).catch(() => {});
+      if (typeof previousTmux === 'string') process.env.TMUX = previousTmux;
+      else delete process.env.TMUX;
+      if (typeof previousTmuxPane === 'string') process.env.TMUX_PANE = previousTmuxPane;
+      else delete process.env.TMUX_PANE;
+      if (typeof previousLaunchMode === 'string') process.env.OMX_TEAM_WORKER_LAUNCH_MODE = previousLaunchMode;
+      else delete process.env.OMX_TEAM_WORKER_LAUNCH_MODE;
+      if (typeof previousWorkerCli === 'string') process.env.OMX_TEAM_WORKER_CLI = previousWorkerCli;
+      else delete process.env.OMX_TEAM_WORKER_CLI;
+      if (typeof previousReadyTimeout === 'string') process.env.OMX_TEAM_READY_TIMEOUT_MS = previousReadyTimeout;
+      else delete process.env.OMX_TEAM_READY_TIMEOUT_MS;
+      if (typeof previousStartupEvidenceTimeout === 'string') process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS = previousStartupEvidenceTimeout;
+      else delete process.env.OMX_TEAM_STARTUP_EVIDENCE_TIMEOUT_MS;
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it('startTeam records recoverable startup issues per worker instead of failing launch early when panes stay alive', async () => {
