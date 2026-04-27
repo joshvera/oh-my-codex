@@ -3390,7 +3390,8 @@ export async function resumeTeam(teamName: string, cwd: string): Promise<TeamRun
   config.lifecycle_profile = 'default';
 
   if (config.worker_launch_mode === 'prompt') {
-    const hasLivePromptWorker = config.workers.some((worker) => isPromptWorkerAlive(config, worker));
+    const handleTeamConfig = { ...config, name: sanitized };
+    const hasLivePromptWorker = config.workers.some((worker) => isPromptWorkerAlive(handleTeamConfig, worker));
     if (!hasLivePromptWorker) return null;
 
     const missingHandles = config.workers

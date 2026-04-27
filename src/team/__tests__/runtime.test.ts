@@ -5375,9 +5375,24 @@ esac
       config.workers[0].pid = sleeperPid;
       config.workers[0].pane_id = null;
       await writeFile(configPath, JSON.stringify(config, null, 2));
+      const manifestPath = join(cwd, '.omx', 'state', 'team', 'team-prompt-resume', 'manifest.v2.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as any;
+      manifest.policy.worker_launch_mode = 'prompt';
+      manifest.tmux_session = 'prompt-team-prompt-resume';
+      manifest.leader_pane_id = null;
+      manifest.hud_pane_id = null;
+      manifest.workers[0].pid = sleeperPid;
+      manifest.workers[0].pane_id = null;
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 
       const runtime = await resumeTeam('team-prompt-resume', cwd);
       assert.equal(runtime, null);
+
+      const events = await readTeamEvents('team-prompt-resume', cwd);
+      assert.ok(
+        events.some((event) => event.reason === `prompt_resume_unavailable:missing_handle:worker-1:${sleeperPid}`),
+        'resumeTeam should persist an explicit missing-handle diagnostic event',
+      );
     } finally {
       if (sleeperPid > 0) {
         try {
