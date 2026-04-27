@@ -6002,7 +6002,7 @@ esac
     }
   });
 
-  it('sendWorkerMessage transport_direct keeps leader-fixed request pending when leader_pane_id missing', async () => {
+  it('sendWorkerMessage transport_direct fails fast for leader-fixed when leader_pane_id missing', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-runtime-leader-direct-'));
     try {
       await initTeamState('team-leader-direct', 'leader direct transport test', 'executor', 1, cwd);
@@ -6017,15 +6017,29 @@ esac
       manifest.policy = { ...(manifest.policy || {}), dispatch_mode: 'transport_direct' };
       await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 
-      await sendWorkerMessage('team-leader-direct', 'worker-1', 'leader-fixed', 'hello leader direct', cwd);
+      await assert.rejects(
+        sendWorkerMessage('team-leader-direct', 'worker-1', 'leader-fixed', 'hello leader direct', cwd),
+        /mailbox_notify_failed:leader_pane_missing_transport_direct_failed/,
+      );
 
       const mailbox = await listMailboxMessages('team-leader-direct', 'leader-fixed', cwd);
       assert.ok(mailbox.length >= 1, `expected at least 1 mailbox message, got ${mailbox.length}`);
       const requests = await listDispatchRequests('team-leader-direct', cwd, { kind: 'mailbox', to_worker: 'leader-fixed' });
       assert.ok(requests.length >= 1, `expected at least 1 leader-fixed dispatch request, got ${requests.length}`);
       const latest = requests[requests.length - 1];
-      assert.equal(latest?.status, 'pending');
-      assert.equal(latest?.last_reason, 'leader_pane_missing_deferred');
+      assert.equal(latest?.status, 'failed');
+      assert.equal(latest?.last_reason, 'leader_pane_missing_transport_direct_failed');
+      assert.ok(latest?.failed_at, 'missing leader pane should fail fast with failed_at evidence');
+
+      const deliveryLog = await readTeamDeliveryLog(cwd);
+      const runtimeEntries = deliveryLog.filter((entry) =>
+        entry.event === 'dispatch_result'
+        && entry.source === 'team.runtime'
+        && entry.to_worker === 'leader-fixed'
+        && entry.transport === 'mailbox'
+        && entry.result === 'failed'
+        && entry.reason === 'leader_pane_missing_transport_direct_failed');
+      assert.equal(runtimeEntries.length, 1, 'leader direct missing-pane failure should emit exactly one runtime dispatch_result entry');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

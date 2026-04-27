@@ -4418,11 +4418,15 @@ async function sendLeaderMailboxMessage(params: {
     cwd,
     transportPreference,
     fallbackAllowed: transportPreference === 'hook_preferred_with_fallback',
-    notify: async (_target, message) => (
-      transportPreference === 'hook_preferred_with_fallback'
-        ? { ok: true, transport: 'hook', reason: 'queued_for_hook_dispatch' }
-        : await notifyLeaderAsync(config, message, cwd)
-    ),
+    notify: async (_target, message) => {
+      if (transportPreference === 'hook_preferred_with_fallback') {
+        return { ok: true, transport: 'hook', reason: 'queued_for_hook_dispatch' };
+      }
+      if (!config.leader_pane_id) {
+        return { ok: false, transport: 'mailbox', reason: 'leader_pane_missing_transport_direct_failed' };
+      }
+      return await notifyLeaderAsync(config, message, cwd);
+    },
   });
 
   if (
@@ -4454,6 +4458,29 @@ async function sendLeaderMailboxMessage(params: {
       outcome: deferredOutcome,
     });
     return deferredOutcome;
+  }
+
+  if (
+    !isExistingMailboxNotificationOutcome(queuedOutcome)
+    && transportPreference === 'transport_direct'
+    && !config.leader_pane_id
+  ) {
+    const failedOutcome: DispatchOutcome = {
+      ...queuedOutcome,
+      ok: false,
+      transport: 'mailbox',
+      reason: 'leader_pane_missing_transport_direct_failed',
+    };
+    await logRuntimeDispatchOutcome({
+      cwd,
+      teamName,
+      workerName: 'leader-fixed',
+      requestId: failedOutcome.request_id,
+      messageId: failedOutcome.message_id,
+      intent: triggerDirective.intent,
+      outcome: failedOutcome,
+    });
+    return failedOutcome;
   }
 
   const canLeaderFallbackDirectly = Boolean(config.leader_pane_id) && isTmuxAvailable();
