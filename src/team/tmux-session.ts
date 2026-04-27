@@ -21,6 +21,7 @@ import {
   paneLooksReady as sharedPaneLooksReady,
 } from '../scripts/tmux-hook-engine.js';
 import { readActiveProviderEnvOverrides } from '../config/models.js';
+import { extractModelProviderOverrideValue } from './model-contract.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
 import {
   buildPlatformCommandSpec,
@@ -925,16 +926,24 @@ export function buildWorkerProcessLaunchSpec(
     ? buildPlatformCommandSpec(workerCli, effectiveCliLaunchArgs, process.platform, effectiveEnv)
     : { command: resolvedCliPath, args: effectiveCliLaunchArgs };
   const resolvedLauncherPath = platformSpec.resolvedPath || resolvedCliPath;
+  const modelProviderOverride = workerCli === 'codex'
+    ? extractModelProviderOverrideValue(effectiveCliLaunchArgs)
+    : undefined;
+  const codexProviderEnv = workerCli === 'codex'
+    ? readActiveProviderEnvOverrides(
+        effectiveEnv,
+        providerLookupCodexHome,
+        modelProviderOverride,
+      )
+    : {};
   const workerEnv: Record<string, string> = {
     OMX_TEAM_WORKER: `${teamName}/worker-${workerIndex}`,
     [OMX_LEADER_NODE_PATH_ENV]: resolveLeaderNodePath(),
     [OMX_LEADER_CLI_PATH_ENV]: resolvedLauncherPath,
-    ...(workerCli === 'codex'
-      ? readActiveProviderEnvOverrides(
-          effectiveEnv,
-          providerLookupCodexHome,
-        )
+    ...(workerCli === 'codex' && workerCodexHomeOverride
+      ? { CODEX_HOME: workerCodexHomeOverride }
       : {}),
+    ...codexProviderEnv,
   };
   for (const [key, value] of Object.entries(extraEnv)) {
     if (typeof value !== 'string' || value.trim() === '') continue;
