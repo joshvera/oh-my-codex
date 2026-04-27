@@ -163,7 +163,7 @@ fn print_attempt_output_with_optional_fallback(
         if let Some(event) = fallback {
             print!("{}", fallback_output_notice(event));
             if !markdown.starts_with('\n') {
-                print!("\n");
+                println!();
             }
         }
         print!("{}", markdown);
