@@ -636,6 +636,14 @@ function formatInspectItemLine(index: number, item: TeamInspectItem, modelInspec
   return parts.filter(Boolean).join(' ');
 }
 
+function renderInspectSummary(summary: string, command: string | null): string {
+  if (!command) return summary;
+  if (/(^| )command=/.test(summary)) {
+    return summary.replace(/(^| )command=.*$/, `$1command=${command}`);
+  }
+  return `${summary} command=${command}`;
+}
+
 function renderTeamPaneStatus(
   paneStatus: TeamPaneStatus,
   modelInspect = false,
@@ -672,9 +680,7 @@ function renderTeamPaneStatus(
         ? paneStatus.recommended_inspect_command
         : rawTmuxCaptureCommand(paneStatus.recommended_inspect_items[0]?.pane_id ?? '', tailLines)
       : null;
-    const summary = summaryCommand
-      ? `${paneStatus.recommended_inspect_summary} command=${summaryCommand}`
-      : paneStatus.recommended_inspect_summary;
+    const summary = renderInspectSummary(paneStatus.recommended_inspect_summary, summaryCommand);
     console.log(`inspect_summary: ${summary}`);
   }
   for (const [index, item] of paneStatus.recommended_inspect_items.entries()) {
