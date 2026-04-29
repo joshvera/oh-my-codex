@@ -4274,6 +4274,51 @@ esac
     }
   });
 
+  it("honors terminal team run-state before later canonical-team Stop fallback", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-terminal-run-state-canonical-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-stop-team-terminal-run-state";
+      await initTeamState(
+        "terminal-run-state-team",
+        "terminal team stop canonical fallback regression",
+        "executor",
+        1,
+        cwd,
+        undefined,
+        { ...process.env, OMX_SESSION_ID: sessionId },
+      );
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
+      await writeJson(join(stateDir, "sessions", sessionId, "run-state.json"), {
+        version: 1,
+        mode: "team",
+        active: false,
+        outcome: "finish",
+        lifecycle_outcome: "finished",
+        current_phase: "complete",
+        completed_at: "2026-04-27T12:00:00.000Z",
+        updated_at: "2026-04-27T12:00:00.000Z",
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-stop-team-terminal-run-state",
+          turn_id: "turn-stop-team-terminal-run-state-1",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("re-fires canonical-team Stop output for a later fresh Stop reply when coarse mode state is missing", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-team-canonical-refire-"));
     try {
@@ -5598,6 +5643,46 @@ esac
           hook_event_name: "Stop",
           cwd,
           session_id: "sess-current",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "stop");
+      assert.equal(result.outputJson, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers canonical run-state terminal lifecycle before stale session Ralph state during Stop", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-stop-canonical-run-state-ralph-"));
+    try {
+      const stateDir = join(cwd, ".omx", "state");
+      const sessionId = "sess-canonical-run-state-ralph";
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd });
+      await writeJson(join(stateDir, "sessions", sessionId, "run-state.json"), {
+        version: 1,
+        mode: "ralph",
+        active: false,
+        outcome: "finish",
+        lifecycle_outcome: "finished",
+        current_phase: "complete",
+        completed_at: "2026-04-27T12:00:00.000Z",
+        updated_at: "2026-04-27T12:00:00.000Z",
+      });
+      await writeJson(join(stateDir, "sessions", sessionId, "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "verifying",
+        session_id: sessionId,
+      });
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "Stop",
+          cwd,
+          session_id: sessionId,
         },
         { cwd },
       );

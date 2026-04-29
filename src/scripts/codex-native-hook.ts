@@ -63,7 +63,8 @@ import { dispatchHookEvent } from "../hooks/extensibility/dispatcher.js";
 import { reconcileHudForPromptSubmit } from "../hud/reconcile.js";
 import { onSessionStart as buildWikiSessionStartContext } from "../wiki/lifecycle.js";
 import { readAutoresearchCompletionStatus, readAutoresearchModeState } from "../autoresearch/skill-validation.js";
-import { shouldContinueRun } from "../runtime/run-loop.js";
+import { readRunState } from "../runtime/run-state.js";
+import { getRunContinuationSnapshot, shouldContinueRun } from "../runtime/run-loop.js";
 import { triagePrompt } from "../hooks/triage-heuristic.js";
 import { readTriageConfig } from "../hooks/triage-config.js";
 import {
@@ -447,6 +448,27 @@ function isRalphStartingPhase(state: Record<string, unknown>): boolean {
   return safeString(state.current_phase ?? state.currentPhase).trim().toLowerCase() === "starting";
 }
 
+function shouldHonorCanonicalTerminalRunState(
+  runState: Record<string, unknown> | null,
+  mode: string,
+): boolean {
+  if (!runState) return false;
+  const runMode = safeString(runState.mode).trim();
+  if (runMode && runMode !== mode) return false;
+  return getRunContinuationSnapshot(runState)?.terminal === true;
+}
+
+async function readCanonicalTerminalRunStateForStop(
+  cwd: string,
+  sessionId: string | undefined,
+  mode: string,
+): Promise<Record<string, unknown> | null> {
+  if (!safeString(sessionId).trim()) return null;
+  const runState = await readRunState(cwd, sessionId).catch(() => null);
+  const runRecord = runState as unknown as Record<string, unknown> | null;
+  return shouldHonorCanonicalTerminalRunState(runRecord, mode) ? runRecord : null;
+}
+
 async function isVisibleRalphActiveForSession(cwd: string, sessionId: string): Promise<boolean> {
   const canonicalState = await readVisibleSkillActiveState(cwd, sessionId);
   if (!canonicalState) return false;
@@ -479,6 +501,9 @@ async function readActiveRalphState(
   // session scopes or fall back to root when a current/explicit session is in play.
   for (const sessionId of sessionCandidates) {
     if (staleCurrentSessionId && sessionId === staleCurrentSessionId) {
+      continue;
+    }
+    if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, "ralph")) {
       continue;
     }
     const sessionScopedPath = getStateFilePath("ralph-state.json", cwd, sessionId);
@@ -1210,6 +1235,9 @@ async function readTeamModeStateForStop(
 }
 
 async function buildTeamStopOutput(cwd: string, sessionId?: string): Promise<Record<string, unknown> | null> {
+  if (await readCanonicalTerminalRunStateForStop(cwd, sessionId, "team")) {
+    return null;
+  }
   const teamState = await readTeamModeStateForStop(cwd, sessionId);
   if (teamState?.active !== true) return null;
   const teamName = safeString(teamState.team_name).trim();
@@ -1949,7 +1977,9 @@ async function buildStopHookOutput(
         );
       }
 
-      const canonicalTeam = await findCanonicalActiveTeamForSession(cwd, canonicalSessionId);
+      const canonicalTeam = await readCanonicalTerminalRunStateForStop(cwd, canonicalSessionId, "team")
+        ? null
+        : await findCanonicalActiveTeamForSession(cwd, canonicalSessionId);
       if (canonicalTeam) {
         const canonicalTeamOutput = buildTeamStopOutputForPhase(
           canonicalTeam.teamName,
