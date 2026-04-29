@@ -7,7 +7,7 @@
  * [table] header.  This generator therefore splits its output into:
  *   1. Top-level keys  (notify, model_reasoning_effort, developer_instructions)
  *   2. [features] flags
- *   3. [table] sections (env, mcp_servers, tui)
+ *   3. [table] sections (shell_environment_policy.set, mcp_servers, tui)
  */
 
 import { readFile, writeFile } from "fs/promises";
@@ -516,43 +516,125 @@ export function upsertCodexHooksFeatureFlag(config: string): string {
   return lines.join("\n");
 }
 
+interface TomlTableRange {
+  start: number;
+  end: number;
+}
+
+function findTomlTableRange(
+  lines: string[],
+  headerPattern: RegExp,
+): TomlTableRange | undefined {
+  const start = lines.findIndex((line) => headerPattern.test(line));
+  if (start < 0) return undefined;
+
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+
+  return { start, end };
+}
+
+function tomlAssignmentKey(line: string): string | undefined {
+  return line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/)?.[1];
+}
+
+function stripTomlTableKey(
+  lines: string[],
+  headerPattern: RegExp,
+  keyName: string,
+): string[] {
+  const range = findTomlTableRange(lines, headerPattern);
+  if (!range) return lines;
+
+  const filtered = [...lines];
+  for (let i = range.end - 1; i > range.start; i--) {
+    if (tomlAssignmentKey(filtered[i]) === keyName) {
+      filtered.splice(i, 1);
+    }
+  }
+
+  const newRange = findTomlTableRange(filtered, headerPattern);
+  if (!newRange) return filtered;
+
+  const sectionContent = filtered.slice(newRange.start + 1, newRange.end);
+  if (sectionContent.every((line) => line.trim() === "")) {
+    filtered.splice(newRange.start, newRange.end - newRange.start);
+  }
+
+  return filtered;
+}
+
 function upsertEnvSettings(config: string): string {
   const lines = config.split(/\r?\n/);
-  const envStart = lines.findIndex((line) => /^\s*\[env\]\s*$/.test(line));
+  const legacyEnvRange = findTomlTableRange(lines, /^\s*\[env\]\s*$/);
+  const legacyEnvEntries =
+    legacyEnvRange === undefined
+      ? []
+      : lines
+          .slice(legacyEnvRange.start + 1, legacyEnvRange.end)
+          .filter((line) => tomlAssignmentKey(line) !== undefined)
+          .map((line) => line.trim());
 
-  if (envStart < 0) {
-    const base = config.trimEnd();
+  if (legacyEnvRange !== undefined) {
+    lines.splice(
+      legacyEnvRange.start,
+      legacyEnvRange.end - legacyEnvRange.start,
+    );
+  }
+
+  const shellEnvSetRange = findTomlTableRange(
+    lines,
+    /^\s*\[shell_environment_policy\.set\]\s*$/,
+  );
+  if (shellEnvSetRange === undefined) {
+    const base = lines.join("\n").trimEnd();
+    const envLines = [...legacyEnvEntries];
+    if (
+      envLines.every(
+        (line) => tomlAssignmentKey(line) !== OMX_EXPLORE_CMD_ENV,
+      )
+    ) {
+      envLines.push(
+        `${OMX_EXPLORE_CMD_ENV} = "${OMX_EXPLORE_ROUTING_DEFAULT}"`,
+      );
+    }
     const envBlock = [
-      "[env]",
-      `${OMX_EXPLORE_CMD_ENV} = "${OMX_EXPLORE_ROUTING_DEFAULT}"`,
+      "[shell_environment_policy.set]",
+      ...envLines,
       "",
     ].join("\n");
     if (base.length === 0) return envBlock;
     return `${base}\n\n${envBlock}`;
   }
 
-  let sectionEnd = lines.length;
-  for (let i = envStart + 1; i < lines.length; i++) {
-    if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[i])) {
-      sectionEnd = i;
-      break;
+  const shellEnvKeys = new Set<string>();
+  for (let i = shellEnvSetRange.start + 1; i < shellEnvSetRange.end; i++) {
+    const key = tomlAssignmentKey(lines[i]);
+    if (key !== undefined) shellEnvKeys.add(key);
+  }
+
+  const linesToInsert: string[] = [];
+  for (const line of legacyEnvEntries) {
+    const key = tomlAssignmentKey(line);
+    if (key !== undefined && !shellEnvKeys.has(key)) {
+      linesToInsert.push(line);
+      shellEnvKeys.add(key);
     }
   }
 
-  let exploreRoutingIdx = -1;
-  for (let i = envStart + 1; i < sectionEnd; i++) {
-    if (new RegExp(`^\\s*${OMX_EXPLORE_CMD_ENV}\\s*=`).test(lines[i])) {
-      exploreRoutingIdx = i;
-      break;
-    }
-  }
-
-  if (exploreRoutingIdx < 0) {
-    lines.splice(
-      sectionEnd,
-      0,
+  if (!shellEnvKeys.has(OMX_EXPLORE_CMD_ENV)) {
+    linesToInsert.push(
       `${OMX_EXPLORE_CMD_ENV} = "${OMX_EXPLORE_ROUTING_DEFAULT}"`,
     );
+  }
+
+  if (linesToInsert.length > 0) {
+    lines.splice(shellEnvSetRange.end, 0, ...linesToInsert);
   }
 
   return lines.join("\n");
@@ -659,48 +741,14 @@ export function stripOmxFeatureFlags(config: string): string {
 }
 
 export function stripOmxEnvSettings(config: string): string {
-  const lines = config.split(/\r?\n/);
-  const envStart = lines.findIndex((line) => /^\s*\[env\]\s*$/.test(line));
-
-  if (envStart < 0) return config;
-
-  let sectionEnd = lines.length;
-  for (let i = envStart + 1; i < lines.length; i++) {
-    if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[i])) {
-      sectionEnd = i;
-      break;
-    }
-  }
-
-  const filtered: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (i > envStart && i < sectionEnd) {
-      const isOmxEnvKey = new RegExp(`^\\s*${OMX_EXPLORE_CMD_ENV}\\s*=`).test(
-        lines[i],
-      );
-      if (isOmxEnvKey) continue;
-    }
-    filtered.push(lines[i]);
-  }
-
-  const newEnvStart = filtered.findIndex((line) =>
-    /^\s*\[env\]\s*$/.test(line),
+  let lines = config.split(/\r?\n/);
+  lines = stripTomlTableKey(lines, /^\s*\[env\]\s*$/, OMX_EXPLORE_CMD_ENV);
+  lines = stripTomlTableKey(
+    lines,
+    /^\s*\[shell_environment_policy\.set\]\s*$/,
+    OMX_EXPLORE_CMD_ENV,
   );
-  if (newEnvStart >= 0) {
-    let newSectionEnd = filtered.length;
-    for (let i = newEnvStart + 1; i < filtered.length; i++) {
-      if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(filtered[i])) {
-        newSectionEnd = i;
-        break;
-      }
-    }
-    const envContent = filtered.slice(newEnvStart + 1, newSectionEnd);
-    if (envContent.every((line) => line.trim() === "")) {
-      filtered.splice(newEnvStart, newSectionEnd - newEnvStart);
-    }
-  }
-
-  return filtered.join("\n");
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -1278,7 +1326,7 @@ function getOmxTablesBlock(
  * Layout:
  *   1. OMX top-level keys (notify, model_reasoning_effort, developer_instructions)
  *   2. [features] with multi_agent + child_agents_md
- *   3. [env] with defaulted explore-routing opt-in
+ *   3. [shell_environment_policy.set] with defaulted explore-routing opt-in
  *   4. … user sections …
  *   5. OMX [table] sections (mcp_servers, tui)
  */

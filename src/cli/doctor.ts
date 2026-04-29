@@ -803,8 +803,13 @@ async function checkExploreRouting(configPath: string): Promise<Check> {
 
 	try {
 		const content = await readFile(configPath, "utf-8");
-		const parsed = parseToml(content) as { env?: Record<string, unknown> };
-		const configuredValue = parsed?.env?.USE_OMX_EXPLORE_CMD;
+		const parsed = parseToml(content) as {
+			env?: Record<string, unknown>;
+			shell_environment_policy?: { set?: Record<string, unknown> };
+		};
+		const configuredValue =
+			parsed?.shell_environment_policy?.set?.USE_OMX_EXPLORE_CMD ??
+			parsed?.env?.USE_OMX_EXPLORE_CMD;
 
 		if (
 			typeof configuredValue === "string" &&
@@ -816,7 +821,7 @@ async function checkExploreRouting(configPath: string): Promise<Check> {
 				name: "Explore routing",
 				status: "warn",
 				message:
-					'disabled in config.toml [env]; set USE_OMX_EXPLORE_CMD = "1" to restore default explore-first routing',
+					'disabled in config.toml; set USE_OMX_EXPLORE_CMD = "1" under [shell_environment_policy.set] to restore default explore-first routing',
 			};
 		}
 

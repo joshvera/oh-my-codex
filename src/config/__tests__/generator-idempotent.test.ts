@@ -88,7 +88,12 @@ function assertSingleOmxBlock(toml: string): void {
     1,
     "developer_instructions should appear once",
   );
-  assert.equal(count(toml, /^\[env\]$/gm), 1, "[env] should appear once");
+  assert.equal(count(toml, /^\[env\]$/gm), 0, "[env] should not be emitted");
+  assert.equal(
+    count(toml, /^\[shell_environment_policy\.set\]$/gm),
+    1,
+    "[shell_environment_policy.set] should appear once",
+  );
   assert.equal(
     count(toml, /^USE_OMX_EXPLORE_CMD = "1"$/gm),
     1,
@@ -534,24 +539,26 @@ describe("config generator idempotency (#384)", () => {
 
     assert.doesNotMatch(toml, /^\[tui\]$/m);
     assert.match(toml, /^\[mcp_servers\.omx_state\]$/m);
-    assert.match(toml, /^\[env\]$/m);
+    assert.match(toml, /^\[shell_environment_policy\.set\]$/m);
     assert.match(toml, /^USE_OMX_EXPLORE_CMD = "1"$/m);
   });
 
   it('seeds USE_OMX_EXPLORE_CMD=1 into generated config by default', () => {
     const toml = buildMergedConfig('', '/tmp/omx');
 
-    assert.match(toml, /^\[env\]$/m);
+    assert.doesNotMatch(toml, /^\[env\]$/m);
+    assert.match(toml, /^\[shell_environment_policy\.set\]$/m);
     assert.match(toml, /^USE_OMX_EXPLORE_CMD = "1"$/m);
   });
 
-  it('preserves existing [env] keys and explicit explore routing opt-outs', () => {
+  it('migrates existing [env] keys and explicit explore routing opt-outs', () => {
     const toml = buildMergedConfig(
       ['[env]', 'FOO = "bar"', 'USE_OMX_EXPLORE_CMD = "0"', ''].join('\n'),
       '/tmp/omx',
     );
 
-    assert.match(toml, /^\[env\]$/m);
+    assert.doesNotMatch(toml, /^\[env\]$/m);
+    assert.match(toml, /^\[shell_environment_policy\.set\]$/m);
     assert.match(toml, /^FOO = "bar"$/m);
     assert.match(toml, /^USE_OMX_EXPLORE_CMD = "0"$/m);
   });
