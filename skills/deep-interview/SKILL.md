@@ -157,7 +157,7 @@ Detailed dimensions:
 `Non-goals` and `Decision Boundaries` are mandatory readiness gates. Ask about them early and keep revisiting them until they are explicit.
 
 ### 2b) Ask the question
-Use the surface-appropriate structured questioning path for every interview round. In attached-tmux sessions, use OMX-owned structured questioning via `omx question` (this is the required structured-question equivalent for deep-interview). Outside tmux, use native structured input when available; otherwise ask exactly one concise plain-text question and wait for the answer. Present:
+Use the surface-appropriate structured questioning path for every interview round. In attached-tmux sessions, use OMX-owned structured questioning via `omx question` (this is the required `AskUserQuestion` equivalent for deep-interview). Outside tmux, use native structured input when available; otherwise ask exactly one concise plain-text question and wait for the answer. Present:
 
 ```
 Round {n} | Target: {weakest_dimension} | Ambiguity: {score}%
@@ -173,7 +173,7 @@ Round {n} | Target: {weakest_dimension} | Ambiguity: {score}%
 - If one selected option would immediately require a follow-up question to disambiguate the others, prefer a `single-answerable` round now and ask the follow-up next. Do not hide a branching interview tree inside one overloaded multi-select prompt.
 - Keep interview options bounded and concrete. If the valid answers are already known, set `allow_other: false`; only leave `allow_other: true` when the interview genuinely needs one user-supplied option that cannot be enumerated in advance.
 - Read answers structurally from the primary `answers[]` array. For a normal single-round interview response, use `answers[0].answer` as the source of truth; the top-level `answer` field is a legacy single-question projection/fallback only.
-- For `single-answerable`, expect one decisive selection in the `value` field of `answers[0].answer` plus its selected-values metadata. For `multi-answerable`, treat the selected-values field inside `answers[0].answer` as the source of truth for all chosen constraints/non-goals and preserve the full set in the transcript/spec.
+- For `single-answerable`, expect one decisive selection in the `value` field of `answers[0].answer` plus its selected-values metadata. For `multi-answerable`, treat `answers[0].answer.selected_values` as the source of truth for all chosen constraints/non-goals and preserve the full set in the transcript/spec. In legacy single-question projections, this is equivalent to: For `multi-answerable`, treat `answer.selected_values` as the source of truth.
 
 Canonical bounded single-choice payload:
 
