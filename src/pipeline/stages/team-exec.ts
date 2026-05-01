@@ -53,6 +53,7 @@ interface TeamRuntimeCliTaskInput {
 interface TeamRuntimeCliLaunchInput {
   teamName: string;
   workerCount: number;
+  agentType: string;
   tasks: TeamRuntimeCliTaskInput[];
   cwd: string;
   decompositionMetadata?: TeamDecompositionMetadata;
@@ -89,6 +90,7 @@ function buildTeamRuntimeCliLaunchInput(descriptor: TeamExecDescriptor): TeamRun
   return {
     teamName: parsed.teamName,
     workerCount: executionPlan.workerCount,
+    agentType: descriptor.agentType,
     tasks: executionPlan.tasks.map(({
       subject,
       description,

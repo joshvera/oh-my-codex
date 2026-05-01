@@ -213,10 +213,14 @@ describe('Team Exec Stage', () => {
   it('respects custom worker count and agent type', async () => {
     const stage = createTeamExecStage({ workerCount: 4, agentType: 'architect' });
     const result = await stage.run(makeCtx());
+    const runtimeCliInput = decodeRuntimeCliInstructionPayload(
+      (result.artifacts as Record<string, unknown>).instruction as string,
+    );
 
     const arts = result.artifacts as Record<string, unknown>;
     assert.equal(arts.workerCount, 4);
     assert.equal(arts.agentType, 'architect');
+    assert.equal(runtimeCliInput.agentType, 'architect');
   });
 
   it('includes ralplan artifacts in team task when available', async () => {
@@ -272,6 +276,7 @@ describe('Team Exec Stage', () => {
       );
       assert.equal(runtimeCliInput.teamName, 'implement-feature');
       assert.equal(runtimeCliInput.workerCount, 3);
+      assert.equal(runtimeCliInput.agentType, 'executor');
       assert.equal('agentTypes' in runtimeCliInput, false);
       assert.equal(runtimeCliInput.cwd, '/tmp/test');
       assert.ok(Array.isArray(runtimeCliInput.tasks));
@@ -305,6 +310,7 @@ describe('Team Exec Stage', () => {
       assert.match(instruction, /runtime-cli\.js/);
       assert.match(instruction, /--input-json-base64/);
       assert.equal(runtimeCliInput.workerCount, 1);
+      assert.equal(runtimeCliInput.agentType, 'executor');
       assert.match(instruction, /staffing=/);
     });
 
@@ -332,6 +338,7 @@ describe('Team Exec Stage', () => {
       assert.doesNotMatch(instruction, /# staffing=/);
       assert.doesNotMatch(instruction, /# verify=/);
       assert.equal(runtimeCliInput.workerCount, 1);
+      assert.equal(runtimeCliInput.agentType, 'executor');
       assert.equal('agentTypes' in runtimeCliInput, false);
       assert.equal(runtimeCliInput.cwd, 'C:\\repo with spaces');
     });
@@ -385,6 +392,7 @@ describe('Team Exec Stage', () => {
 
       assert.equal(runtimeCliInput.teamName, 'execute-approved-demo-plan');
       assert.equal(runtimeCliInput.workerCount, 2);
+      assert.equal(runtimeCliInput.agentType, 'executor');
       assert.equal(tasks.length, 2);
       assert.equal(tasks[0]?.symbolic_id, 'impl');
       assert.deepEqual(tasks[1]?.symbolic_depends_on, ['impl']);

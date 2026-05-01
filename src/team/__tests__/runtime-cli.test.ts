@@ -57,6 +57,14 @@ describe('runtime-cli helpers', () => {
       runtimeCli.resolveRuntimeCliProviderMap(['claude'], 2),
       'claude',
     );
+    assert.equal(
+      runtimeCli.resolveRuntimeCliAgentType(undefined),
+      'executor',
+    );
+    assert.equal(
+      runtimeCli.resolveRuntimeCliAgentType('test-engineer'),
+      'test-engineer',
+    );
     assert.deepEqual(
       runtimeCli.resolveRuntimeCliMissingFields({
         teamName: 'alpha',

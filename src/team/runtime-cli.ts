@@ -39,6 +39,7 @@ async function promptStaleCleanup(summary: StaleTeamSummary): Promise<boolean> {
 interface CliInput {
   teamName: string;
   workerCount?: number;
+  agentType?: string;
   agentTypes?: string[];
   tasks: Array<{
     subject: string;
@@ -228,6 +229,11 @@ export function resolveRuntimeCliProviderMap(
   return normalizeAgentTypes(raw, workerCount).join(',');
 }
 
+export function resolveRuntimeCliAgentType(raw: string | undefined): string {
+  const normalized = typeof raw === 'string' ? raw.trim() : '';
+  return normalized || 'executor';
+}
+
 export function resolveRuntimeCliMissingFields(input: Partial<CliInput>): string[] {
   const missing: string[] = [];
   if (!input.teamName) missing.push('teamName');
@@ -297,6 +303,7 @@ async function main(): Promise<void> {
 
   const {
     teamName,
+    agentType: rawAgentType,
     agentTypes,
     tasks,
     cwd,
@@ -370,7 +377,7 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 
   // Start the team — OMX's startTeam takes individual parameters
-  const agentType = 'executor';
+  const agentType = resolveRuntimeCliAgentType(rawAgentType);
   try {
     const providerMap = resolveRuntimeCliProviderMap(agentTypes, workerCount);
     const previousCliMap = process.env.OMX_TEAM_WORKER_CLI_MAP;
