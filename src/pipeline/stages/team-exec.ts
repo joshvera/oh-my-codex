@@ -383,5 +383,5 @@ export function buildTeamInstruction(
   if (platform === 'win32') {
     return launchCommand;
   }
-  return `${launchCommand} # staffing=${descriptor.staffingPlan.staffingSummary} # verify=${descriptor.staffingPlan.verificationPlan.summary}`;
+  return `${launchCommand} # task=${JSON.stringify(descriptor.task)} # staffing=${descriptor.staffingPlan.staffingSummary} # verify=${descriptor.staffingPlan.verificationPlan.summary}`;
 }
