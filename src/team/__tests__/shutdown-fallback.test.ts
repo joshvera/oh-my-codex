@@ -28,6 +28,15 @@ function withoutTeamWorkerEnv<T>(fn: () => Promise<T>): Promise<T> {
   });
 }
 
+function withMockPromptModeCodexAllowed<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT;
+  process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT = '1';
+  return fn().finally(() => {
+    if (typeof previous === 'string') process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT = previous;
+    else delete process.env.OMX_TEST_ALLOW_NONTTY_CODEX_PROMPT;
+  });
+}
+
 describe('shutdown fallback worktree reports', () => {
   it('shutdownTeam checkpoints dirty detached worker worktrees, merges them, and writes a report', async () => {
     const repo = await initRepo();
@@ -56,16 +65,17 @@ process.on('SIGTERM', () => process.exit(0));
     let runtime: TeamRuntime | null = null;
     let preservedWorktreePath: string | null = null;
     try {
-      runtime = await withoutTeamWorkerEnv(() =>
-        startTeam(
-          'team-shutdown-fallback-report',
-          'shutdown fallback merge report',
-          'executor',
-          1,
-          [],
-          repo,
-          { worktreeMode: { enabled: true, detached: true, name: null } },
-        ));
+      runtime = await withMockPromptModeCodexAllowed(() =>
+        withoutTeamWorkerEnv(() =>
+          startTeam(
+            'team-shutdown-fallback-report',
+            'shutdown fallback merge report',
+            'executor',
+            1,
+            [],
+            repo,
+            { worktreeMode: { enabled: true, detached: true, name: null } },
+          )));
 
       const worktreePath = runtime.config.workers[0]?.worktree_path;
       assert.ok(worktreePath, 'worker worktree path should be present');
@@ -91,6 +101,27 @@ process.on('SIGTERM', () => process.exit(0));
       assert.match(report, /merge_outcome: merged/);
       assert.doesNotMatch(report, /synthetic_commit: none/);
       assert.match(report, /worker-note\.txt/);
+
+      const commitHygieneJsonPath = join(repo, '.omx', 'reports', 'team-commit-hygiene', 'team-shutdown-fallback-report.context.json');
+      const commitHygieneMarkdownPath = join(repo, '.omx', 'reports', 'team-commit-hygiene', 'team-shutdown-fallback-report.md');
+      assert.equal(existsSync(commitHygieneJsonPath), true, 'shutdown should preserve a structured commit hygiene context artifact');
+      assert.equal(existsSync(commitHygieneMarkdownPath), true, 'shutdown should preserve a human-readable commit hygiene guide');
+
+      const commitHygieneContext = JSON.parse(await readFile(commitHygieneJsonPath, 'utf-8')) as {
+        lore_commit_protocol_required: boolean;
+        runtime_commits_are_scaffolding: boolean;
+        operational_entries: Array<{ operation: string; status: string }>;
+        leader_finalization_prompt: string;
+      };
+      assert.equal(commitHygieneContext.lore_commit_protocol_required, true);
+      assert.equal(commitHygieneContext.runtime_commits_are_scaffolding, true);
+      assert.equal(commitHygieneContext.operational_entries.some((entry) => entry.operation === 'shutdown_checkpoint'), true);
+      assert.equal(commitHygieneContext.operational_entries.some((entry) => entry.operation === 'shutdown_merge' && entry.status === 'applied'), true);
+      assert.match(commitHygieneContext.leader_finalization_prompt, /Lore-format final commit/i);
+
+      const commitHygieneGuide = await readFile(commitHygieneMarkdownPath, 'utf-8');
+      assert.match(commitHygieneGuide, /temporary scaffolding/i);
+      assert.match(commitHygieneGuide, /Suggested Leader Finalization Prompt/i);
     } finally {
       if (runtime) {
         await shutdownTeam(runtime.teamName, repo, { force: true }).catch(() => {});

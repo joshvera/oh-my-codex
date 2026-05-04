@@ -14,11 +14,6 @@ const IDLE_ENTRYPOINTS = [
   { server: 'memory', file: 'memory-server.js' },
   { server: 'code_intel', file: 'code-intel-server.js' },
   { server: 'trace', file: 'trace-server.js' },
-  {
-    server: 'team',
-    file: 'team-server.js',
-    caveat: 'idle teardown only; request-time child-job semantics remain intentionally out of scope',
-  },
 ] as const;
 
 type EntryPoint = (typeof IDLE_ENTRYPOINTS)[number];
@@ -89,6 +84,10 @@ async function waitForExit(
   stderr: string[],
   stdout: string[],
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return { code: child.exitCode, signal: child.signalCode };
+  }
+
   try {
     const [code, signal] = (await Promise.race([
       once(child, 'exit') as Promise<[number | null, NodeJS.Signals | null]>,
@@ -129,6 +128,19 @@ async function forceCleanup(child: ChildProcess): Promise<void> {
   if (!isChildAlive(child)) return;
   child.kill('SIGKILL');
   await once(child, 'exit').catch(() => {});
+}
+
+async function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs: number,
+  message: string,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await delay(25);
+  }
+  if (!predicate()) throw new Error(message);
 }
 
 describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
@@ -200,4 +212,120 @@ describe('MCP stdio lifecycle runtime regression (built entrypoints)', () => {
       }
     });
   }
+
+  it('uninitialized older duplicate entrypoints self-exit while the newest sibling survives', async () => {
+    const entrypoint = IDLE_ENTRYPOINTS[0];
+    const sharedEnv = {
+      ...process.env,
+      OMX_MCP_PARENT_WATCHDOG_INTERVAL_MS: '250',
+      OMX_MCP_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS: '250',
+      OMX_MCP_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS: '500',
+    };
+    const older = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
+      cwd: process.cwd(),
+      env: sharedEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let newer: ChildProcess | null = null;
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const attachLogs = (child: ChildProcess) => {
+      child.stdout?.setEncoding('utf8');
+      child.stderr?.setEncoding('utf8');
+      child.stdout?.on('data', (chunk: string) => stdout.push(chunk));
+      child.stderr?.on('data', (chunk: string) => stderr.push(chunk));
+    };
+    attachLogs(older);
+
+    try {
+      await waitForSpawn(older, entrypoint, stderr, stdout);
+      await assertChildAliveBeforeTeardown(older, entrypoint, stderr, stdout);
+
+      newer = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
+        cwd: process.cwd(),
+        env: sharedEnv,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      attachLogs(newer);
+      await waitForSpawn(newer, entrypoint, stderr, stdout);
+      await assertChildAliveBeforeTeardown(newer, entrypoint, stderr, stdout);
+
+      await waitForCondition(
+        () => !isChildAlive(older),
+        30_000,
+        `older duplicate failed to self-exit: ${formatFailureContext(entrypoint, stderr, stdout)}`,
+      );
+
+      assert.equal(isChildAlive(newer), true, `newest duplicate should survive: ${formatFailureContext(entrypoint, stderr, stdout)}`);
+      const olderExit = await waitForExit(older, entrypoint, stderr, stdout);
+      assert.notEqual(olderExit.signal, 'SIGKILL');
+    } finally {
+      await forceCleanup(older);
+      if (newer) {
+        await forceCleanup(newer);
+      }
+    }
+  });
+
+  it('initialized older duplicate entrypoints remain alive when a native subagent sibling starts', async () => {
+    const entrypoint = IDLE_ENTRYPOINTS[0];
+    const sharedEnv = {
+      ...process.env,
+      OMX_MCP_PARENT_WATCHDOG_INTERVAL_MS: '250',
+      OMX_MCP_DUPLICATE_SIBLING_WATCHDOG_INTERVAL_MS: '250',
+      OMX_MCP_DUPLICATE_SIBLING_PRE_TRAFFIC_GRACE_MS: '500',
+    };
+    const older = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
+      cwd: process.cwd(),
+      env: sharedEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let newer: ChildProcess | null = null;
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const attachLogs = (child: ChildProcess) => {
+      child.stdout?.setEncoding('utf8');
+      child.stderr?.setEncoding('utf8');
+      child.stdout?.on('data', (chunk: string) => stdout.push(chunk));
+      child.stderr?.on('data', (chunk: string) => stderr.push(chunk));
+    };
+    attachLogs(older);
+
+    try {
+      await waitForSpawn(older, entrypoint, stderr, stdout);
+      await assertChildAliveBeforeTeardown(older, entrypoint, stderr, stdout);
+
+      older.stdin?.write('leader-initialize-traffic');
+      await delay(100);
+
+      newer = spawn(process.execPath, [join(process.cwd(), 'dist', 'mcp', entrypoint.file)], {
+        cwd: process.cwd(),
+        env: sharedEnv,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      attachLogs(newer);
+      await waitForSpawn(newer, entrypoint, stderr, stdout);
+      await assertChildAliveBeforeTeardown(newer, entrypoint, stderr, stdout);
+
+      await delay(1_500);
+
+      assert.equal(
+        isChildAlive(older),
+        true,
+        `initialized older sibling should keep active transport alive: ${formatFailureContext(entrypoint, stderr, stdout)}`,
+      );
+      assert.equal(
+        isChildAlive(newer),
+        true,
+        `newer sibling should also survive: ${formatFailureContext(entrypoint, stderr, stdout)}`,
+      );
+    } finally {
+      await forceCleanup(older);
+      if (newer) {
+        await forceCleanup(newer);
+      }
+    }
+  });
 });

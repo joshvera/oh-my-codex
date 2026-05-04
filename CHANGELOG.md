@@ -4,6 +4,505 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-04-29
+
+Patch release focused on release-train hardening after `0.15.0`: direct/non-tmux leader launch controls, passive read-only state operations, concrete repo-aware Team DAG dependency remapping, setup/plugin-mode recovery, audited exec follow-ups, and runtime/hook reliability fixes.
+
+### Added
+- **Direct leader launch controls** — `omx --direct` and `OMX_LAUNCH_POLICY=direct|tmux|detached-tmux|auto` let operators opt out of OMX tmux/HUD management without changing the default detached-tmux startup behavior.
+- **Audited exec follow-ups** — running non-interactive `omx exec` jobs can receive queued follow-up instructions through the audited inject path.
+
+### Changed
+- **State reads are passive** — `state_read`, `state_list_active`, and `state_get_status` no longer initialize `.omx/state` or tmux-hook config as a side effect.
+- **Repo-aware Team DAG handoffs use concrete task IDs** — symbolic dependencies are remapped after task creation, then patched onto runtime task records before worker inbox/bootstrap generation.
+- **Setup/plugin guidance is clearer** — setup preserves explicit legacy/plugin choices, archives stale legacy assets in plugin mode, and documents direct launch escape hatches.
+
+### Fixed
+- **Runtime and hook hardening** — Stop lifecycle reads prefer canonical run-state, MCP state persistence survives transport disconnects, prompt resume avoids unverified PID hard failures, source-log text no longer trips hook blocks, and macOS startup polling pressure is reduced.
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, plugin manifest, changelog, release body, release notes, and release-readiness collateral are aligned to `0.15.1`.
+
+## [0.15.0] - 2026-04-25
+
+Minor release focused on making OMX easier to install, ship, and operate across Codex CLI, Codex App, plugin, native-agent, tmux, and Rust-backed execution surfaces. This release prepares the plugin delivery train, Visual Ralph, setup install-mode selection, native agent/model routing, hook/runtime hardening, Windows/tmux question reliability, CI hang protection, Rust compatibility fixes, and release collateral for the `0.15.0` cut.
+
+### Added
+- **First-party Codex plugin packaging** — OMX now ships a mirrored `plugins/oh-my-codex` bundle, plugin marketplace metadata, Codex App compatibility descriptors, plugin bundle SSOT checks, and install-mode setup coverage.
+- **Visual Ralph workflow** — `visual-ralph` is now a first-class workflow skill with routing, metadata validation, generated docs, and regression coverage.
+- **Native-agent policy/model routing** — native subagent definitions, model table generation, and setup overwrite tests now preserve the `gpt-5.5` frontier, `gpt-5.4-mini` standard, and `gpt-5.3-codex-spark` fast-lane contract.
+- **Document refresh enforcement and first-party MCP surfaces** — setup/config paths now include the new refresh-enforcer and first-party MCP configuration coverage.
+
+### Changed
+- **Setup can choose plugin or legacy skill delivery** — project setup now preserves persisted install mode, reports plugin cleanup/backups, keeps managed hooks/runtime assets aligned, and makes next steps clearer for Codex App and CLI users.
+- **Plugin and generated assets are checked from one source of truth** — native-agent verification, plugin mirror sync, generated catalog docs, and package bin/layout tests now guard release packaging drift.
+- **Team/runtime prompts are more explicit about safe execution** — worker, team, Ralph, doctor, help, and setup guidance now better describe plugin mode, runtime ownership, and action-first execution boundaries.
+- **Release base handling is explicit** — `v0.14.4` exists but is not an ancestor of the current `dev` candidate; this release uses `v0.14.3` as the verified reachable compare base and records that range caveat in release collateral.
+
+### Fixed
+- **Codex App and plugin hook compatibility** — App sessions avoid tmux-only runtime paths, plugin-prefixed skills route correctly, scoped plugin content stays aligned with canonical sources, and setup avoids overwriting local ignore state.
+- **Windows/tmux question reliability** — Windows/non-attached question rendering and console behavior have stronger fallbacks and regression coverage.
+- **Hook and watcher hardening** — notification fallback watchers, derived watchers, stale tmux sockets, Stop-hook parseability, and setup plugin fixes are covered by targeted regressions.
+- **CI and Rust compatibility** — Node test execution has bounded silence handling, and the explore harness remains compatible with Cargo/Rust 1.73-era constraints.
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.15.0`.
+
+## [0.14.4] - 2026-04-24
+
+Patch release focused on promoting the default frontier lane from `gpt-5.4` to `gpt-5.5` while preserving the exact `gpt-5.4-mini` standard/mini seam and the `gpt-5.3-codex-spark` spark lane. Docs, setup/config guidance, templates, regression coverage, and release metadata are aligned to that contract.
+
+### Changed
+- **Frontier defaults now target `gpt-5.5`** — runtime defaults, Codex agent defaults, and `omx explore` fallback behavior now use `gpt-5.5` instead of `gpt-5.4`.
+- **Setup/config guidance matches the new frontier default** — config seeding docs and regression coverage now describe `gpt-5.5` while preserving the same `250000 / 200000` context recommendations.
+- **Setup and executor reasoning default to medium** — generated setup config and executor worker launch defaults now use medium reasoning instead of high.
+- **Mini and spark lanes remain exact** — `gpt-5.4-mini` and `gpt-5.3-codex-spark` behavior remains unchanged, with prompt guidance and tests still enforcing exact-match semantics.
+
+### Fixed
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.14.4`.
+
+## [0.14.3] - 2026-04-22
+
+Patch release focused on the latest `dev` hardening train after `0.14.2`: question/deep-interview return-pane reliability, project-local explore launch context, setup TOML repair safety, HUD reconcile window targeting, ultrawork protocol alignment, BusyBox cleanup compatibility, stale Stop/autopilot state handling, canonical runtime supervisor events, Docker-host tmux question rendering, and native Windows psmux worker pane bootstrap hardening.
+
+### Added
+- **Canonical supervisor runtime events** — runtime command-event contracts now include canonical event types for supervisor control and downstream dispatch/readiness decisions.
+- **Deep-interview summary gates** — oversized interview flows now require compact summaries before continuing.
+- **Docker-host tmux question bridge** — question rendering can bridge docker-host tmux detection for visible operator prompts.
+
+### Changed
+- **Question replies preserve the leader pane** — tool-launched `omx question` flows retain and reuse the correct return pane across prompt reseeding and renderer metadata races.
+- **Explore respects project-local Codex homes** — launch/session helpers honor persisted project setup scope by resolving `CODEX_HOME` to the project `.codex` directory when appropriate.
+- **Setup config repair is safer** — multiline root TOML strings are parsed as root entries so setup refreshes no longer orphan fragments or corrupt `developer_instructions`-style values.
+- **HUD reconciliation stays window-local** — hook-driven HUD resize/reconcile work targets the emitting tmux window.
+- **Ultrawork protocol stays aligned upstream** — the shipped ultrawork skill incorporates the upstream protocol refresh used by oh-my-openagent.
+- **Native Windows worker panes are more robust** — psmux worker bootstrap avoids stale pane/startup assumptions.
+
+### Fixed
+- **Answered deep-interview rounds no longer re-prompt** — stale question state is reconciled against answered records before enforcement asks again.
+- **Question answers no longer stall on renderer metadata races** — renderer return-target metadata is stabilized so answers can be injected back to the invoking pane.
+- **Detached/hidden question prompts remain operator-visible** — question rendering fails closed or bridges to visible tmux contexts instead of leaving prompts hidden from the operator.
+- **BusyBox cleanup compatibility** — cleanup retries process discovery with the BusyBox-compatible `args` field when `ps` rejects `command`.
+- **Native Stop no longer loops on stale autopilot planning state** — stale planning state is cleared/reconciled before Stop handling repeats.
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.14.3`.
+
+## [0.14.2] - 2026-04-21
+
+Patch release focused on fast-follow operator reliability after `0.14.1`: safer `omx question` renderer behavior outside attached tmux panes, leak-resistant MCP duplicate cleanup, tighter deep-interview session-state handling, Korean IME drift handling for the `ulw` ultrawork shorthand, shared tmux answer-submit semantics for `omx question`, clearer deep-interview background-question guidance, TypeScript/Biome baseline refresh, and release collateral alignment.
+
+### Added
+- **Korean `ulw` keyboard drift handling** — prompts typed as `ㅕㅣㅈ` on a Korean 2-set keyboard normalize to the existing `ulw` ultrawork shorthand before workflow activation.
+- **Background `omx question` guidance** — deep-interview skill/template/native-hook guidance now instructs agents to wait for background question terminals to finish and read the JSON answer before continuing.
+
+### Changed
+- **Question answer injection now reuses shared tmux submit semantics** — `src/question/renderer.ts` delegates to `buildSendPaneArgvs`, keeping literal text delivery, newline sanitization, and isolated `C-m` submits aligned with the reply-listener pane-send path.
+- **Question renderer now fails closed outside attached tmux** — `omx question` now refuses to create a detached tmux session when no visible attached pane exists, surfacing a clear operator-facing error instead of launching an unseen renderer.
+- **Deep-interview keyword intent is narrower** — cleanup/state-management mentions of “deep interview” no longer trigger the workflow unless activation intent is explicit.
+- **TypeScript baseline refreshed** — TypeScript is updated to `6.0.3`, Biome lockfile metadata is refreshed to `2.4.12`, and `tsconfig.json` pins Node ambient types for the TS 6 build path.
+
+### Fixed
+- **Stale duplicate MCP siblings** — older duplicate stdio servers now self-exit after a safe post-traffic idle window instead of lingering indefinitely after seeing traffic.
+- **Session-scoped clear fallback leaks** — clearing a tracked mode in an active session now writes an inactive session tombstone when needed so legacy root fallback state does not immediately report the mode active again.
+- **Failed question launches clear deep-interview obligations** — deep-interview no longer leaves a pending question obligation behind when the renderer cannot launch.
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.14.2`.
+
+## [0.14.1] - 2026-04-21
+
+Patch release focused on hardening the new interactive orchestration surfaces shipped in `0.14.0`: question-pane reliability across tmux environments, deep-interview Stop enforcement and reused-session bridging, setup/update refresh resilience, lifecycle contract deduplication, and code-review / lightweight fallback guidance polish.
+
+### Added
+- **Deep-interview bridge guidance for reused sessions** — prompt-side context now includes a concrete current-session CLI bridge command when bare `omx question` is unavailable.
+- **Detached question renderer liveness coverage** — regression tests now assert that detached tmux question sessions survive launch and fail closed when they disappear immediately.
+
+### Changed
+- **Code-review workflow guidance is stronger** — the shipped code-review skill now requires a more comprehensive, dual-perspective review posture.
+- **Lightweight native fallback lanes are leaner** — `omx explore` / `omx sparkshell` fallback guidance stays on mini/spark lanes without polluting the general role roster.
+- **Lifecycle normalization now delegates to the shared contract** — terminal lifecycle compatibility helpers reuse the centralized run-outcome contract instead of carrying a divergent copy.
+
+### Fixed
+- **Pending deep-interview questions now keep Stop blocked even after the mode marks itself inactive**.
+- **Question panes stay alive under non-POSIX tmux shells and fail closed when panes/sessions disappear during launch**.
+- **Accepted setup refreshes no longer destroy managed `AGENTS.md`, and postinstall/setup refresh stays rooted to npm's install prefix**.
+- **Explicit `omx update` now reruns setup refresh when the installed code is current but the setup stamp is stale, and update-check state write failures no longer block explicit updates**.
+- **Stale Ralph / skill-active / ultrawork Stop state no longer leaks across sessions or floods Stop handling**.
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.14.1`.
+
+## [0.14.0] - 2026-04-19
+
+Minor release centered on interactive orchestration changes: the new `omx question` blocking-question entrypoint, deep-interview and autoresearch flow tightening, advisory triage routing, explicit runtime run outcomes, specialist-routing cleanup, and release-proof hardening for the shipped package.
+
+### Added
+- **`omx question` CLI entrypoint** — OMX now exposes an owned blocking-question command that accepts structured prompt payloads, records question state, renders tmux/native UI flows, and returns structured answers to the invoking agent/runtime.
+- **Structured deep-interview question obligations** — deep-interview rounds now create explicit pending-question obligations so OMX can track completion and prevent premature Stop while a required question is still unanswered.
+- **Advisory triage routing layer** — non-keyword prompts can now receive PASS/LIGHT/HEAVY routing hints backed by persisted triage state and follow-up suppression.
+
+### Changed
+- **Deep-interview uses `omx question` end-to-end** — interactive clarification now routes through the structured question UI instead of fallback ad-hoc prompting, making question ownership and lifecycle explicit.
+- **Autoresearch is now skill-first and validator-gated** — direct `omx autoresearch` invocation is hard-deprecated in favor of the prompt/skill workflow, and completion now requires validator evidence.
+- **Runtime continuation semantics are explicit** — run outcomes are normalized into a shared terminal/non-terminal contract so stop/continue behavior stays consistent across runtime loops and state surfaces.
+- **Specialist routing guidance is clearer** — repository lookup, official-doc research, and dependency-evaluation routes now have narrower ownership boundaries in prompts and role routing.
+- **Lint validation now targets tracked source roots** — `npm run lint` validates `src` and `bin` directly so nested local worktrees/runtime dirs with their own Biome roots no longer break release gating.
+
+### Fixed
+- **Stop gating around interactive work** — pending deep-interview questions and incomplete autoresearch validation now block Stop consistently until their required interactive/validator work is satisfied.
+- **Question/runtime UI integration** — renderer strategy selection, answer injection, and question-state transitions are covered by the new question runtime path instead of split ad-hoc handling.
+- **Release metadata drift** — Node/Cargo metadata, lockfiles, changelog, release body, release notes, and release-readiness collateral are aligned to `0.14.0`.
+
+## [0.13.2] - 2026-04-18
+
+Patch release covering security hardening, persistent-hook and Stop-handling correctness, Ralph activation and recovery safety, explore reentry guards, worker runtime identity preservation, skill UX refinements, and release-workflow metadata polish.
+
+### Added
+- **Analyze skill revival** — the `analyze` skill returns as a read-only, truth-telling investigation surface for OMX sessions. (PR [#1687](https://github.com/Yeachan-Heo/oh-my-codex/pull/1687))
+- **OMX skill display prefix** — OMX-installed skills are now marked in `/skills` without being renamed, so users can tell OMX-managed skills apart from local ones. (PR [#1686](https://github.com/Yeachan-Heo/oh-my-codex/pull/1686))
+- **Shift+Enter tmux triage docs** — documented Shift+Enter newline behavior in tmux so operators can separate terminal/env issues from OMX regressions. (PR [#1683](https://github.com/Yeachan-Heo/oh-my-codex/pull/1683), issue [#1682](https://github.com/Yeachan-Heo/oh-my-codex/issues/1682))
+
+### Fixed
+
+#### Security / hardening
+- **Path traversal in identifier handling** — validated identifiers before they reach team/session joins and closed the parent path-traversal surface. (PRs [#1658](https://github.com/Yeachan-Heo/oh-my-codex/pull/1658), [#1674](https://github.com/Yeachan-Heo/oh-my-codex/pull/1674), issue [#1650](https://github.com/Yeachan-Heo/oh-my-codex/issues/1650))
+- **HUD state shell and regex injection** — `execFileSync` was replaced with async `execFile` in leader git polling, and git helpers now reject shell/regex metacharacters with regression coverage for HUD `remoteName` inputs. (PRs [#1662](https://github.com/Yeachan-Heo/oh-my-codex/pull/1662), [#1652](https://github.com/Yeachan-Heo/oh-my-codex/pull/1652))
+- **Reply acknowledgement redaction** — notification reply acknowledgements no longer leak quoted or multi-part secrets, without reviving unrelated watcher churn. (PR [#1670](https://github.com/Yeachan-Heo/oh-my-codex/pull/1670))
+- **Transitive dependency vulnerabilities** — `npm audit fix` applied to patch transitive dependency CVEs. (PR [#1669](https://github.com/Yeachan-Heo/oh-my-codex/pull/1669))
+
+#### Stop / persistent hooks
+- **Native Stop auto-nudge** — native Stop auto-nudge now runs without being gated by the OMX runtime, while active OMX workflows still block Stop until they truly finish; Stop-hook cleanup stays green under the no-unused CI check. (PR [#1707](https://github.com/Yeachan-Heo/oh-my-codex/pull/1707))
+
+#### Ralph / runtime authority
+- **Conversational Ralph mention gating** — casual mentions of Ralph in conversation no longer seed workflow state, preventing accidental activation. (PR [#1697](https://github.com/Yeachan-Heo/oh-my-codex/pull/1697), issue [#1696](https://github.com/Yeachan-Heo/oh-my-codex/issues/1696))
+- **Ralph continuation recovery** — Ralph stays visibly active across continuation recovery, with dead Ralph cooldown state removed so CI stays green. (PR [#1681](https://github.com/Yeachan-Heo/oh-my-codex/pull/1681), issue [#1677](https://github.com/Yeachan-Heo/oh-my-codex/issues/1677))
+- **Ralph steer-lock retry cap** — `withRalphSteerLock` retries are now capped to prevent unbounded stale-lock loops. (PR [#1663](https://github.com/Yeachan-Heo/oh-my-codex/pull/1663))
+- **Worker runtime identity preservation** — worker runtime role identity survives startup and scaling, with worker identity verification collapsed into one narrow, reviewable path. (PR [#1676](https://github.com/Yeachan-Heo/oh-my-codex/pull/1676))
+
+#### Explore / launch safety
+- **Explore shell-startup re-entry fail-closed** — `omx explore` fails closed on shell-startup re-entry instead of recursing. (PR [#1700](https://github.com/Yeachan-Heo/oh-my-codex/pull/1700), issue [#1698](https://github.com/Yeachan-Heo/oh-my-codex/issues/1698))
+- **Explore allowlist wrapper self-resolution** — `omx explore` allowlist wrappers no longer self-resolve and recurse. (PR [#1695](https://github.com/Yeachan-Heo/oh-my-codex/pull/1695), issue [#1692](https://github.com/Yeachan-Heo/oh-my-codex/issues/1692))
+
+#### Hooks / notifications / session state
+- **Forked notify-hook routing** — forked notify-hook activity stays attached to the active fork session instead of drifting. (PR [#1680](https://github.com/Yeachan-Heo/oh-my-codex/pull/1680), issue [#1679](https://github.com/Yeachan-Heo/oh-my-codex/issues/1679))
+- **Stale watcher PID reuse** — notify-fallback-watcher verifies process identity before reaping stale PIDs, with a plain-text PID fallback, lock-directory holder PID, liveness checks, and a Windows guard. (PR [#1672](https://github.com/Yeachan-Heo/oh-my-codex/pull/1672), issue [#1657](https://github.com/Yeachan-Heo/oh-my-codex/issues/1657))
+- **tmux extended-keys stale lock recovery** — tmux extended-keys lease lock now recovers from stale holders instead of hanging indefinitely. (PR [#1668](https://github.com/Yeachan-Heo/oh-my-codex/pull/1668), issue [#1655](https://github.com/Yeachan-Heo/oh-my-codex/issues/1655))
+- **MCP duplicate sibling cleanup** — post-traffic duplicate MCP siblings self-exit after extended idle instead of leaking. (PR [#1666](https://github.com/Yeachan-Heo/oh-my-codex/pull/1666))
+- **Project-root discovery** — OMX now resolves the project root by walking to `.omx` instead of a hardcoded directory depth. (PR [#1664](https://github.com/Yeachan-Heo/oh-my-codex/pull/1664))
+- **AGENTS.md preservation on setup refresh** — local `AGENTS.md` content is preserved during auto-update refresh. (PR [#1673](https://github.com/Yeachan-Heo/oh-my-codex/pull/1673), issue [#1671](https://github.com/Yeachan-Heo/oh-my-codex/issues/1671))
+- **Fresh-session context isolation** — new sessions are isolated from stale task-scoped startup context. (PR [#1634](https://github.com/Yeachan-Heo/oh-my-codex/pull/1634), issue [#1624](https://github.com/Yeachan-Heo/oh-my-codex/issues/1624))
+
+#### HUD / worker startup
+- **Canonical team phase over stale startup HUD** — HUD prefers the canonical team phase over stale startup state. (PR [#1646](https://github.com/Yeachan-Heo/oh-my-codex/pull/1646))
+- **Wiki Unicode title slugs** — `wiki.titleToSlug` preserves Unicode characters. (PR [#1645](https://github.com/Yeachan-Heo/oh-my-codex/pull/1645))
+- **Worker shell startup command quoting** — `processSpec.command` is properly quoted during worker shell startup. (PR [#1644](https://github.com/Yeachan-Heo/oh-my-codex/pull/1644))
+
+#### Release workflow / docs
+- **Release contributor metadata range** — release contributor metadata stays aligned with the actual release commit range, and the release-body regression test no longer breaks under CI env. (PR [#1639](https://github.com/Yeachan-Heo/oh-my-codex/pull/1639), issue [#1623](https://github.com/Yeachan-Heo/oh-my-codex/issues/1623))
+- **Doctor readiness clarity** — doctor output now clarifies when setup is done versus when Codex can really run. (PR [#1630](https://github.com/Yeachan-Heo/oh-my-codex/pull/1630), issue [#1626](https://github.com/Yeachan-Heo/oh-my-codex/issues/1626))
+
+### Changed
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release body, release notes, and release-readiness docs aligned to `0.13.2`.
+
+## [0.13.1] - 2026-04-16
+
+Hotfix release for the detached tmux startup regression introduced in `0.13.0`.
+
+### Fixed
+- **Detached tmux stdin preservation** — detached leader shells now keep Codex stdin attached during background startup, so `omx --madmax --high` and related detached launch paths no longer exit immediately on macOS/iTerm2-style interactive sessions. (PR [#1631](https://github.com/Yeachan-Heo/oh-my-codex/pull/1631), issues [#1627](https://github.com/Yeachan-Heo/oh-my-codex/issues/1627), [#1628](https://github.com/Yeachan-Heo/oh-my-codex/issues/1628))
+
+### Changed
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release body, release notes, and release-readiness docs aligned to `0.13.1`.
+
+## [0.13.0] - 2026-04-16
+
+Minor release for the new `omx adapt` surface, stronger Ralph / runtime session authority, safer cross-platform launch behavior, and another broad pass over hook, HUD, notification, and release-process correctness.
+
+### Added
+- **OMX adapt foundations** — `omx adapt` now exposes OMX-owned adapter foundations for persistent external targets, with read-only probe/status/doctor surfaces, init/envelope output under `.omx/adapters/<target>/...`, planning artifact linkage, and target-specific OpenClaw and Hermes evidence. (PRs [#1600](https://github.com/Yeachan-Heo/oh-my-codex/pull/1600), [#1599](https://github.com/Yeachan-Heo/oh-my-codex/pull/1599), [#1598](https://github.com/Yeachan-Heo/oh-my-codex/pull/1598))
+- **Hermes runtime observation** — Hermes adaptation reports ACP, gateway, session-store, and bootstrap evidence without writing into the Hermes runtime. (PR [#1598](https://github.com/Yeachan-Heo/oh-my-codex/pull/1598))
+- **OpenClaw local observation** — OpenClaw adaptation summarizes local config, gateway, hook mapping, and lifecycle bridge evidence while keeping command gateways gated. (PR [#1599](https://github.com/Yeachan-Heo/oh-my-codex/pull/1599))
+
+### Fixed
+
+#### Ralph / runtime authority / workflow semantics
+- **Ralph session authority** — Ralph assignment and tmux Ralph nudges now stay scoped to the activating/current session instead of drifting across concurrent OMX sessions. (PRs [#1604](https://github.com/Yeachan-Heo/oh-my-codex/pull/1604), [#1591](https://github.com/Yeachan-Heo/oh-my-codex/pull/1591))
+- **Prompt-side Ralph vs PRD CLI startup** — prompt activation no longer pretends to be `omx ralph --prd`, and PRD story validation remains required on the explicit CLI path. (PR [#1608](https://github.com/Yeachan-Heo/oh-my-codex/pull/1608))
+- **Native Stop stability** — Stop handling is stable across session-id drift, permission-seeking handoffs resume automatically, and native hook metadata no longer hijacks routing. (PRs [#1590](https://github.com/Yeachan-Heo/oh-my-codex/pull/1590), [#1611](https://github.com/Yeachan-Heo/oh-my-codex/pull/1611); direct commit `4377e1e`)
+- **MCP state transport resilience** — resumed duplicate MCP state writers stay alive after reconcile/self-teardown paths. (PR [#1596](https://github.com/Yeachan-Heo/oh-my-codex/pull/1596))
+
+#### Launch / platform / worktree safety
+- **Explore harness resolution** — `omx explore` skips unusable PATH node entries, resolves POSIX Codex shims under sandboxed pnpm-style PATHs, and fails closed before Windows paths hit the POSIX allowlist wrapper. (PRs [#1562](https://github.com/Yeachan-Heo/oh-my-codex/pull/1562), [#1610](https://github.com/Yeachan-Heo/oh-my-codex/pull/1610); direct commit `72b1e5d`)
+- **Detached leader cleanup** — detached Codex children are terminated when their leader shell exits on signal, with regression coverage for the orphan path. (PR [#1605](https://github.com/Yeachan-Heo/oh-my-codex/pull/1605))
+- **Windows cleanup discovery** — Windows OMX cleanup finds real orphaned servers again. (PR [#1589](https://github.com/Yeachan-Heo/oh-my-codex/pull/1589))
+- **Stale worktree startup** — detached team startup no longer fails just because an old recorded worktree path is missing. (PR [#1582](https://github.com/Yeachan-Heo/oh-my-codex/pull/1582))
+
+#### Hooks / HUD / notifications
+- **HUD active-session binding** — HUD state stays bound to the live OMX session rather than falling back to stale root scope. (PR [#1573](https://github.com/Yeachan-Heo/oh-my-codex/pull/1573))
+- **macOS leader stale polling** — leader stale polling now reduces repeated git probes on macOS, lowering high-CPU polling churn in long-running sessions. (PR [#1619](https://github.com/Yeachan-Heo/oh-my-codex/pull/1619))
+- **Queued startup and dispatch regressions** — Codex startup banners, queued drafts, and dispatch-lock behavior are covered so inbox/worker startup cannot regress silently. (PR [#1595](https://github.com/Yeachan-Heo/oh-my-codex/pull/1595))
+- **Slack mention parsing** — Slack notification mention environment parsing has focused regression coverage. (PR [#1585](https://github.com/Yeachan-Heo/oh-my-codex/pull/1585))
+- **Receiving-agent ownership** — generated guidance now treats safe reversible OMX/runtime operations as the receiving agent's responsibility instead of asking the user to perform ordinary cleanup. (direct commit `76e808e`)
+
+#### Setup / docs / release workflow
+- **Wiki setup registration** — `omx setup` installs the shipped wiki skill/config assets consistently. (PR [#1571](https://github.com/Yeachan-Heo/oh-my-codex/pull/1571))
+- **Native hook doctor coverage** — doctor/config output now surfaces missing native-hook coverage before it looks like a broken OMX install. (PR [#1546](https://github.com/Yeachan-Heo/oh-my-codex/pull/1546))
+- **Contribution branch guardrail** — normal contribution guidance now makes `dev` the obvious PR base. (PR [#1567](https://github.com/Yeachan-Heo/oh-my-codex/pull/1567))
+
+### Changed
+- **Release workflow dependency refresh** — GitHub Actions and tooling dependencies are refreshed for the release pipeline and TypeScript/Biome baselines. (PRs [#1575](https://github.com/Yeachan-Heo/oh-my-codex/pull/1575), [#1576](https://github.com/Yeachan-Heo/oh-my-codex/pull/1576), [#1577](https://github.com/Yeachan-Heo/oh-my-codex/pull/1577), [#1578](https://github.com/Yeachan-Heo/oh-my-codex/pull/1578))
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release body, release notes, and release-readiness docs aligned to `0.13.0`.
+
+## [0.12.6] - 2026-04-13
+
+Wiki-first knowledge workflows, notification and hook delivery hardening, launch/worktree safety improvements, and automatic closure of explicitly linked issues after `dev` merges across 32 PRs.
+
+### Added
+- **OMX wiki workflow** — local markdown wiki storage, ingest/query/lint/refresh flows, wiki MCP server support, CLI parity, and wiki-aware explore integration. (PR [#1481](https://github.com/Yeachan-Heo/oh-my-codex/pull/1481))
+- **Discord job-control primitive** — tracked OMX Discord sessions gain a safe first control layer plus better message/session reuse handling. (PR [#1530](https://github.com/Yeachan-Heo/oh-my-codex/pull/1530), issue [#1528](https://github.com/Yeachan-Heo/oh-my-codex/issues/1528))
+- **Dev merge issue auto-close** — merged PRs into `dev` can now automatically close explicitly linked local issues. (PR [#1541](https://github.com/Yeachan-Heo/oh-my-codex/pull/1541), issue [#1540](https://github.com/Yeachan-Heo/oh-my-codex/issues/1540))
+
+### Fixed
+
+#### Hooks / notifications / session state
+- **Needs-input watcher parity** — array-backed assistant prompts now trigger the needs-input watcher correctly. (PR [#1487](https://github.com/Yeachan-Heo/oh-my-codex/pull/1487), issue [#1486](https://github.com/Yeachan-Heo/oh-my-codex/issues/1486))
+- **Local worker runtime / delivery stability** — stale scrollback, queued drafts, and dispatch drain races no longer stall local worker startup or mailbox progress. (PRs [#1491](https://github.com/Yeachan-Heo/oh-my-codex/pull/1491), [#1493](https://github.com/Yeachan-Heo/oh-my-codex/pull/1493), issues [#1490](https://github.com/Yeachan-Heo/oh-my-codex/issues/1490), [#1492](https://github.com/Yeachan-Heo/oh-my-codex/issues/1492))
+- **Managed-session hook stability** — cwd alias mismatches no longer break managed tmux ownership or hook session logic. (PR [#1495](https://github.com/Yeachan-Heo/oh-my-codex/pull/1495))
+- **Ralph / release-readiness follow-up scoping** — stale session-scoped suppressions and generic stop residue no longer hijack unrelated flows. (PRs [#1496](https://github.com/Yeachan-Heo/oh-my-codex/pull/1496), [#1514](https://github.com/Yeachan-Heo/oh-my-codex/pull/1514), issues [#1494](https://github.com/Yeachan-Heo/oh-my-codex/issues/1494), [#1513](https://github.com/Yeachan-Heo/oh-my-codex/issues/1513))
+- **Notification noise reduction** — duplicate lifecycle broadcasts, stale follow-up alerts, metadata false positives, and post-stop keyword replay are suppressed. (PRs [#1518](https://github.com/Yeachan-Heo/oh-my-codex/pull/1518), [#1520](https://github.com/Yeachan-Heo/oh-my-codex/pull/1520), [#1526](https://github.com/Yeachan-Heo/oh-my-codex/pull/1526), [#1529](https://github.com/Yeachan-Heo/oh-my-codex/pull/1529))
+- **Dead-session HUD residue** — stale HUD state is cleared before follow-up tooling reads it. (PR [#1539](https://github.com/Yeachan-Heo/oh-my-codex/pull/1539), issue [#1538](https://github.com/Yeachan-Heo/oh-my-codex/issues/1538))
+
+#### Launch / setup / operator safety
+- **Reusable worktree dependency bootstrap** — launch worktrees can reuse safe parent `node_modules` instead of forcing fresh installs. (PR [#1510](https://github.com/Yeachan-Heo/oh-my-codex/pull/1510), issue [#1507](https://github.com/Yeachan-Heo/oh-my-codex/issues/1507))
+- **Malformed native-hook stdin handling** — runtime no longer destabilizes on broken native hook JSON input. (PR [#1504](https://github.com/Yeachan-Heo/oh-my-codex/pull/1504), issue [#1503](https://github.com/Yeachan-Heo/oh-my-codex/issues/1503))
+- **AGENTS preservation during setup** — `omx setup` keeps user-authored AGENTS guidance intact. (PR [#1524](https://github.com/Yeachan-Heo/oh-my-codex/pull/1524), issue [#1521](https://github.com/Yeachan-Heo/oh-my-codex/issues/1521))
+- **tmux worker environment inheritance** — team workers preserve proxy access from the invoking environment. (PR [#1523](https://github.com/Yeachan-Heo/oh-my-codex/pull/1523), issue [#1522](https://github.com/Yeachan-Heo/oh-my-codex/issues/1522))
+- **Dirty worktree caution flow** — reusable dirty worktrees now warn inside the caution flow while retaining hard failures outside it. (PR [#1535](https://github.com/Yeachan-Heo/oh-my-codex/pull/1535), issue [#1532](https://github.com/Yeachan-Heo/oh-my-codex/issues/1532))
+- **Claude issue approval prompts** — obvious repository reads no longer stall issue sessions on unnecessary approval prompts. (PR [#1537](https://github.com/Yeachan-Heo/oh-my-codex/pull/1537), issue [#1536](https://github.com/Yeachan-Heo/oh-my-codex/issues/1536))
+
+#### MCP / docs / workflow surfaces
+- **Superseded MCP stdio sibling cleanup** — live Codex app-server parents no longer accumulate stale MCP siblings. (PR [#1517](https://github.com/Yeachan-Heo/oh-my-codex/pull/1517), issue [#1516](https://github.com/Yeachan-Heo/oh-my-codex/issues/1516))
+- **Canonical skill-root docs** — mixed OMX + Codex environments now document the correct skill root and wiki workflow entry points. (PR [#1534](https://github.com/Yeachan-Heo/oh-my-codex/pull/1534), issue [#1531](https://github.com/Yeachan-Heo/oh-my-codex/issues/1531))
+
+### Changed
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release body, release notes, and release-readiness docs aligned to `0.12.6`.
+
+
+## [0.12.5] - 2026-04-11
+
+Team-runtime and multi-workflow state hardening, Windows reliability fixes, tmux/shell stability improvements, and HUD session anchoring across 25 PRs.
+
+### Added
+- **Current-task baseline branch guardrails** — `omx team` now tracks a baseline branch per task so workers stay anchored to the correct starting point. (PR [#1419](https://github.com/Yeachan-Heo/oh-my-codex/pull/1419), issue [#1407](https://github.com/Yeachan-Heo/oh-my-codex/issues/1407))
+- **Approved multi-workflow overlaps** — canonical state now accepts approved workflow overlaps without corrupting session visibility. (PR [#1427](https://github.com/Yeachan-Heo/oh-my-codex/pull/1427))
+- **Windows ps fallback for notifications** — `omx notify` tolerates missing `ps` on Windows via a graceful process-list fallback. (PR [#1457](https://github.com/Yeachan-Heo/oh-my-codex/pull/1457))
+
+### Fixed
+
+#### Team startup / shutdown
+- **Stalled-worker startup recovery** — team launches now stay recoverable when early workers stall during startup instead of hanging the whole boot sequence. (PR [#1444](https://github.com/Yeachan-Heo/oh-my-codex/pull/1444))
+- **Cross-session stale root team Stop** — root team Stop no longer blocks sessions that did not originate the team. (PR [#1451](https://github.com/Yeachan-Heo/oh-my-codex/pull/1451))
+- **Linux tmux startup handoff and shutdown persistence** — startup handoff and shutdown-state persistence are now correct on Linux tmux paths. (PR [#1438](https://github.com/Yeachan-Heo/oh-my-codex/pull/1438))
+- **session.json ownership tightened** — stale session pointers can no longer revive the wrong runtime state; fallback semantics are now explicit. (PR [#1447](https://github.com/Yeachan-Heo/oh-my-codex/pull/1447))
+
+#### Multi-skill / workflow state
+- **Planning state preserved in mixed prompt routing** — `ralplan` / `ralph` planning state is no longer dropped when a multi-skill prompt is re-routed mid-flow. (PR [#1471](https://github.com/Yeachan-Heo/oh-my-codex/pull/1471), issue [#1353](https://github.com/Yeachan-Heo/oh-my-codex/issues/1353))
+- **Workflow handoff correctness** — malformed workflow-state objects are now rejected during reconciliation; stale workflow state can no longer block real handoffs. (PR [#1442](https://github.com/Yeachan-Heo/oh-my-codex/pull/1442))
+- **Flaky hook and HUD state scope** — CI-aligned session-scoped hook contract; hooks and HUD no longer drift to stale session scope. (PR [#1446](https://github.com/Yeachan-Heo/oh-my-codex/pull/1446))
+
+#### Windows
+- **Split-pane shutdown leader-pane targeting** — stale leader pane ID no longer misdirects split-pane shutdown signals. (PR [#1470](https://github.com/Yeachan-Heo/oh-my-codex/pull/1470), issue [#1353](https://github.com/Yeachan-Heo/oh-my-codex/issues/1353))
+- **Native psmux worker startup path** — Windows workers now start on the resolved Codex launcher path, not a stale entrypoint. (PR [#1469](https://github.com/Yeachan-Heo/oh-my-codex/pull/1469), issue [#1361](https://github.com/Yeachan-Heo/oh-my-codex/issues/1361))
+- **MCP orphan cleanup** — Windows MCP child processes no longer survive parent shutdown. (PR [#1437](https://github.com/Yeachan-Heo/oh-my-codex/pull/1437), issue [#1435](https://github.com/Yeachan-Heo/oh-my-codex/issues/1435))
+- **Retired team MCP config repair** — `omx doctor` and the launch path now realign retired team MCP config entries on upgrade. (PR [#1436](https://github.com/Yeachan-Heo/oh-my-codex/pull/1436))
+
+#### tmux / macOS / shell
+- **Detached tmux launch cwd** — detached tmux panes now start in the requested working directory, not the caller's cwd. (PR [#1468](https://github.com/Yeachan-Heo/oh-my-codex/pull/1468), issue [#1374](https://github.com/Yeachan-Heo/oh-my-codex/issues/1374))
+- **Worker cwd on shell launch** — supported shells (zsh, bash) preserve the worker cwd when launching team panes. (PR [#1460](https://github.com/Yeachan-Heo/oh-my-codex/pull/1460))
+- **Homebrew zsh normalization** — macOS Homebrew zsh paths are now normalized before tmux pane launch so panes inherit the correct shell. (PR [#1462](https://github.com/Yeachan-Heo/oh-my-codex/pull/1462), issue [#1439](https://github.com/Yeachan-Heo/oh-my-codex/issues/1439))
+- **tmux PID resolution hardening** — startup PID resolution is more robust; copy-mode is cleaned up after attach. (PR [#1459](https://github.com/Yeachan-Heo/oh-my-codex/pull/1459))
+
+#### HUD / session anchoring
+- **HUD state session scope** — HUD state is now anchored to the active OMX session; cross-session HUD drift is eliminated. (PR [#1453](https://github.com/Yeachan-Heo/oh-my-codex/pull/1453))
+- **Native session-id drift** — native session-id drift no longer hides team transport failures from the HUD. (PR [#1458](https://github.com/Yeachan-Heo/oh-my-codex/pull/1458))
+
+#### deep-interview
+- **Stop auto-continuation in intent-first phase** — native Stop no longer fires auto-continuation while deep-interview is in its ask-user questioning phase; that phase is now treated as planning for stall detection. (PR [#1473](https://github.com/Yeachan-Heo/oh-my-codex/pull/1473), issue [#1472](https://github.com/Yeachan-Heo/oh-my-codex/issues/1472))
+
+#### Explore harness
+- **rustup shim without default toolchain** — `omx explore` now emits a clear actionable error instead of surfacing a raw rustup message when `cargo` exists as a shim but no default toolchain is configured. (`src/cli/explore.ts`)
+
+#### Hooks / auth / notify
+- **Stop-hook Ralph session scoping** — Ralph stop-hook no longer leaks across sessions; session authority is enforced before gating. (PR [#1466](https://github.com/Yeachan-Heo/oh-my-codex/pull/1466), issue [#1461](https://github.com/Yeachan-Heo/oh-my-codex/issues/1461))
+- **Auto-nudge authorization leaks** — read-only and planning flows no longer receive tool-use authorization nudges intended for full-execution flows. (PR [#1434](https://github.com/Yeachan-Heo/oh-my-codex/pull/1434), issue [#1416](https://github.com/Yeachan-Heo/oh-my-codex/issues/1416))
+- **Notify hooks track live teams** — notify hooks stay aligned when coarse team state drifts between turns. (PR [#1428](https://github.com/Yeachan-Heo/oh-my-codex/pull/1428))
+- **Launcher-backed MCP restart stall** — long-lived MCP server restart stalls are now bounded so they do not block team recovery indefinitely. (PR [#1408](https://github.com/Yeachan-Heo/oh-my-codex/pull/1408))
+
+### Changed
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release body, and release notes aligned to `0.12.5`.
+
+### Docs
+- Removed stale `prompts/` invocation guidance from README. (PR [#1417](https://github.com/Yeachan-Heo/oh-my-codex/pull/1417))
+
+## [0.12.4] - 2026-04-09
+
+MCP-CLI parity surface, HUD recovery and reconciliation hardening, native-hook and team-runtime stability fixes, and state operations module extraction.
+
+### Added
+- **MCP-CLI parity surface** — new `omx state`, `omx notepad`, `omx project-memory`, `omx trace`, and `omx code-intel` CLI subcommands expose MCP server tools via CLI, enabling scriptable access without MCP transport. (`src/cli/mcp-parity.ts`, `src/cli/state.ts`)
+- **HUD reconciliation module** — new `src/hud/reconcile.ts` auto-reconciles HUD pane state across session boundaries.
+- **Shared HUD tmux helpers** — tmux pane management (`parseTmuxPaneSnapshot`, `createHudWatchPane`, `killTmuxPane`, etc.) extracted to `src/hud/tmux.ts` for shared use by CLI and reconciliation.
+- **State operations module** — new `src/state/operations.ts` provides read/write/clear/list-active/get-status for mode state, backing both the MCP state server and the new CLI parity surface.
+- **Path traversal guard** — `src/utils/paths.ts` adds safety utilities for path validation.
+
+### Fixed
+- **HUD recovery via OMX CLI entry** — prompt-submit recovery now restores the real HUD process instead of silently skipping it. (PRs [#1413](https://github.com/Yeachan-Heo/oh-my-codex/pull/1413), [#1414](https://github.com/Yeachan-Heo/oh-my-codex/pull/1414))
+- **User-owned Codex hooks preserved** — `omx setup` no longer clobbers user-written hooks when refreshing OMX wrappers.
+- **HUD prompt-submit layout churn** — prompt-submit autosizing stopped while preserving recovery behavior.
+- **Duplicate native-hook continuations** — stale Ralph state and unknown `$tokens` no longer trigger duplicate hook continuations.
+- **Stale team worktree cleanup** — `startTeam()` detects and cleans stale worktrees at launch. (PR [#1382](https://github.com/Yeachan-Heo/oh-my-codex/pull/1382), issue [#1354](https://github.com/Yeachan-Heo/oh-my-codex/issues/1354))
+- **Stale stop-hook deep-interview suppression** — deep-interview suppression after skill-state canonicalization no longer persists beyond its session.
+- **Native Stop stale blocker** — Stop no longer trusts stale blocker skill state.
+- **MCP transport death recovery** — transport death no longer stalls team recovery.
+- **Clean team shutdown** — explicit shutdown without weakening dirty-worktree safety.
+- **Detached session trap** — session cleanup only fires on normal exit (`status < 128`), not on signals; trap narrowed to `EXIT` only.
+- **CI hang prevention** — teardown dead-time reduced; CI hangs no longer stall root-cause work. (PR [#1405](https://github.com/Yeachan-Heo/oh-my-codex/pull/1405))
+
+### Changed
+- **State CLI routing** — `omx state` routed consistently through the CLI via `src/cli/state.ts`.
+- **Tmux session name truncation** — smarter truncation preserves session token when name exceeds 120 chars.
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release body, and release notes aligned to `0.12.4`.
+
+### Verified
+- `npm run build` ✅
+- `npx biome lint src/` ✅ (435 files)
+- `npm test` — 3068/3070 passing. The 2 failures (`state.test.ts: dispatch request store keeps failed requests failed`, `runtime.test.ts: sendWorkerMessage keeps failed hook receipts failed`) are pre-existing on `main` (commit `3a193cfb`) and not regressions introduced by this release.
+
+## [0.12.3] - 2026-04-08
+
+Follow-up patch release for the `v0.12.2..v0.12.3` train: `$team` prompt-routing correctness and duplicate team launch teardown. This ships PR [#1364](https://github.com/Yeachan-Heo/oh-my-codex/pull/1364) that was intended for `0.12.2` but finished its conflict resolution after the `0.12.2` cut.
+
+### Fixed
+- **`$team` keyword prompt routing** — `UserPromptSubmit` detection of `$team` now seeds root `team-state.json` and nudges operators toward `omx team ...` / `omx team --help` instead of silently misrouting the prompt. (PR [#1364](https://github.com/Yeachan-Heo/oh-my-codex/pull/1364))
+- **Duplicate active same-name team launches** — `startTeam` now rejects duplicate active same-name team launches with a `team_name_conflict` error before mutating team state or provisioning worktrees, so the existing team config and tasks stay intact. (PR [#1364](https://github.com/Yeachan-Heo/oh-my-codex/pull/1364))
+
+### Changed
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release body, and release notes are aligned to `0.12.3`.
+
+### Verified
+- `npm run build`
+- `npm run lint`
+- `npm test`
+- `npm run smoke:packed-install`
+
+## [0.12.2] - 2026-04-08
+
+Patch release for the `v0.12.1..v0.12.2` train: Windows team worker boot and shutdown hardening, postLaunch mode-state shutdown-race recovery, canonical HUD skill-state visibility, and team state preservation on monitor-driven exits.
+
+### Fixed
+- **Windows split-pane shutdown safety** — `omx team shutdown --force` no longer kills the leader pane on native Windows + psmux split-pane sessions by skipping the process-tree prekill step when leader/client ancestry overlaps. (PR [#1358](https://github.com/Yeachan-Heo/oh-my-codex/pull/1358))
+- **PostLaunch mode-state shutdown race** — empty or truncated mode-state JSON left by concurrent writers during session exit is now recovered into a minimal inactive record instead of crashing cleanup; structurally complete malformed JSON is warned but left untouched. (PR [#1360](https://github.com/Yeachan-Heo/oh-my-codex/pull/1360))
+- **Windows psmux worker boot** — native Windows team workers now launch through an explicit PowerShell path instead of being routed through POSIX `/bin/sh -lc`, which caused workers to never report ready. (PR [#1362](https://github.com/Yeachan-Heo/oh-my-codex/pull/1362))
+- **Stale HUD workflow badges** — canonical session-scoped skill-active state now drives HUD badge visibility, suppressing stale root-only mode badges that outlived their session while preserving backward compatibility for legacy single-skill readers. (PR [#1367](https://github.com/Yeachan-Heo/oh-my-codex/pull/1367))
+- **Team state silently deleted** — monitor-detected terminal and failure conditions in `runtime-cli` no longer trigger shutdown cleanup; team state is preserved until operators explicitly request shutdown. (PR [#1369](https://github.com/Yeachan-Heo/oh-my-codex/pull/1369))
+
+### Changed
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release body, and release notes are aligned to `0.12.2`.
+
+### Verified
+- `npm run build`
+- `npm run lint`
+- `npm test`
+- `npm run smoke:packed-install`
+
+## [0.12.1] - 2026-04-07
+
+Patch release for the `v0.12.0..v0.12.1` train: team-runtime hygiene, launch/cleanup follow-through, notify-fallback hardening, and release-collateral sync.
+
+### Fixed
+- **Machine-readable team status output** — leader mailbox pruning no longer re-issues duplicate delivered-message bridge calls, so `omx team status --json` stays parseable instead of leaking mailbox-delivery stderr noise.
+- **Interactive worker PID capture** — team startup now resolves worker PIDs from the actual pane id and persists them into worker metadata for diagnostics and cleanup.
+- **Launch-safe orphan cleanup** — stale OMX MCP cleanup preserves live launcher/session ancestry instead of reaping processes that still belong to the active tree.
+- **Notify-fallback log growth** — once-mode fallback watcher logs now rotate instead of growing silently on long-lived runs.
+
+### Changed
+- **Direct leader launch by default** — outside tmux, OMX now launches the leader directly unless the operator explicitly requests detached tmux behavior.
+- **Prompt collateral tightening** — the information-architect prompt is slimmer and the `0.12.1` release/readiness collateral now matches the actual patch scope.
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release body, and release notes are aligned to `0.12.1`.
+
+### Verified
+- `npm run build`
+- `npx biome lint src/cli/index.ts src/cli/cleanup.ts src/cli/__tests__/index.test.ts src/cli/__tests__/cleanup.test.ts src/scripts/notify-fallback-watcher.ts src/hooks/__tests__/notify-fallback-watcher.test.ts src/team/runtime.ts src/team/state/mailbox.ts src/team/__tests__/runtime.test.ts src/team/__tests__/state.test.ts package.json`
+- `node --test dist/cli/__tests__/cleanup.test.js dist/cli/__tests__/index.test.js dist/cli/__tests__/version-sync-contract.test.js`
+- `node --test dist/hooks/__tests__/notify-fallback-watcher.test.js`
+- `node --test dist/team/__tests__/state.test.js dist/team/__tests__/runtime.test.js`
+- `npm run smoke:packed-install`
+
+## [0.12.0] - 2026-04-06
+
+Minor release for native Codex hook ownership, first-party Bash pre/post tool guidance, runtime/team delivery hardening, and workflow-doc refresh after `0.11.13`.
+
+### Added
+- **First-party native Bash pre/post hooks** — OMX now ships documented `PreToolUse` / `PostToolUse` Bash guidance and supporting native-hook wiring so operators can extend tool lifecycle behavior without relying on ad hoc shell glue. (PR [#1316](https://github.com/Yeachan-Heo/oh-my-codex/pull/1316))
+
+### Fixed
+- **Native hook ownership + continuity** — repo-local native Codex hook ownership now survives session-start and stop-state continuity more reliably, and setup/uninstall flows align with the landed runtime contract. (PRs [#1306](https://github.com/Yeachan-Heo/oh-my-codex/pull/1306), [#1314](https://github.com/Yeachan-Heo/oh-my-codex/pull/1314))
+- **Team/runtime delivery + steering reliability** — mailbox delivery, next-action steering, false handoff signals, persist-error surfacing, and diagnostics-without-tsconfig behavior are hardened across the live operator path. (PRs [#1293](https://github.com/Yeachan-Heo/oh-my-codex/pull/1293), [#1294](https://github.com/Yeachan-Heo/oh-my-codex/pull/1294), [#1300](https://github.com/Yeachan-Heo/oh-my-codex/pull/1300), [#1303](https://github.com/Yeachan-Heo/oh-my-codex/pull/1303), [#1304](https://github.com/Yeachan-Heo/oh-my-codex/pull/1304), [#1305](https://github.com/Yeachan-Heo/oh-my-codex/pull/1305))
+- **Windows / tmux / launcher supervision** — detached launches, shift-enter handling, PowerShell command resolution, and tmux child binding stay more predictable across platform-specific edges. (PRs [#1265](https://github.com/Yeachan-Heo/oh-my-codex/pull/1265), [#1273](https://github.com/Yeachan-Heo/oh-my-codex/pull/1273), [#1275](https://github.com/Yeachan-Heo/oh-my-codex/pull/1275), [#1282](https://github.com/Yeachan-Heo/oh-my-codex/pull/1282))
+
+### Changed
+- **Quality-first guidance defaults** — generated AGENTS/prompt guidance now leans harder on intent-deepening, evidence, and verification sequencing instead of compact-first satisficing. (PR [#1281](https://github.com/Yeachan-Heo/oh-my-codex/pull/1281))
+- **Docs + localization refresh** — README variants live under `docs/readme/`, Ukrainian OpenClaw/docs coverage is added, and user-facing docs are refreshed around the modern deep-interview → ralplan → team/ralph workflow. (PRs [#1270](https://github.com/Yeachan-Heo/oh-my-codex/pull/1270), [#1308](https://github.com/Yeachan-Heo/oh-my-codex/pull/1308))
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release notes, QA/readiness notes, and release body are aligned to `0.12.0`.
+
+### Verified
+- `npm ci`
+- `npm run build`
+- `node dist/cli/omx.js version`
+- `node --test dist/cli/__tests__/version-sync-contract.test.js`
+- `npm run lint`
+- `npm test`
+- `cargo test -p omx-runtime-core`
+- `npm run smoke:packed-install`
+- `git diff --check origin/main...HEAD`
+
+## [0.11.13] - 2026-04-04
+
+Patch release for team/runtime delivery integrity, busy-leader nudge handling, release hygiene fixes, and Windows/worktree reliability follow-through after `0.11.12`.
+
+### Fixed
+- **Leader + mailbox delivery integrity** — team leader mailbox delivery stays reliable across runtime/CLI seams, false team-coordination signals are suppressed during runtime handoff, and busy Codex leader panes can now receive queued nudges instead of silently deferring them. (PRs [#1217](https://github.com/Yeachan-Heo/oh-my-codex/pull/1217), [#1223](https://github.com/Yeachan-Heo/oh-my-codex/pull/1223), [#1224](https://github.com/Yeachan-Heo/oh-my-codex/pull/1224))
+- **Windows / tmux worktree supervision** — leader activity polling, HUD targeting, and Windows worktree/session handling stay stable across detached launches and worktree checkouts. (PRs [#1212](https://github.com/Yeachan-Heo/oh-my-codex/pull/1212), [#1213](https://github.com/Yeachan-Heo/oh-my-codex/pull/1213), [#1191](https://github.com/Yeachan-Heo/oh-my-codex/pull/1191))
+- **Workflow hygiene around deep-interview + uninstall paths** — fallback nudges honor active deep-interview input locks, uninstall warns cleanly about legacy skills, and shutdown cleanup reaps detached worker descendants more reliably. (PRs [#1203](https://github.com/Yeachan-Heo/oh-my-codex/pull/1203), [#1193](https://github.com/Yeachan-Heo/oh-my-codex/pull/1193), [#1204](https://github.com/Yeachan-Heo/oh-my-codex/pull/1204))
+
+### Changed
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, release notes, and release body are aligned to `0.11.13`.
+- **Release branch repair** — the accidental placeholder corruption in `src/hooks/__tests__/notify-fallback-watcher.test.ts` is restored before the patch cut so the release branch builds cleanly again.
+
+### Verified
+- `cargo test -p omx-runtime-core`
+- `npm run build`
+- `npm run lint`
+- `node --test dist/hooks/__tests__/notify-fallback-watcher.test.js`
+- `node --test dist/cli/__tests__/version-sync-contract.test.js`
+- `npm test`
+- `npm run smoke:packed-install`
+- `git diff --check origin/main...HEAD`
+
+## [0.11.12] - 2026-04-02
+
+Patch release for Windows flicker reductions, team/runtime seam cleanup, safer auto-nudge hygiene, cross-platform Node test execution, and workflow-doc alignment after `0.11.11`.
+
+### Fixed
+- **Windows terminal flicker reductions** — `windowsHide` coverage now spans the remaining child-process launch paths, and filesystem-based git info reads avoid the extra Windows console flash path. (PRs [#1104](https://github.com/Yeachan-Heo/oh-my-codex/pull/1104), [#1107](https://github.com/Yeachan-Heo/oh-my-codex/pull/1107), [#1123](https://github.com/Yeachan-Heo/oh-my-codex/pull/1123))
+- **Team/runtime seam cleanup** — team cwd metadata now resolves canonically from `manifest.v2`, and dispatch/mailbox transitions no longer straddle the remaining dual-write seam gaps. (PRs [#1114](https://github.com/Yeachan-Heo/oh-my-codex/pull/1114), [#1126](https://github.com/Yeachan-Heo/oh-my-codex/pull/1126))
+- **Auto-nudge / tmux session hygiene** — stale-turn auto-nudges stay disarmed after cooldown, readiness checks tolerate prompt scroll-off, and nudges stay limited to OMX-managed tmux sessions. (PRs [#1091](https://github.com/Yeachan-Heo/oh-my-codex/pull/1091), [#1093](https://github.com/Yeachan-Heo/oh-my-codex/pull/1093), [#1119](https://github.com/Yeachan-Heo/oh-my-codex/pull/1119))
+
+### Changed
+- **Cross-platform Node test runner** — Node test execution can now enumerate compiled test files without depending on POSIX `find`, making the release/CI test path portable across platforms. (PR [#1122](https://github.com/Yeachan-Heo/oh-my-codex/pull/1122))
+- **Workflow docs standardized** — onboarding/docs now consistently steer users through deep-interview -> ralplan -> team/ralph, with linked legacy skill roots resolved through one canonical path. (PRs [#1128](https://github.com/Yeachan-Heo/oh-my-codex/pull/1128), [#1132](https://github.com/Yeachan-Heo/oh-my-codex/pull/1132))
+- **Release metadata sync** — Node/Cargo package metadata, lockfiles, changelog, and release collateral are aligned to `0.11.12` for the patch cut.
+
+### Verified
+- `cargo check --workspace`
+- `npm run build`
+- `npm run lint`
+- `node --test dist/cli/__tests__/version-sync-contract.test.js`
+- release-workflow inline version-sync check from `.github/workflows/release.yml`
+- `npm run test:node:cross-platform`
+- `npm run smoke:packed-install`
+
 ## [0.11.10] - 2026-03-30
 
 Patch release for approved handoff alias parsing hardening and release metadata synchronization after `0.11.9`.
@@ -42,6 +541,7 @@ Patch release for deeper deep-interview / ralplan coordination, setup repair, an
 - **Release metadata sync** — Node and Cargo package metadata are bumped to `0.11.9` for this patch release.
 
 ### Verified
+- `cargo check --workspace`
 - `npm run build`
 - `npm run lint`
 - `npm run check:no-unused`
@@ -63,6 +563,7 @@ Hotfix release for deep-interview nudge suppression and duplicate fresh-leader n
 - **Release metadata sync** — Node and Cargo package metadata are bumped to `0.11.8` for this hotfix release.
 
 ### Verified
+- `cargo check --workspace`
 - `npm run build`
 - `node --test --test-reporter=spec dist/hooks/__tests__/notify-hook-auto-nudge.test.js`
 - `node --test --test-reporter=spec dist/hooks/__tests__/notify-hook-team-leader-nudge.test.js`
@@ -317,7 +818,7 @@ Generated from the latest merged `dev` runtime/model-default work and validated 
 
 ### Added
 - **Additive team event-query APIs** — `omx team api` now exposes dedicated event-query operations so team runtime signals can be consumed more structurally. (PR [#714](https://github.com/Yeachan-Heo/oh-my-codex/pull/714))
-- **Explicit model-default contract** — runtime/docs/tests now align around the intended main/spark default model behavior (`gpt-5.4` / `gpt-5.3-codex-spark`). (PR [#718](https://github.com/Yeachan-Heo/oh-my-codex/pull/718))
+- **Explicit model-default contract** — runtime/docs/tests now align around the intended main/spark default model behavior (`gpt-5.5` / `gpt-5.3-codex-spark`). (PR [#718](https://github.com/Yeachan-Heo/oh-my-codex/pull/718))
 
 ### Changed
 - **Team prompt decomposition is less brittle for prose prompts** — natural-language task prompts are no longer fragmented into pathological subtasks as easily. (PR [#712](https://github.com/Yeachan-Heo/oh-my-codex/pull/712))
@@ -426,7 +927,7 @@ Generated from `v0.8.3..dev` (non-merge commits) and release validation on `dev`
 - Setup refresh coverage for managed artifact replacement, scope-aware updates, and uninstall compatibility paths.
 
 ### Fixed
-- Setup now prompts before upgrading managed Codex model references from `gpt-5.3-codex` to `gpt-5.4`, reducing surprise config churn during refreshes.
+- Setup now prompts before upgrading managed Codex model references from `gpt-5.3-codex` to `gpt-5.5`, reducing surprise config churn during refreshes.
 - Config generation and setup refresh flows are more idempotent and resilient across repeated runs and scoped installs.
 
 ### Docs
@@ -457,7 +958,7 @@ Generated from `v0.8.1..main` (non-merge commits) and release validation on `mai
 
 ### Added
 - Gemini CLI worker support for OMX team mode, including mixed CLI maps and `--model` passthrough (`#576`, `#579`, related issue `#573`).
-- Default frontier-model fallback is now centralized through `DEFAULT_FRONTIER_MODEL` (currently `gpt-5.4`) instead of hardcoded references (`#583`).
+- Default frontier-model fallback is now centralized through `DEFAULT_FRONTIER_MODEL` (currently `gpt-5.5`) instead of hardcoded references (`#583`).
 - `configure-notifications` is now the canonical shipped notification-setup skill, with catalog/setup behavior aligned to match docs (`#584`).
 
 ### Changed

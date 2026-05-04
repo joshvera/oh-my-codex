@@ -4,15 +4,66 @@
  * Detects the current tmux session name and pane ID for inclusion in notification payloads.
  */
 
-import { execFileSync, execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { buildCapturePaneArgv } from "./tmux-detector.js";
+import { resolveTmuxBinaryForPlatform } from "../utils/platform-command.js";
 
 const TMUX_PANE_TARGET_RE = /^%\d+$/;
 const DEFAULT_CAPTURE_LINES = 12;
 const MAX_CAPTURE_LINES = 2000;
+const ANSI_RE = /\x1b(?:[@-Z\\-_]|\[[0-9;]*[A-Za-z])/g;
+const OMX_METADATA_SEGMENT_RE = /^\[OMX(?:[#\]].*)?$/;
+const HUD_STATUS_SEGMENT_RE = /^(?:ralph:\d+\/(?:\d+|\?)|autopilot:[\w-]+|ralplan:(?:\d+\/(?:\d+|\?)|[\w-]+)|interview:[\w:-]+|research:[\w-]+|qa:[\w-]+|team:(?:\d+\s+workers|[\w.-]+)|ultrawork|turns:\d+|tokens:[\dkm.]+|quota:[\w%,.]+|session:[\dhms]+|last:\d+[smh](?:\s+ago)?|total-turns:\d+|tmux:[\w:.-]+)$/i;
+const BRANCH_METADATA_SEGMENT_RE = /^(?:(?:fix|feat|feature|chore|refactor|hotfix|release|docs|doc|test|tests|ci|build|perf|revert|bugfix|spike|wip)\/[A-Za-z0-9._/-]+|HEAD(?: -> [A-Za-z0-9._/-]+)?|detached)$/;
+
+function isMetadataOnlyTmuxSegment(segment: string): boolean {
+  return OMX_METADATA_SEGMENT_RE.test(segment)
+    || HUD_STATUS_SEGMENT_RE.test(segment)
+    || BRANCH_METADATA_SEGMENT_RE.test(segment);
+}
+
+function isMetadataOnlyTmuxLine(line: string): boolean {
+  const normalized = line.replace(ANSI_RE, "").trim();
+  if (!normalized) return false;
+
+  const segments = normalized.split("|").map((segment) => segment.trim()).filter(Boolean);
+  if (segments.length === 0 || segments.some((segment) => !isMetadataOnlyTmuxSegment(segment))) {
+    return false;
+  }
+
+  const hasExplicitStatusSegment = segments.some((segment) => OMX_METADATA_SEGMENT_RE.test(segment) || HUD_STATUS_SEGMENT_RE.test(segment));
+  return hasExplicitStatusSegment || (segments.length === 1 && BRANCH_METADATA_SEGMENT_RE.test(segments[0]));
+}
+
+/**
+ * Remove metadata-only tmux lines from alert-facing payload text while
+ * preserving real runtime failures. Raw capture helpers remain unchanged.
+ */
+export function sanitizeTmuxAlertText(raw: string | null | undefined): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const filtered = raw
+    .split("\n")
+    .filter((line) => !isMetadataOnlyTmuxLine(line));
+  const joined = filtered.join("\n").trim();
+  return joined || undefined;
+}
+
+export interface TmuxPaneCaptureResult {
+  content: string | null;
+  live: boolean;
+}
 
 function shouldUsePidFallback(): boolean {
   return process.env.OMX_TMUX_PID_FALLBACK === "1";
+}
+
+function execTmux(args: string[]): string {
+  return execFileSync(resolveTmuxBinaryForPlatform() || "tmux", args, {
+    encoding: "utf-8",
+    timeout: 3000,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: process.platform === "win32",
+  }).trim();
 }
 
 /**
@@ -27,14 +78,11 @@ export function getCurrentTmuxSession(): string | null {
     try {
       const tmuxPaneTarget = process.env.TMUX_PANE;
       const paneTargetSafe = tmuxPaneTarget && TMUX_PANE_TARGET_RE.test(tmuxPaneTarget) ? tmuxPaneTarget : null;
-      const displayCmd = paneTargetSafe
-        ? `tmux display-message -p -t ${paneTargetSafe} '#S'`
-        : "tmux display-message -p '#S'";
-      const sessionName = execSync(displayCmd, {
-        encoding: "utf-8",
-        timeout: 3000,
-        stdio: ["pipe", "pipe", "pipe"],
-      }).trim();
+      const sessionName = execTmux(
+        paneTargetSafe
+          ? ["display-message", "-p", "-t", paneTargetSafe, "#S"]
+          : ["display-message", "-p", "#S"],
+      );
       if (sessionName) return sessionName;
     } catch {
       // fall through to PID-based detection
@@ -54,16 +102,10 @@ export function getCurrentTmuxSession(): string | null {
  * is a child of a tmux pane process.
  */
 function detectTmuxSessionByPid(): string | null {
+  if (process.platform === 'win32') return null;
   try {
     // Get all tmux pane PIDs with their session names
-    const output = execSync(
-      "tmux list-panes -a -F '#{pane_pid} #{session_name}'",
-      {
-        encoding: "utf-8",
-        timeout: 3000,
-        stdio: ["pipe", "pipe", "pipe"],
-      }
-    ).trim();
+    const output = execTmux(["list-panes", "-a", "-F", "#{pane_pid} #{session_name}"]);
     if (!output) return null;
 
     const panePids = new Map<number, string>();
@@ -94,7 +136,8 @@ function detectTmuxSessionByPid(): string | null {
           encoding: "utf-8",
           timeout: 1000,
           stdio: ["pipe", "pipe", "pipe"],
-        }).trim();
+      windowsHide: true,
+    }).trim();
         const ppid = parseInt(ppidStr, 10);
         if (isNaN(ppid) || ppid <= 1) break;
         currentPid = ppid;
@@ -118,11 +161,7 @@ export function getTeamTmuxSessions(teamName: string): string[] {
 
   const prefix = `omx-team-${sanitized}`;
   try {
-    const output = execSync("tmux list-sessions -F '#{session_name}'", {
-      encoding: "utf-8",
-      timeout: 3000,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const output = execTmux(["list-sessions", "-F", "#{session_name}"]);
     return output
       .trim()
       .split("\n")
@@ -138,23 +177,41 @@ export function getTeamTmuxSessions(teamName: string): string[] {
  * Returns null if capture fails or tmux is not available.
  */
 export function captureTmuxPane(paneId?: string | null, lines: number = 12): string | null {
+  return captureTmuxPaneWithLiveness(paneId, lines).content;
+}
+
+export function captureTmuxPaneWithLiveness(paneId?: string | null, lines: number = 12): TmuxPaneCaptureResult {
   const target = paneId || process.env.TMUX_PANE;
-  if (!target) return null;
-  if (!process.env.TMUX && !paneId) return null;
-  if (!TMUX_PANE_TARGET_RE.test(target)) return null;
+  if (!target) return { content: null, live: false };
+  if (!process.env.TMUX && !paneId) return { content: null, live: false };
+  if (!TMUX_PANE_TARGET_RE.test(target)) return { content: null, live: false };
 
   const safeLines = Number.isFinite(lines) ? Math.trunc(lines) : DEFAULT_CAPTURE_LINES;
   const clampedLines = Math.max(1, Math.min(MAX_CAPTURE_LINES, safeLines));
 
   try {
-    const output = execFileSync("tmux", buildCapturePaneArgv(target, clampedLines), {
+    const paneStatus = execTmux(["list-panes", "-t", target, "-F", "#{pane_dead} #{pane_pid}"]);
+    const firstStatusLine = paneStatus.split("\n")[0]?.trim() || "";
+    const [paneDead = "", panePidRaw = ""] = firstStatusLine.split(/\s+/, 2);
+    const panePid = Number.parseInt(panePidRaw, 10);
+    if (paneDead === "1" || !Number.isFinite(panePid)) {
+      return { content: null, live: false };
+    }
+    try {
+      process.kill(panePid, 0);
+    } catch {
+      return { content: null, live: false };
+    }
+
+    const output = execFileSync(resolveTmuxBinaryForPlatform() || "tmux", buildCapturePaneArgv(target, clampedLines), {
       encoding: "utf-8",
       timeout: 3000,
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: process.platform === "win32",
     }).trim();
-    return output || null;
+    return { content: output || null, live: true };
   } catch {
-    return null;
+    return { content: null, live: false };
   }
 }
 
@@ -185,11 +242,7 @@ export function getCurrentTmuxPaneId(): string | null {
   // but it is still better than nothing and matches the PID-walk fallback below.
   if (process.env.TMUX) {
     try {
-      const paneId = execSync("tmux display-message -p '#{pane_id}'", {
-        encoding: "utf-8",
-        timeout: 3000,
-        stdio: ["pipe", "pipe", "pipe"],
-      }).trim();
+      const paneId = execTmux(["display-message", "-p", "#{pane_id}"]);
       if (paneId && /^%\d+$/.test(paneId)) return paneId;
     } catch {
       // fall through
@@ -206,15 +259,9 @@ export function getCurrentTmuxPaneId(): string | null {
  * Detect tmux pane ID by walking the process tree.
  */
 function detectTmuxPaneByPid(): string | null {
+  if (process.platform === 'win32') return null;
   try {
-    const output = execSync(
-      "tmux list-panes -a -F '#{pane_pid} #{pane_id}'",
-      {
-        encoding: "utf-8",
-        timeout: 3000,
-        stdio: ["pipe", "pipe", "pipe"],
-      }
-    ).trim();
+    const output = execTmux(["list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]);
     if (!output) return null;
 
     const panePids = new Map<number, string>();
@@ -240,7 +287,8 @@ function detectTmuxPaneByPid(): string | null {
           encoding: "utf-8",
           timeout: 1000,
           stdio: ["pipe", "pipe", "pipe"],
-        }).trim();
+      windowsHide: true,
+    }).trim();
         const ppid = parseInt(ppidStr, 10);
         if (isNaN(ppid) || ppid <= 1) break;
         currentPid = ppid;

@@ -34,8 +34,17 @@ import {
   listModeStateFilesWithScopePreference,
 } from "../mcp/state-paths.js";
 import { generateCodebaseMap } from "./codebase-map.js";
-import { SKILL_ACTIVE_STATE_FILE } from "./keyword-detector.js";
 import { buildExploreRoutingGuidance } from "./explore-routing.js";
+import {
+  SKILL_ACTIVE_STATE_FILE,
+  listActiveSkills,
+  readVisibleSkillActiveState,
+} from "../state/skill-active.js";
+import {
+  OMX_GENERATED_AGENTS_MARKER,
+  OMX_MANAGED_AGENTS_END_MARKER,
+  OMX_MANAGED_AGENTS_START_MARKER,
+} from "../utils/agents-md.js";
 
 const START_MARKER = "<!-- OMX:RUNTIME:START -->";
 const END_MARKER = "<!-- OMX:RUNTIME:END -->";
@@ -170,6 +179,9 @@ async function isRalphActive(
   cwd: string,
   sessionId?: string,
 ): Promise<boolean> {
+  if (sessionId && !existsSync(getStateDir(cwd, sessionId))) {
+    return false;
+  }
   const refs = await listModeStateFilesWithScopePreference(cwd, sessionId);
   const ralphRef = refs.find((ref) => ref.mode === "ralph");
   if (!ralphRef) return false;
@@ -197,7 +209,15 @@ async function readActiveModes(
   cwd: string,
   sessionId?: string,
 ): Promise<string> {
+  if (sessionId && !existsSync(getStateDir(cwd, sessionId))) {
+    return "";
+  }
   const refs = await listModeStateFilesWithScopePreference(cwd, sessionId);
+  const canonicalState = await readVisibleSkillActiveState(cwd, sessionId);
+  const canonicalSkills = new Map(
+    listActiveSkills(canonicalState).map((entry) => [entry.skill, entry] as const),
+  );
+  const useCompatibilityFallback = canonicalState == null;
 
   const preferredByMode = new Map<
     string,
@@ -208,10 +228,17 @@ async function readActiveModes(
   }
 
   const modes: string[] = [];
+  const emittedCanonicalSkills = new Set<string>();
   for (const ref of [...preferredByMode.values()].sort((a, b) =>
     a.mode.localeCompare(b.mode),
   )) {
     try {
+      if (
+        !useCompatibilityFallback &&
+        !canonicalSkills.has(ref.mode)
+      ) {
+        continue;
+      }
       const data = JSON.parse(await readFile(ref.path, "utf-8"));
       if (!data.active) continue;
       const details: string[] = [];
@@ -219,10 +246,22 @@ async function readActiveModes(
         details.push(
           `iteration ${data.iteration}/${data.max_iterations || "?"}`,
         );
-      if (data.current_phase) details.push(`phase: ${data.current_phase}`);
+      const canonicalPhase = canonicalSkills.get(ref.mode)?.phase;
+      const phase = data.current_phase || canonicalPhase;
+      if (phase) details.push(`phase: ${phase}`);
       modes.push(`- ${ref.mode}: ${details.join(", ") || "active"}`);
+      emittedCanonicalSkills.add(ref.mode);
     } catch {
       // Skip malformed mode state files.
+    }
+  }
+
+  if (!useCompatibilityFallback) {
+    for (const [skill, entry] of [...canonicalSkills.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      if (emittedCanonicalSkills.has(skill)) continue;
+      const details: string[] = [];
+      if (entry.phase) details.push(`phase: ${entry.phase}`);
+      modes.push(`- ${skill}: ${details.join(", ") || "active"}`);
     }
   }
 
@@ -298,6 +337,9 @@ export async function resolveSessionOrchestrationMode(
 ): Promise<SessionOrchestrationMode> {
   if (activeSkill === "team") return "team";
   if (activeSkill) return "default";
+  if (sessionId && !existsSync(getStateDir(cwd, sessionId))) {
+    return "default";
+  }
 
   const scopedStateDirs = await getReadScopedStateDirs(cwd, sessionId);
   for (const stateDir of scopedStateDirs) {
@@ -590,6 +632,30 @@ function dropShadowedSkillReferenceLines(
   return keptLines.join("\n");
 }
 
+function stripOmxManagedAgentsBlocks(content: string): string {
+  let next = content;
+
+  while (true) {
+    const startIndex = next.indexOf(OMX_MANAGED_AGENTS_START_MARKER);
+    if (startIndex < 0) return next;
+
+    const endIndex = next.indexOf(
+      OMX_MANAGED_AGENTS_END_MARKER,
+      startIndex + OMX_MANAGED_AGENTS_START_MARKER.length,
+    );
+    if (endIndex < 0) return next;
+
+    const replaceEnd = endIndex + OMX_MANAGED_AGENTS_END_MARKER.length;
+    next = `${next.slice(0, startIndex)}${next.slice(replaceEnd)}`;
+  }
+}
+
+function stripGeneratedOmxAgentsForSession(content: string): string {
+  const withoutManagedBlocks = stripOmxManagedAgentsBlocks(content).trim();
+  if (withoutManagedBlocks.includes(OMX_GENERATED_AGENTS_MARKER)) return "";
+  return withoutManagedBlocks;
+}
+
 /**
  * Build a session-scoped AGENTS.md that combines user-level CODEX_HOME
  * instructions, project instructions (if any), and the runtime overlay,
@@ -619,6 +685,7 @@ export async function writeSessionModelInstructionsFile(
 
     let content = await readFile(sourcePath, "utf-8");
     content = stripOverlayContent(content).trim();
+    content = stripGeneratedOmxAgentsForSession(content);
     if (sourcePath === join(codexHome(), "AGENTS.md")) {
       content = dropShadowedSkillReferenceLines(
         content,

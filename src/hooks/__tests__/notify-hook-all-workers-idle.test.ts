@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -42,12 +42,35 @@ exit 0
 `;
 }
 
+function writeWorkerIdentityFixture(cwd: string, workerEnv: string): string {
+  const [teamName, workerName] = workerEnv.split('/');
+  assert.ok(teamName, 'worker env fixture should include a team name');
+  assert.ok(workerName, 'worker env fixture should include a worker name');
+
+  const stateRoot = join(cwd, '.omx', 'state');
+  const workerDir = join(stateRoot, 'team', teamName, 'workers', workerName);
+  const identityPath = join(workerDir, 'identity.json');
+  if (!existsSync(identityPath)) {
+    mkdirSync(workerDir, { recursive: true });
+    writeFileSync(identityPath, JSON.stringify({
+      name: workerName,
+      index: Number(workerName.replace(/^worker-/, '')) || 1,
+      role: 'executor',
+      assigned_tasks: [],
+      worktree_path: cwd,
+      team_state_root: stateRoot,
+    }, null, 2));
+  }
+  return stateRoot;
+}
+
 function runNotifyHookAsWorker(
   cwd: string,
   fakeBinDir: string,
   workerEnv: string,
   extraEnv: Record<string, string> = {},
 ): ReturnType<typeof spawnSync> {
+  const stateRoot = writeWorkerIdentityFixture(cwd, workerEnv);
   const payload = {
     cwd,
     type: 'agent-turn-complete',
@@ -63,7 +86,7 @@ function runNotifyHookAsWorker(
       ...process.env,
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       OMX_TEAM_WORKER: workerEnv,
-      OMX_TEAM_STATE_ROOT: join(cwd, '.omx', 'state'),
+      OMX_TEAM_STATE_ROOT: stateRoot,
       OMX_TEAM_LEADER_CWD: '',
       OMX_MODEL_INSTRUCTIONS_FILE: '',
       OMX_TEAM_WORKER_IDLE_NOTIFY: 'false',
@@ -292,6 +315,98 @@ exit 0
       const idleState = JSON.parse(await readFile(join(teamDir, 'all-workers-idle.json'), 'utf-8'));
       assert.equal(idleState.delivery, 'deferred_shell');
       assert.equal(idleState.pane_current_command, 'zsh');
+    });
+  });
+
+  it('injects all-workers-idle notification even while the leader pane has an active task', async () => {
+    await withTempWorkingDir(async (cwd) => {
+      const omxDir = join(cwd, '.omx');
+      const stateDir = join(omxDir, 'state');
+      const logsDir = join(omxDir, 'logs');
+      const teamName = 'busy-leader-all-idle';
+      const teamDir = join(stateDir, 'team', teamName);
+      const workersDir = join(teamDir, 'workers');
+      const fakeBinDir = join(cwd, 'fake-bin');
+      const fakeTmuxPath = join(fakeBinDir, 'tmux');
+      const tmuxLogPath = join(cwd, 'tmux.log');
+
+      await mkdir(logsDir, { recursive: true });
+      await mkdir(workersDir, { recursive: true });
+      await mkdir(fakeBinDir, { recursive: true });
+
+      await writeJson(join(teamDir, 'config.json'), {
+        name: teamName,
+        tmux_session: 'busy-all-idle:0',
+        leader_pane_id: '%182',
+        workers: [
+          { name: 'worker-1', index: 1, role: 'executor', assigned_tasks: [] },
+          { name: 'worker-2', index: 2, role: 'executor', assigned_tasks: [] },
+        ],
+      });
+
+      for (const worker of ['worker-1', 'worker-2']) {
+        await mkdir(join(workersDir, worker), { recursive: true });
+        await writeJson(join(workersDir, worker, 'status.json'), {
+          state: 'idle',
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      const fakeTmux = `#!/usr/bin/env bash
+set -eu
+echo "$@" >> "${tmuxLogPath}"
+cmd="$1"
+shift || true
+if [[ "$cmd" == "display-message" ]]; then
+  target=""
+  format=""
+  while (($#)); do
+    case "$1" in
+      -p) shift ;;
+      -t) target="$2"; shift 2 ;;
+      *) format="$1"; shift ;;
+    esac
+  done
+  if [[ "$format" == "#{pane_in_mode}" && "$target" == "%182" ]]; then
+    echo "0"
+    exit 0
+  fi
+  if [[ "$format" == "#{pane_current_command}" && "$target" == "%182" ]]; then
+    echo "codex"
+    exit 0
+  fi
+  exit 0
+fi
+if [[ "$cmd" == "capture-pane" ]]; then
+  printf "• Running tests (1m 05s • esc to interrupt)\\n"
+  exit 0
+fi
+if [[ "$cmd" == "send-keys" ]]; then
+  exit 0
+fi
+if [[ "$cmd" == "list-panes" ]]; then
+  echo "%1 12345"
+  exit 0
+fi
+exit 0
+`;
+      await writeFile(fakeTmuxPath, fakeTmux);
+      await chmod(fakeTmuxPath, 0o755);
+
+      const result = runNotifyHookAsWorker(cwd, fakeBinDir, `${teamName}/worker-1`);
+      assert.equal(result.status, 0, `notify-hook failed: ${result.stderr || result.stdout}`);
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /capture-pane/, 'busy-pane reminders should still inspect pane state');
+      assert.match(tmuxLog, /send-keys -t %182/, 'all-workers-idle reminder should still inject into a busy leader pane');
+
+      const eventsPath = join(teamDir, 'events', 'events.ndjson');
+      if (existsSync(eventsPath)) {
+        const events = (await readFile(eventsPath, 'utf-8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        const deferred = events.find((entry: { type?: string; reason?: string }) =>
+          entry.type === 'leader_notification_deferred' && entry.reason === 'pane_has_active_task');
+        assert.equal(deferred, undefined, 'busy leader panes must not suppress all-workers-idle reminders');
+      }
     });
   });
 
@@ -603,13 +718,17 @@ exit 0
       assert.ok(existsSync(eventsPath), 'events.ndjson should exist after notification');
       const content = await readFile(eventsPath, 'utf-8');
       const events = content.trim().split('\n').map(line => JSON.parse(line));
-      const idleEvent = events.find((e: { type: string }) => e.type === 'all_workers_idle');
+      const idleEvent = events.find((e: { type: string; orchestration_intent?: string }) => e.type === 'all_workers_idle');
       assert.ok(idleEvent, 'should have an all_workers_idle event');
       assert.equal(idleEvent.team, teamName);
       assert.equal(idleEvent.worker, 'worker-1');
       assert.equal(idleEvent.worker_count, 2);
+      assert.equal(idleEvent.orchestration_intent, 'done-review-or-shutdown');
       assert.ok(idleEvent.event_id, 'event should have an event_id');
       assert.ok(idleEvent.created_at, 'event should have a created_at timestamp');
+
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.doesNotMatch(tmuxLog, /\[OMX_INTENT:/);
     });
   });
 
@@ -717,7 +836,8 @@ exit 0
       assert.ok(existsSync(tmuxLogPath), 'tmux should have been called');
       const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
       assert.match(tmuxLog, /\[OMX\] All 1 worker idle/, 'single worker uses singular form');
-      assert.match(tmuxLog, /Next: run omx team status solo-team, read unread worker messages, then decide whether to assign the next concrete task, reconcile results, or shut the team down/, 'all-workers-idle notification should include a next action');
+      assert.match(tmuxLog, /Run `omx team status solo-team` now, read unread worker messages, then assign the next concrete task, reconcile results, or shut the team down/, 'all-workers-idle notification should tell the agent to execute the runtime status check directly');
+      assert.doesNotMatch(tmuxLog, /Next: run omx team status solo-team, read unread worker messages, then decide whether to assign the next concrete task, reconcile results, or shut the team down/, 'all-workers-idle notification should not fall back to human-advisory wording');
       assert.doesNotMatch(tmuxLog, /All 1 workers idle/, 'should not use plural for single worker');
     });
   });

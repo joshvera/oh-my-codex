@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadSurface } from './prompt-guidance-test-helpers.js';
+import { listTrackedAgentSurfaces, loadSurface } from './prompt-guidance-test-helpers.js';
 
 function expectPatterns(path: string, patterns: RegExp[]): void {
   const content = loadSurface(path);
@@ -22,7 +22,7 @@ describe('explore + sparkshell guidance contract', () => {
       /When to use what/i,
     ];
 
-    for (const surface of ['AGENTS.md', 'templates/AGENTS.md']) {
+    for (const surface of listTrackedAgentSurfaces()) {
       expectPatterns(surface, patterns);
     }
   });

@@ -44,7 +44,7 @@ describe('omx agents', () => {
 
       await writeFile(
         join(projectAgentsDir, 'planner.toml'),
-        'name = "planner"\ndescription = "Project planner"\nmodel = "gpt-5.4"\ndeveloper_instructions = """plan"""\n',
+        'name = "planner"\ndescription = "Project planner"\nmodel = "gpt-5.5"\ndeveloper_instructions = """plan"""\n',
       );
       await writeFile(
         join(userAgentsDir, 'reviewer.toml'),
@@ -59,7 +59,7 @@ describe('omx agents', () => {
 
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.match(result.stdout, /scope\s+name\s+model\s+description/i);
-      assert.match(result.stdout, /project\s+planner\s+gpt-5\.4\s+Project planner/);
+      assert.match(result.stdout, /project\s+planner\s+gpt-5\.5\s+Project planner/);
       assert.match(result.stdout, /user\s+reviewer\s+-\s+User reviewer/);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -86,7 +86,7 @@ describe('omx agents', () => {
       assert.match(content, /^name = "my-helper"$/m);
       assert.match(content, /^description = "TODO: describe this agent's purpose"$/m);
       assert.match(content, /^developer_instructions = """$/m);
-      assert.match(content, /^# model = "gpt-5\.4"$/m);
+      assert.match(content, /^# model = "gpt-5\.5"$/m);
       assert.match(content, /^# model_reasoning_effort = "medium"$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -109,7 +109,7 @@ describe('omx agents', () => {
       const editorScript = join(wd, 'editor.sh');
       await writeFile(
         editorScript,
-        '#!/usr/bin/env bash\nprintf \'\\nmodel = "gpt-5.4"\\n\' >> \"$1\"\n',
+        '#!/usr/bin/env bash\nprintf \'\\nmodel = "gpt-5.5"\\n\' >> "$1"\n',
       );
       await chmod(editorScript, 0o755);
 
@@ -121,7 +121,7 @@ describe('omx agents', () => {
       if (shouldSkipForSpawnPermissions(editResult.error)) return;
 
       assert.equal(editResult.status, 0, editResult.stderr || editResult.stdout);
-      assert.match(await readFile(agentPath, 'utf-8'), /^model = "gpt-5\.4"$/m);
+      assert.match(await readFile(agentPath, 'utf-8'), /^model = "gpt-5\.5"$/m);
 
       const removeResult = runOmx(wd, ['agents', 'remove', 'editor-test', '--scope', 'project', '--force'], {
         HOME: home,
@@ -131,6 +131,36 @@ describe('omx agents', () => {
 
       assert.equal(removeResult.status, 0, removeResult.stderr || removeResult.stdout);
       assert.equal(existsSync(agentPath), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails with clear guidance when remove runs in non-interactive mode without --force', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-agents-cli-'));
+    const home = join(wd, 'home');
+    try {
+      const projectAgentsDir = join(wd, '.codex', 'agents');
+      await mkdir(projectAgentsDir, { recursive: true });
+      await mkdir(home, { recursive: true });
+      const agentPath = join(projectAgentsDir, 'non-interactive.toml');
+      await writeFile(
+        agentPath,
+        'name = "non-interactive"\ndescription = "Remove me"\ndeveloper_instructions = """noop"""\n',
+      );
+
+      const result = runOmx(wd, ['agents', 'remove', 'non-interactive', '--scope', 'project'], {
+        HOME: home,
+        CODEX_HOME: join(home, '.codex'),
+      });
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      assert.notEqual(result.status, 0, 'expected non-zero exit for non-interactive remove');
+      assert.equal(existsSync(agentPath), true, 'agent file should remain when remove aborts');
+      assert.match(
+        result.stderr,
+        /remove requires an interactive terminal; rerun with --force in non-interactive environments/i,
+      );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

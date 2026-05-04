@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-03-10T10:43:36.374Z",
+  "generatedAt": "2026-04-24T07:34:27.399Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 39,
+    "skillCount": 42,
     "promptCount": 30,
-    "activeSkillCount": 23,
+    "activeSkillCount": 27,
     "activeAgentCount": 18
   },
   "coreSkills": [
@@ -54,8 +54,21 @@
     {
       "name": "ultraqa",
       "category": "execution",
-      "status": "merged",
-      "canonical": "ralph",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "autoresearch",
+      "category": "execution",
+      "status": "active",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "pipeline",
+      "category": "execution",
+      "status": "active",
       "core": false,
       "internalRequired": false
     },
@@ -92,8 +105,7 @@
     {
       "name": "analyze",
       "category": "shortcut",
-      "status": "alias",
-      "canonical": "debugger",
+      "status": "active",
       "core": false,
       "internalRequired": false
     },
@@ -155,8 +167,16 @@
     {
       "name": "web-clone",
       "category": "shortcut",
+      "status": "merged",
+      "canonical": "visual-ralph",
+      "core": false,
+      "internalRequired": false
+    },
+    {
+      "name": "visual-ralph",
+      "category": "shortcut",
       "status": "active",
-      "canonical": "vision",
+      "canonical": "designer",
       "core": false,
       "internalRequired": false
     },
@@ -477,16 +497,8 @@
       "canonical": "ultrawork"
     },
     {
-      "name": "ultraqa",
-      "canonical": "ralph"
-    },
-    {
       "name": "swarm",
       "canonical": "team"
-    },
-    {
-      "name": "analyze",
-      "canonical": "debugger"
     },
     {
       "name": "deepsearch",
@@ -499,6 +511,10 @@
     {
       "name": "build-fix",
       "canonical": "build-fixer"
+    },
+    {
+      "name": "web-clone",
+      "canonical": "visual-ralph"
     },
     {
       "name": "frontend-ui-ux",

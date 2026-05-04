@@ -11,8 +11,10 @@ dist/
 # Local agent/worktree artifacts (never commit)
 .claude/
 .claire/
-.codex/
-.agents/
+.agents/*
+!.agents/plugins/
+.agents/plugins/*
+!.agents/plugins/marketplace.json
 coverage/
 target/
 bin/native/
@@ -30,3 +32,11 @@ mailbox.json
 readiness.json
 replay.json
 snapshot.json
+.codex/*
+!.codex/agents/
+!.codex/agents/**
+!.codex/skills/
+!.codex/skills/**
+.codex/skills/.system/**
+!.codex/prompts/
+!.codex/prompts/**

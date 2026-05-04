@@ -201,6 +201,8 @@ export interface FullNotificationPayload {
   tmuxPaneId?: string;
   /** Captured tmux pane output (tail lines) for session-level notifications */
   tmuxTail?: string;
+  /** Whether the tmux tail came from a session/pane proven live at capture time */
+  tmuxTailLive?: boolean;
   /** Agent name (populated by extensibility plugins, not set by core Codex CLI hooks) */
   agentName?: string;
   /** Agent type (populated by extensibility plugins, not set by core Codex CLI hooks) */

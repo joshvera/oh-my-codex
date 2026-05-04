@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { createHookPluginSdk, clearHookPluginState } from '../sdk.js';
 import type { HookEventEnvelope } from '../types.js';
@@ -19,8 +19,9 @@ function makeEvent(event = 'session-start'): HookEventEnvelope {
 
 async function writeOmxStateFile(cwd: string, fileName: string, value: unknown): Promise<void> {
   const stateDir = join(cwd, '.omx', 'state');
-  await mkdir(stateDir, { recursive: true });
-  await writeFile(join(stateDir, fileName), JSON.stringify(value, null, 2));
+  const targetPath = join(stateDir, fileName);
+  await mkdir(dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, JSON.stringify(value, null, 2));
 }
 
 describe('createHookPluginSdk', () => {
@@ -387,6 +388,36 @@ exit 1
         assert.deepEqual(await sdk.omx.updateCheck.read(), {
           last_checked_at: '2026-01-01T00:00:00.000Z',
           last_seen_latest: '0.11.0',
+        });
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('reads hud state from the current session scope instead of stale root fallback', async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'omx-sdk-hud-session-'));
+      try {
+        await writeOmxStateFile(cwd, 'session.json', {
+          session_id: 'sess-current',
+          cwd,
+          started_at: '2026-01-01T00:00:00.000Z',
+        });
+        await writeOmxStateFile(cwd, 'hud-state.json', {
+          last_turn_at: 'root-stale',
+          turn_count: 99,
+          last_agent_output: 'Would you like me to continue?',
+        });
+        await writeOmxStateFile(cwd, join('sessions', 'sess-current', 'hud-state.json'), {
+          last_turn_at: '2026-01-01T00:00:00.000Z',
+          turn_count: 3,
+          last_agent_output: 'Current session output',
+        });
+
+        const sdk = createHookPluginSdk({ cwd, pluginName: 'test', event: makeEvent() });
+        assert.deepEqual(await sdk.omx.hud.read(), {
+          last_turn_at: '2026-01-01T00:00:00.000Z',
+          turn_count: 3,
+          last_agent_output: 'Current session output',
         });
       } finally {
         await rm(cwd, { recursive: true, force: true });

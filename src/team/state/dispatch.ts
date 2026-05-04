@@ -1,8 +1,14 @@
 import { randomUUID } from 'crypto';
-import { getDefaultBridge, isBridgeEnabled } from '../../runtime/bridge.js';
+import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, type DispatchRecord, type RuntimeCommand } from '../../runtime/bridge.js';
+import { appendTeamDeliveryLogForCwd } from '../delivery-log.js';
+import { isTeamReminderIntent, type TeamReminderIntent } from '../reminder-intents.js';
+import {
+  canTransitionTeamDispatchRequestStatus,
+  isTeamDispatchRequestStatus,
+  type TeamDispatchRequestStatus,
+} from '../contracts.js';
 
 export type TeamDispatchRequestKind = 'inbox' | 'mailbox' | 'nudge';
-export type TeamDispatchRequestStatus = 'pending' | 'notified' | 'delivered' | 'failed';
 export type TeamDispatchTransportPreference = 'hook_preferred_with_fallback' | 'transport_direct' | 'prompt_stdin';
 
 export interface TeamDispatchRequest {
@@ -13,6 +19,7 @@ export interface TeamDispatchRequest {
   worker_index?: number;
   pane_id?: string;
   trigger_message: string;
+  intent?: TeamReminderIntent;
   message_id?: string;
   inbox_correlation_key?: string;
   transport_preference: TeamDispatchTransportPreference;
@@ -33,6 +40,7 @@ export interface TeamDispatchRequestInput {
   worker_index?: number;
   pane_id?: string;
   trigger_message: string;
+  intent?: TeamReminderIntent;
   message_id?: string;
   inbox_correlation_key?: string;
   transport_preference?: TeamDispatchTransportPreference;
@@ -53,8 +61,32 @@ function isDispatchKind(value: unknown): value is TeamDispatchRequestKind {
   return value === 'inbox' || value === 'mailbox' || value === 'nudge';
 }
 
-function isDispatchStatus(value: unknown): value is TeamDispatchRequestStatus {
-  return value === 'pending' || value === 'notified' || value === 'delivered' || value === 'failed';
+function sanitizeDispatchRequestForStatus(record: TeamDispatchRequest): TeamDispatchRequest {
+  if (record.status === 'pending') {
+    return {
+      ...record,
+      notified_at: undefined,
+      delivered_at: undefined,
+      failed_at: undefined,
+    };
+  }
+  if (record.status === 'notified') {
+    return {
+      ...record,
+      delivered_at: undefined,
+      failed_at: undefined,
+    };
+  }
+  if (record.status === 'delivered') {
+    return {
+      ...record,
+      failed_at: undefined,
+    };
+  }
+  return {
+    ...record,
+    delivered_at: undefined,
+  };
 }
 
 export function normalizeDispatchRequest(
@@ -66,8 +98,8 @@ export function normalizeDispatchRequest(
   if (typeof raw.to_worker !== 'string' || raw.to_worker.trim() === '') return null;
   if (typeof raw.trigger_message !== 'string' || raw.trigger_message.trim() === '') return null;
 
-  const status = isDispatchStatus(raw.status) ? raw.status : 'pending';
-  return {
+  const status = isTeamDispatchRequestStatus(raw.status) ? raw.status : 'pending';
+  return sanitizeDispatchRequestForStatus({
     request_id: typeof raw.request_id === 'string' && raw.request_id.trim() !== '' ? raw.request_id : randomUUID(),
     kind: raw.kind,
     team_name: teamName,
@@ -75,6 +107,7 @@ export function normalizeDispatchRequest(
     worker_index: typeof raw.worker_index === 'number' ? raw.worker_index : undefined,
     pane_id: typeof raw.pane_id === 'string' && raw.pane_id !== '' ? raw.pane_id : undefined,
     trigger_message: raw.trigger_message,
+    intent: isTeamReminderIntent(raw.intent) ? raw.intent : undefined,
     message_id: typeof raw.message_id === 'string' && raw.message_id !== '' ? raw.message_id : undefined,
     inbox_correlation_key:
       typeof raw.inbox_correlation_key === 'string' && raw.inbox_correlation_key !== '' ? raw.inbox_correlation_key : undefined,
@@ -91,7 +124,7 @@ export function normalizeDispatchRequest(
     delivered_at: typeof raw.delivered_at === 'string' && raw.delivered_at !== '' ? raw.delivered_at : undefined,
     failed_at: typeof raw.failed_at === 'string' && raw.failed_at !== '' ? raw.failed_at : undefined,
     last_reason: typeof raw.last_reason === 'string' && raw.last_reason !== '' ? raw.last_reason : undefined,
-  };
+  });
 }
 
 function equivalentPendingDispatch(existing: TeamDispatchRequest, input: TeamDispatchRequestInput): boolean {
@@ -112,10 +145,92 @@ function equivalentPendingDispatch(existing: TeamDispatchRequest, input: TeamDis
 
 function canTransitionDispatchStatus(from: TeamDispatchRequestStatus, to: TeamDispatchRequestStatus): boolean {
   if (from === to) return true;
-  if (from === 'pending' && (to === 'notified' || to === 'failed')) return true;
-  if (from === 'notified' && (to === 'delivered' || to === 'failed')) return true;
-  if (from === 'failed' && to === 'notified') return true;
-  return false;
+  return canTransitionTeamDispatchRequestStatus(from, to);
+}
+
+function buildDispatchMetadata(teamName: string, requestInput: TeamDispatchRequestInput): Record<string, unknown> {
+  return {
+    kind: requestInput.kind,
+    team_name: teamName,
+    worker_index: requestInput.worker_index,
+    pane_id: requestInput.pane_id,
+    trigger_message: requestInput.trigger_message,
+    intent: requestInput.intent,
+    message_id: requestInput.message_id,
+    inbox_correlation_key: requestInput.inbox_correlation_key,
+    transport_preference: requestInput.transport_preference,
+    fallback_allowed: requestInput.fallback_allowed,
+  };
+}
+
+function executeBridgeCommand(cwd: string, command: RuntimeCommand): boolean {
+  if (!isBridgeEnabled()) return false;
+  try {
+    getDefaultBridge(resolveBridgeStateDir(cwd)).execCommand(command);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function coerceMetadataValue<T extends string | number | boolean>(
+  value: unknown,
+  predicate: (candidate: unknown) => candidate is T,
+): T | undefined {
+  return predicate(value) ? value : undefined;
+}
+
+export function normalizeBridgeDispatchRecord(
+  teamName: string,
+  record: DispatchRecord,
+  nowIso: string = new Date().toISOString(),
+): TeamDispatchRequest | null {
+  const metadata = record.metadata && typeof record.metadata === 'object'
+    ? (record.metadata as Record<string, unknown>)
+    : {};
+  const metadataTeamName = typeof metadata.team_name === 'string' && metadata.team_name.trim() !== ''
+    ? metadata.team_name.trim()
+    : null;
+  if (metadataTeamName !== null && metadataTeamName !== teamName) return null;
+
+  return normalizeDispatchRequest(
+    teamName,
+    {
+      request_id: record.request_id,
+      kind: coerceMetadataValue(metadata.kind, isDispatchKind) ?? 'inbox',
+      to_worker: record.target,
+      worker_index: typeof metadata.worker_index === 'number' ? metadata.worker_index : undefined,
+      pane_id: typeof metadata.pane_id === 'string' && metadata.pane_id !== '' ? metadata.pane_id : undefined,
+      trigger_message:
+        typeof metadata.trigger_message === 'string' && metadata.trigger_message.trim() !== ''
+          ? metadata.trigger_message
+          : record.reason ?? record.request_id,
+      intent: isTeamReminderIntent(metadata.intent) ? metadata.intent : undefined,
+      message_id: typeof metadata.message_id === 'string' && metadata.message_id !== '' ? metadata.message_id : undefined,
+      inbox_correlation_key:
+        typeof metadata.inbox_correlation_key === 'string' && metadata.inbox_correlation_key !== ''
+          ? metadata.inbox_correlation_key
+          : undefined,
+      transport_preference: coerceMetadataValue(
+        metadata.transport_preference,
+        (candidate): candidate is TeamDispatchTransportPreference =>
+          candidate === 'hook_preferred_with_fallback' || candidate === 'transport_direct' || candidate === 'prompt_stdin',
+      ),
+      fallback_allowed:
+        typeof metadata.fallback_allowed === 'boolean'
+          ? metadata.fallback_allowed
+          : undefined,
+      status: record.status,
+      attempt_count: typeof metadata.attempt_count === 'number' ? metadata.attempt_count : 0,
+      created_at: record.created_at,
+      updated_at: record.delivered_at ?? record.failed_at ?? record.notified_at ?? record.created_at ?? nowIso,
+      notified_at: record.notified_at ?? undefined,
+      delivered_at: record.delivered_at ?? undefined,
+      failed_at: record.failed_at ?? undefined,
+      last_reason: record.reason ?? undefined,
+    },
+    nowIso,
+  );
 }
 
 export async function enqueueDispatchRequest(
@@ -128,7 +243,7 @@ export async function enqueueDispatchRequest(
   }
   deps.validateWorkerName(requestInput.to_worker);
 
-  return await deps.withDispatchLock(deps.teamName, deps.cwd, async () => {
+  const queued = await deps.withDispatchLock(deps.teamName, deps.cwd, async () => {
     const requests = await deps.readDispatchRequests(deps.teamName, deps.cwd);
     const existing = requests.find((req) => equivalentPendingDispatch(req, requestInput));
     if (existing) return { request: existing, deduped: true };
@@ -148,32 +263,38 @@ export async function enqueueDispatchRequest(
     );
     if (!request) throw new Error('failed_to_normalize_dispatch_request');
 
-    requests.push(request);
-    await deps.writeDispatchRequests(deps.teamName, requests, deps.cwd);
-
-    if (isBridgeEnabled()) {
-      try {
-        getDefaultBridge(deps.cwd).execCommand({
-          command: 'QueueDispatch',
-          request_id: request.request_id,
-          target: requestInput.to_worker,
-          metadata: {
-            kind: requestInput.kind,
-            team_name: deps.teamName,
-            worker_index: requestInput.worker_index,
-            pane_id: requestInput.pane_id,
-            trigger_message: requestInput.trigger_message,
-            message_id: requestInput.message_id,
-            inbox_correlation_key: requestInput.inbox_correlation_key,
-            transport_preference: requestInput.transport_preference,
-            fallback_allowed: requestInput.fallback_allowed,
-          },
-        });
-      } catch { /* bridge failure non-fatal */ }
+    if (executeBridgeCommand(deps.cwd, {
+      command: 'QueueDispatch',
+      request_id: request.request_id,
+      target: requestInput.to_worker,
+      metadata: buildDispatchMetadata(deps.teamName, requestInput),
+    })) {
+      const bridgeRequest = await readDispatchRequest(request.request_id, deps);
+      if (bridgeRequest) {
+        return { request: bridgeRequest, deduped: false, queuedTransport: 'bridge' as const };
+      }
     }
 
-    return { request, deduped: false };
+    requests.push(request);
+    await deps.writeDispatchRequests(deps.teamName, requests, deps.cwd);
+    return { request, deduped: false, queuedTransport: 'legacy-json' as const };
   });
+  if (!queued.deduped) {
+    await appendTeamDeliveryLogForCwd(deps.cwd, {
+      event: 'dispatch_attempted',
+      source: 'team.state.dispatch',
+      team: deps.teamName,
+      request_id: queued.request.request_id,
+      message_id: queued.request.message_id,
+      to_worker: queued.request.to_worker,
+      dispatch_kind: queued.request.kind,
+      intent: queued.request.intent,
+      transport: queued.request.transport_preference,
+      result: 'queued',
+      storage: queued.queuedTransport,
+    });
+  }
+  return { request: queued.request, deduped: queued.deduped };
 }
 
 export async function listDispatchRequests(
@@ -218,13 +339,13 @@ export async function transitionDispatchRequest(
         : (existing.status === to ? existing.attempt_count : existing.attempt_count + 1),
     );
 
-    const next: TeamDispatchRequest = {
+    const next = sanitizeDispatchRequestForStatus({
       ...existing,
       ...patch,
       status: to,
       attempt_count: Math.max(0, nextAttemptCount),
       updated_at: nowIso,
-    };
+    });
     if (to === 'notified') {
       next.notified_at = patch.notified_at ?? nowIso;
       next.failed_at = patch.failed_at;
@@ -243,12 +364,20 @@ export async function markDispatchRequestNotified(
   patch: Partial<TeamDispatchRequest> = {},
   deps: DispatchDeps,
 ): Promise<TeamDispatchRequest | null> {
-  if (isBridgeEnabled()) {
-    try { getDefaultBridge(deps.cwd).execCommand({ command: 'MarkNotified', request_id: requestId, channel: patch.message_id ?? 'tmux' }); } catch {}
-  }
   const current = await readDispatchRequest(requestId, deps);
   if (!current) return null;
   if (current.status === 'notified' || current.status === 'delivered') return current;
+  // `failed` is a terminal state per TEAM_DISPATCH_REQUEST_STATUS_TRANSITIONS —
+  // return null so callers can fall through to an explicit failed→failed
+  // reason patch instead of silently promoting via the bridge side-channel.
+  if (current.status === 'failed') return null;
+  if (executeBridgeCommand(deps.cwd, {
+    command: 'MarkNotified',
+    request_id: requestId,
+    channel: patch.last_reason ?? patch.message_id ?? 'tmux',
+  })) {
+    return await readDispatchRequest(requestId, deps) ?? current;
+  }
   return await transitionDispatchRequest(requestId, current.status, 'notified', patch, deps);
 }
 
@@ -257,12 +386,15 @@ export async function markDispatchRequestDelivered(
   patch: Partial<TeamDispatchRequest> = {},
   deps: DispatchDeps,
 ): Promise<TeamDispatchRequest | null> {
-  if (isBridgeEnabled()) {
-    try { getDefaultBridge(deps.cwd).execCommand({ command: 'MarkDelivered', request_id: requestId }); } catch {}
-  }
   const current = await readDispatchRequest(requestId, deps);
   if (!current) return null;
   if (current.status === 'delivered') return current;
+  // Mirror the terminal-state guard from markDispatchRequestNotified: failed
+  // dispatches cannot be promoted to delivered via the bridge side-channel.
+  if (current.status === 'failed') return null;
+  if (executeBridgeCommand(deps.cwd, { command: 'MarkDelivered', request_id: requestId })) {
+    return await readDispatchRequest(requestId, deps) ?? current;
+  }
   return await transitionDispatchRequest(requestId, current.status, 'delivered', patch, deps);
 }
 
@@ -271,9 +403,8 @@ export async function markDispatchRequestFailed(
   reason: string,
   deps: DispatchDeps,
 ): Promise<void> {
-  if (isBridgeEnabled()) {
-    try { getDefaultBridge(deps.cwd).execCommand({ command: 'MarkFailed', request_id: requestId, reason }); } catch {}
+  if (executeBridgeCommand(deps.cwd, { command: 'MarkFailed', request_id: requestId, reason })) {
+    return;
   }
-  // Fallback: delegate to existing transition when bridge disabled
   await transitionDispatchRequest(requestId, 'pending', 'failed', { last_reason: reason }, deps);
 }

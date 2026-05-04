@@ -206,8 +206,8 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
+export function buildTraceServerTools() {
+  return [
     {
       name: 'trace_timeline',
       description: 'Show chronological agent flow trace timeline. Displays turns, mode transitions, and agent activity in time order.',
@@ -234,10 +234,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
-  ],
+  ];
+}
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: buildTraceServerTools(),
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+export async function handleTraceToolCall(request: {
+  params: { name: string; arguments?: Record<string, unknown> };
+}) {
   const { name, arguments: args } = request.params;
   const a = (args || {}) as Record<string, unknown>;
   let wd: string;
@@ -331,6 +337,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     default:
       return { content: [{ type: 'text' as const, text: `Unknown tool: ${name}` }], isError: true };
   }
-});
+}
+
+server.setRequestHandler(CallToolRequestSchema, handleTraceToolCall);
 
 autoStartStdioMcpServer('trace', server);

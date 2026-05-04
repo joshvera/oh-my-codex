@@ -19,9 +19,10 @@
  * Resolution: mode-specific > "default" key > OMX_DEFAULT_FRONTIER_MODEL > DEFAULT_FRONTIER_MODEL
  */
 
+import { parse as parseToml } from '@iarna/toml';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
-import { codexHome } from '../utils/paths.js';
+import { codexConfigPath, codexHome } from '../utils/paths.js';
 
 export interface ModelsConfig {
   [mode: string]: string | undefined;
@@ -36,10 +37,17 @@ interface OmxConfigFile {
   models?: ModelsConfig;
 }
 
+interface CodexConfigFile {
+  model?: unknown;
+  model_provider?: unknown;
+  model_providers?: Record<string, unknown>;
+}
+
 export const OMX_DEFAULT_FRONTIER_MODEL_ENV = 'OMX_DEFAULT_FRONTIER_MODEL';
 export const OMX_DEFAULT_STANDARD_MODEL_ENV = 'OMX_DEFAULT_STANDARD_MODEL';
 export const OMX_DEFAULT_SPARK_MODEL_ENV = 'OMX_DEFAULT_SPARK_MODEL';
 export const OMX_SPARK_MODEL_ENV = 'OMX_SPARK_MODEL';
+export const OMX_TEAM_CHILD_MODEL_ENV = 'OMX_TEAM_CHILD_MODEL';
 
 function readOmxConfigFile(codexHomeOverride?: string): OmxConfigFile | null {
   const configPath = join(codexHomeOverride || codexHome(), '.omx-config.json');
@@ -48,6 +56,20 @@ function readOmxConfigFile(codexHomeOverride?: string): OmxConfigFile | null {
     const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
     return raw as OmxConfigFile;
+  } catch {
+    return null;
+  }
+}
+
+function readCodexConfigFile(codexHomeOverride?: string): CodexConfigFile | null {
+  const configPath = codexHomeOverride
+    ? join(codexHomeOverride, 'config.toml')
+    : codexConfigPath();
+  if (!existsSync(configPath)) return null;
+  try {
+    const raw = parseToml(readFileSync(configPath, 'utf-8'));
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    return raw as CodexConfigFile;
   } catch {
     return null;
   }
@@ -62,9 +84,10 @@ function readModelsBlock(codexHomeOverride?: string): ModelsConfig | null {
   return null;
 }
 
-export const DEFAULT_FRONTIER_MODEL = 'gpt-5.4';
+export const DEFAULT_FRONTIER_MODEL = 'gpt-5.5';
 export const DEFAULT_STANDARD_MODEL = 'gpt-5.4-mini';
 export const DEFAULT_SPARK_MODEL = 'gpt-5.3-codex-spark';
+export const DEFAULT_TEAM_CHILD_MODEL = DEFAULT_STANDARD_MODEL;
 
 function normalizeConfiguredValue(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -104,12 +127,48 @@ export function readConfiguredEnvOverrides(codexHomeOverride?: string): NodeJS.P
   return resolved;
 }
 
+export function readActiveProviderEnvOverrides(
+  env: NodeJS.ProcessEnv = process.env,
+  codexHomeOverride?: string,
+  activeProviderOverride?: string,
+): NodeJS.ProcessEnv {
+  const config = readCodexConfigFile(codexHomeOverride);
+  if (!config) return {};
+
+  const activeProvider = normalizeConfiguredValue(activeProviderOverride) ?? normalizeConfiguredValue(config.model_provider);
+  if (!activeProvider) return {};
+
+  const providers = config.model_providers;
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) {
+    return {};
+  }
+
+  const providerConfig = providers[activeProvider];
+  if (!providerConfig || typeof providerConfig !== 'object' || Array.isArray(providerConfig)) {
+    return {};
+  }
+
+  const envKey = normalizeConfiguredValue((providerConfig as Record<string, unknown>).env_key);
+  if (!envKey) return {};
+
+  const envValue = normalizeConfiguredValue(env[envKey]);
+  return envValue ? { [envKey]: envValue } : {};
+}
+
 export function getEnvConfiguredMainDefaultModel(
   env: NodeJS.ProcessEnv = process.env,
   codexHomeOverride?: string,
 ): string | undefined {
   return normalizeConfiguredValue(env[OMX_DEFAULT_FRONTIER_MODEL_ENV])
     ?? readConfigEnvValue(OMX_DEFAULT_FRONTIER_MODEL_ENV, codexHomeOverride);
+}
+
+function getCodexConfigRootModel(codexHomeOverride?: string): string | undefined {
+  return normalizeConfiguredValue(readCodexConfigFile(codexHomeOverride)?.model);
+}
+
+export function getCodexConfigRootModelProvider(codexHomeOverride?: string): string | undefined {
+  return normalizeConfiguredValue(readCodexConfigFile(codexHomeOverride)?.model_provider);
 }
 
 export function getEnvConfiguredStandardDefaultModel(
@@ -130,22 +189,36 @@ export function getEnvConfiguredSparkDefaultModel(
     ?? readConfigEnvValue(OMX_SPARK_MODEL_ENV, codexHomeOverride);
 }
 
+
+export function getTeamChildModel(codexHomeOverride?: string): string {
+  return normalizeConfiguredValue(process.env[OMX_TEAM_CHILD_MODEL_ENV])
+    ?? readConfigEnvValue(OMX_TEAM_CHILD_MODEL_ENV, codexHomeOverride)
+    ?? DEFAULT_TEAM_CHILD_MODEL;
+}
+
 /**
  * Get the envvar-backed main/default model.
- * Resolution: OMX_DEFAULT_FRONTIER_MODEL > DEFAULT_FRONTIER_MODEL
+ * Resolution: OMX_DEFAULT_FRONTIER_MODEL > config.toml model > DEFAULT_FRONTIER_MODEL
  */
 export function getMainDefaultModel(codexHomeOverride?: string): string {
   return getEnvConfiguredMainDefaultModel(process.env, codexHomeOverride)
+    ?? getCodexConfigRootModel(codexHomeOverride)
     ?? DEFAULT_FRONTIER_MODEL;
 }
 
 /**
  * Get the envvar-backed standard/default subagent model.
- * Resolution: OMX_DEFAULT_STANDARD_MODEL > DEFAULT_STANDARD_MODEL
+ *
+ * Standard-role subagents inherit the configured main/default model unless an
+ * explicit standard-lane override is configured. This keeps spawned agents in
+ * sync with the leader model while preserving OMX_DEFAULT_STANDARD_MODEL as the
+ * opt-in escape hatch for cheaper/specialized standard workers.
+ *
+ * Resolution: OMX_DEFAULT_STANDARD_MODEL > OMX_DEFAULT_FRONTIER_MODEL > config.toml model > DEFAULT_FRONTIER_MODEL
  */
 export function getStandardDefaultModel(codexHomeOverride?: string): string {
   return getEnvConfiguredStandardDefaultModel(process.env, codexHomeOverride)
-    ?? DEFAULT_STANDARD_MODEL;
+    ?? getMainDefaultModel(codexHomeOverride);
 }
 
 /**

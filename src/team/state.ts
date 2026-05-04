@@ -2,8 +2,9 @@ import { appendFile, readFile, writeFile, mkdir, rm, rename, readdir } from 'fs/
 import { join, dirname, resolve, sep } from 'path';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
+import { readUsableSessionState } from '../hooks/session.js';
 import { omxStateDir } from '../utils/paths.js';
-import { type TeamPhase, type TerminalPhase } from './orchestrator.js';
+import { isTerminalPhase, type TeamPhase, type TerminalPhase } from './orchestrator.js';
 import {
   computeTaskReadiness as computeTaskReadinessImpl,
   claimTask as claimTaskImpl,
@@ -18,6 +19,7 @@ import {
   markMessageDelivered as markMessageDeliveredImpl,
   markMessageNotified as markMessageNotifiedImpl,
   listMailboxMessages as listMailboxMessagesImpl,
+  normalizeBridgeMailboxMessage,
 } from './state/mailbox.js';
 import {
   enqueueDispatchRequest as enqueueDispatchRequestImpl,
@@ -26,6 +28,7 @@ import {
   transitionDispatchRequest as transitionDispatchRequestImpl,
   markDispatchRequestNotified as markDispatchRequestNotifiedImpl,
   markDispatchRequestDelivered as markDispatchRequestDeliveredImpl,
+  normalizeBridgeDispatchRecord,
   normalizeDispatchRequest as normalizeDispatchRequestImpl,
 } from './state/dispatch.js';
 import {
@@ -49,17 +52,23 @@ import {
   withTaskClaimLock as withTaskClaimLockImpl,
   withMailboxLock as withMailboxLockImpl,
 } from './state/locks.js';
+import { getDefaultBridge, isBridgeEnabled, resolveBridgeStateDir, type DispatchRecord } from '../runtime/bridge.js';
 import {
+  type TeamDispatchRequestStatus,
   TEAM_NAME_SAFE_PATTERN,
   WORKER_NAME_SAFE_PATTERN,
   TASK_ID_SAFE_PATTERN,
   TEAM_TASK_STATUSES,
+  type TeamWorkerIntegrationStatus,
   canTransitionTeamTaskStatus,
   isTerminalTeamTaskStatus,
   type TeamTaskStatus,
   type TeamEventType,
 } from './contracts.js';
+import type { TeamReminderIntent } from './reminder-intents.js';
 import type { WorktreeMode } from './worktree.js';
+
+export type { TeamDispatchRequestStatus, TeamWorkerIntegrationStatus } from './contracts.js';
 
 export interface TeamConfig {
   name: string;
@@ -87,6 +96,9 @@ export interface TeamConfig {
   resize_hook_target: string | null;
   /** Monotonic counter for worker index assignment during scaling. */
   next_worker_index?: number;
+  display_name?: string;
+  requested_name?: string;
+  identity_source?: string;
 }
 
 export interface WorkerInfo {
@@ -120,6 +132,28 @@ export interface WorkerStatus {
   updated_at: string;
 }
 
+export type TeamTaskDelegationMode = 'none' | 'optional' | 'auto' | 'required';
+export type TeamTaskChildModelPolicy = 'standard' | 'fast' | 'inherit' | 'frontier';
+
+export interface TeamTaskDelegationComplianceEvidence {
+  status: 'spawned' | 'skipped';
+  source: 'terminal_result';
+  detail: string;
+  recorded_at: string;
+}
+
+export interface TeamTaskDelegationPlan {
+  mode: TeamTaskDelegationMode;
+  max_parallel_subtasks?: number;
+  required_parallel_probe?: boolean;
+  spawn_before_serial_search_threshold?: number;
+  child_model_policy?: TeamTaskChildModelPolicy;
+  child_model?: string;
+  subtask_candidates?: string[];
+  child_report_format?: 'bullets' | 'json';
+  skip_allowed_reason_required?: boolean;
+}
+
 export interface TeamTask {
   id: string;
   subject: string;
@@ -132,10 +166,16 @@ export interface TeamTask {
   error?: string; // failure reason
   blocked_by?: string[]; // task IDs
   depends_on?: string[]; // task IDs
+  filePaths?: string[];
+  domains?: string[];
+  lane?: string;
+  allocation_reason?: string;
   version?: number;
   claim?: TeamTaskClaim;
   created_at: string;
   completed_at?: string;
+  delegation?: TeamTaskDelegationPlan;
+  delegation_compliance?: TeamTaskDelegationComplianceEvidence;
 }
 
 export interface TeamTaskClaim {
@@ -175,7 +215,6 @@ export interface TeamGovernance {
 }
 
 export type TeamDispatchRequestKind = 'inbox' | 'mailbox' | 'nudge';
-export type TeamDispatchRequestStatus = 'pending' | 'notified' | 'delivered' | 'failed';
 export type TeamDispatchTransportPreference = 'hook_preferred_with_fallback' | 'transport_direct' | 'prompt_stdin';
 
 export interface TeamDispatchRequest {
@@ -186,6 +225,7 @@ export interface TeamDispatchRequest {
   worker_index?: number;
   pane_id?: string;
   trigger_message: string;
+  intent?: TeamReminderIntent;
   message_id?: string;
   inbox_correlation_key?: string;
   transport_preference: TeamDispatchTransportPreference;
@@ -206,6 +246,7 @@ export interface TeamDispatchRequestInput {
   worker_index?: number;
   pane_id?: string;
   trigger_message: string;
+  intent?: TeamReminderIntent;
   message_id?: string;
   inbox_correlation_key?: string;
   transport_preference?: TeamDispatchTransportPreference;
@@ -228,6 +269,7 @@ export interface TeamManifestV2 {
   governance: TeamGovernance;
   lifecycle_profile: 'default';
   permissions_snapshot: PermissionsSnapshot;
+  team_decomposition?: Record<string, unknown>;
   tmux_session: string;
   worker_count: number;
   workers: WorkerInfo[];
@@ -243,12 +285,18 @@ export interface TeamManifestV2 {
   resize_hook_target: string | null;
   /** Monotonic counter for worker index assignment during scaling. */
   next_worker_index?: number;
+  display_name?: string;
+  requested_name?: string;
+  identity_source?: string;
 }
 
 export interface TeamWorkspaceMetadata {
   leader_cwd?: string;
   team_state_root?: string;
   workspace_mode?: 'single' | 'worktree';
+  display_name?: string;
+  requested_name?: string;
+  identity_source?: string;
   worktree_mode?: WorktreeMode;
 }
 
@@ -260,6 +308,7 @@ export interface TeamEvent {
   task_id?: string;
   message_id?: string | null;
   reason?: string;
+  intent?: TeamReminderIntent;
   state?: WorkerStatus['state'];
   prev_state?: WorkerStatus['state'];
   worker_count?: number;
@@ -313,7 +362,7 @@ export type ClaimTaskResult =
 
 export type TransitionTaskResult =
   | { ok: true; task: TeamTaskV2 }
-  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' };
+  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' };
 
 export type ReleaseTaskClaimResult =
   | { ok: true; task: TeamTaskV2 }
@@ -521,17 +570,7 @@ function resolvePermissionsSnapshot(env: NodeJS.ProcessEnv): PermissionsSnapshot
 async function resolveLeaderSessionId(cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
   const fromEnv = readEnvValue(env, ['OMX_SESSION_ID', 'CODEX_SESSION_ID', 'SESSION_ID']);
   if (fromEnv) return fromEnv;
-
-  const sessionPath = join(omxStateDir(cwd), 'session.json');
-  try {
-    if (!existsSync(sessionPath)) return '';
-    const raw = await readFile(sessionPath, 'utf8');
-    const parsed = JSON.parse(raw) as { session_id?: unknown };
-    if (typeof parsed.session_id === 'string' && parsed.session_id.trim() !== '') return parsed.session_id.trim();
-  } catch {
-    // best effort
-  }
-  return '';
+  return (await readUsableSessionState(cwd))?.session_id ?? '';
 }
 
 function normalizeTask(task: TeamTask): TeamTaskV2 {
@@ -551,7 +590,14 @@ function resolveTeamStateRoot(cwd: string, env: NodeJS.ProcessEnv = process.env)
   return omxStateDir(cwd);
 }
 
+function assertSafeTeamName(teamName: string): void {
+  if (!TEAM_NAME_SAFE_PATTERN.test(teamName)) {
+    throw new Error(`invalid_team_name:${teamName}`);
+  }
+}
+
 function teamDir(teamName: string, cwd: string): string {
+  assertSafeTeamName(teamName);
   return join(resolveTeamStateRoot(cwd), 'team', teamName);
 }
 
@@ -773,6 +819,9 @@ export async function initTeamState(
     resize_hook_name: null,
     resize_hook_target: null,
     next_worker_index: workerCount + 1,
+    display_name: workspace.display_name,
+    requested_name: workspace.requested_name,
+    identity_source: workspace.identity_source,
   };
 
   await writeAtomic(join(root, 'config.json'), JSON.stringify(config, null, 2));
@@ -815,6 +864,9 @@ export async function initTeamState(
       resize_hook_name: null,
       resize_hook_target: null,
       next_worker_index: workerCount + 1,
+      display_name: workspace.display_name,
+      requested_name: workspace.requested_name,
+      identity_source: workspace.identity_source,
     },
     cwd
   );
@@ -846,6 +898,9 @@ async function writeConfig(cfg: TeamConfig, cwd: string): Promise<void> {
       resize_hook_name: normalized.resize_hook_name,
       resize_hook_target: normalized.resize_hook_target,
       next_worker_index: normalized.next_worker_index ?? existing.next_worker_index,
+      display_name: normalized.display_name ?? existing.display_name,
+      requested_name: normalized.requested_name ?? existing.requested_name,
+      identity_source: normalized.identity_source ?? existing.identity_source,
     };
     await writeTeamManifestV2(merged, cwd);
   }
@@ -878,6 +933,9 @@ function teamConfigFromManifest(manifest: TeamManifestV2): TeamConfig {
     resize_hook_name: manifest.resize_hook_name,
     resize_hook_target: manifest.resize_hook_target,
     next_worker_index: manifest.next_worker_index,
+    display_name: manifest.display_name,
+    requested_name: manifest.requested_name,
+    identity_source: manifest.identity_source,
   };
 }
 
@@ -928,6 +986,9 @@ function teamManifestFromConfig(config: TeamConfig): TeamManifestV2 {
     resize_hook_name: normalized.resize_hook_name,
     resize_hook_target: normalized.resize_hook_target,
     next_worker_index: normalized.next_worker_index,
+    display_name: normalized.display_name,
+    requested_name: normalized.requested_name,
+    identity_source: normalized.identity_source,
   };
 }
 
@@ -967,6 +1028,10 @@ export async function readTeamManifestV2(teamName: string, cwd: string): Promise
       policy?: Partial<TeamPolicy> & Partial<TeamGovernance>;
       governance?: Partial<TeamGovernance>;
     };
+    const legacyPolicy = parsedManifest.policy as (Partial<TeamPolicy> & Partial<TeamGovernance> & {
+      team_decomposition?: unknown;
+    }) | undefined;
+    const legacyTeamDecomposition = legacyPolicy?.team_decomposition;
     return {
       ...parsedManifest,
       policy: normalizeTeamPolicy(parsedManifest.policy, {
@@ -974,6 +1039,10 @@ export async function readTeamManifestV2(teamName: string, cwd: string): Promise
         worker_launch_mode: parsedManifest.policy?.worker_launch_mode === 'prompt' ? 'prompt' : 'interactive',
       }),
       governance: normalizeTeamGovernance(parsedManifest.governance, parsedManifest.policy),
+      team_decomposition: parsedManifest.team_decomposition
+        ?? (legacyTeamDecomposition && typeof legacyTeamDecomposition === 'object' && !Array.isArray(legacyTeamDecomposition)
+          ? legacyTeamDecomposition as Record<string, unknown>
+          : undefined),
       lifecycle_profile: 'default',
     };
   } catch {
@@ -1182,8 +1251,9 @@ export async function createTask(
     if (!cfg) throw new Error(`Team ${teamName} not found`);
 
     let nextNumeric = normalizeNextTaskId(cfg.next_task_id);
-    if (!hasValidNextTaskId(cfg.next_task_id)) {
-      nextNumeric = await computeNextTaskIdFromDisk(teamName, cwd);
+    const nextNumericFromDisk = await computeNextTaskIdFromDisk(teamName, cwd);
+    if (!hasValidNextTaskId(cfg.next_task_id) || nextNumericFromDisk > nextNumeric) {
+      nextNumeric = nextNumericFromDisk;
     }
     const nextId = String(nextNumeric);
 
@@ -1365,6 +1435,39 @@ export async function appendTeamEvent(teamName: string, event: Omit<TeamEvent, '
 }
 
 async function readMailbox(teamName: string, workerName: string, cwd: string): Promise<TeamMailbox> {
+  const legacyMailbox = await readLegacyMailbox(teamName, workerName, cwd);
+
+  if (isBridgeEnabled()) {
+    try {
+      const bridge = getDefaultBridge(resolveBridgeStateDir(cwd));
+      const compat = bridge.readCompatFile<{ records?: unknown[] }>('mailbox.json');
+      if (compat) {
+        const legacyById = new Map(
+          legacyMailbox.messages
+            .filter((message) => typeof message.message_id === 'string' && message.message_id !== '')
+            .map((message) => [message.message_id, message]),
+        );
+        const bridgeMessages = bridge.readMailboxRecords()
+          .filter((record) => record.to_worker === workerName)
+          .map((record) => {
+            const normalized = normalizeBridgeMailboxMessage(record);
+            if (!normalized.body) {
+              const legacyMessage = legacyById.get(normalized.message_id);
+              if (legacyMessage?.body) return { ...normalized, body: legacyMessage.body };
+            }
+            return normalized;
+          });
+        return { worker: workerName, messages: bridgeMessages };
+      }
+    } catch {
+      // fall through to legacy file fallback
+    }
+  }
+
+  return legacyMailbox;
+}
+
+async function readLegacyMailbox(teamName: string, workerName: string, cwd: string): Promise<TeamMailbox> {
   const p = mailboxPath(teamName, workerName, cwd);
   try {
     if (!existsSync(p)) return { worker: workerName, messages: [] };
@@ -1385,6 +1488,21 @@ async function writeMailbox(teamName: string, mailbox: TeamMailbox, cwd: string)
 }
 
 async function readDispatchRequests(teamName: string, cwd: string): Promise<TeamDispatchRequest[]> {
+  if (isBridgeEnabled()) {
+    try {
+      const bridge = getDefaultBridge(resolveBridgeStateDir(cwd));
+      const compat = bridge.readCompatFile<{ records?: unknown[] }>('dispatch.json');
+      if (compat) {
+        const nowIso = new Date().toISOString();
+        return bridge.readDispatchRecords()
+          .map((record) => normalizeBridgeDispatchRecord(teamName, record, nowIso))
+          .filter((record): record is TeamDispatchRequest => record !== null);
+      }
+    } catch {
+      // fall through to legacy file fallback
+    }
+  }
+
   const path = dispatchRequestsPath(teamName, cwd);
   try {
     if (!existsSync(path)) return [];
@@ -1402,7 +1520,53 @@ async function readDispatchRequests(teamName: string, cwd: string): Promise<Team
 
 async function writeDispatchRequests(teamName: string, requests: TeamDispatchRequest[], cwd: string): Promise<void> {
   await writeAtomic(dispatchRequestsPath(teamName, cwd), JSON.stringify(requests, null, 2));
+  await writeBridgeDispatchCompat(teamName, requests, cwd);
 }
+
+function serializeDispatchRequestToBridgeRecord(request: TeamDispatchRequest): DispatchRecord {
+  return {
+    request_id: request.request_id,
+    target: request.to_worker,
+    status: request.status,
+    created_at: request.created_at,
+    notified_at: request.notified_at ?? null,
+    delivered_at: request.delivered_at ?? null,
+    failed_at: request.failed_at ?? null,
+    reason: request.last_reason ?? null,
+    metadata: {
+      kind: request.kind,
+      team_name: request.team_name,
+      worker_index: request.worker_index,
+      pane_id: request.pane_id,
+      trigger_message: request.trigger_message,
+      intent: request.intent,
+      message_id: request.message_id,
+      inbox_correlation_key: request.inbox_correlation_key,
+      transport_preference: request.transport_preference,
+      fallback_allowed: request.fallback_allowed,
+      attempt_count: request.attempt_count,
+    },
+  };
+}
+
+async function writeBridgeDispatchCompat(teamName: string, requests: TeamDispatchRequest[], cwd: string): Promise<void> {
+  if (!isBridgeEnabled()) return;
+  const stateDir = resolveBridgeStateDir(cwd);
+  const path = join(stateDir, 'dispatch.json');
+  const existing = getDefaultBridge(stateDir).readCompatFile<{ records?: DispatchRecord[] }>('dispatch.json');
+  const otherRecords = Array.isArray(existing?.records)
+    ? existing.records.filter((record) => {
+      const metadata = record?.metadata && typeof record.metadata === 'object'
+        ? record.metadata as Record<string, unknown>
+        : {};
+      const metadataTeam = typeof metadata.team_name === 'string' ? metadata.team_name.trim() : '';
+      return metadataTeam !== teamName;
+    })
+    : [];
+  const records = [...otherRecords, ...requests.map(serializeDispatchRequestToBridgeRecord)];
+  await writeAtomic(path, JSON.stringify({ records }, null, 2));
+}
+
 
 export function resolveDispatchLockTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   return resolveDispatchLockTimeoutMsImpl(env);
@@ -1515,6 +1679,7 @@ export async function sendDirectMessage(
     cwd,
     withMailboxLock,
     readMailbox,
+    readLegacyMailbox,
     writeMailbox,
     appendTeamEvent,
     readTeamConfig,
@@ -1532,6 +1697,7 @@ export async function broadcastMessage(
     cwd,
     withMailboxLock,
     readMailbox,
+    readLegacyMailbox,
     writeMailbox,
     appendTeamEvent,
     readTeamConfig,
@@ -1549,6 +1715,7 @@ export async function markMessageDelivered(
     cwd,
     withMailboxLock,
     readMailbox,
+    readLegacyMailbox,
     writeMailbox,
     appendTeamEvent,
     readTeamConfig,
@@ -1566,6 +1733,7 @@ export async function markMessageNotified(
     cwd,
     withMailboxLock,
     readMailbox,
+    readLegacyMailbox,
     writeMailbox,
     appendTeamEvent,
     readTeamConfig,
@@ -1582,6 +1750,7 @@ export async function listMailboxMessages(
     cwd,
     withMailboxLock,
     readMailbox,
+    readLegacyMailbox,
     writeMailbox,
     appendTeamEvent,
     readTeamConfig,
@@ -1680,7 +1849,7 @@ export interface TeamWorkerIntegrationState {
   last_integrated_head?: string;
   last_leader_head?: string;
   last_rebased_leader_head?: string;
-  status?: 'idle' | 'integrated' | 'cherry_pick_conflict' | 'rebase_conflict';
+  status?: TeamWorkerIntegrationStatus;
   conflict_commit?: string;
   conflict_files?: string[];
   updated_at?: string;
@@ -1714,12 +1883,86 @@ export interface TeamPhaseState {
   updated_at: string;
 }
 
+export type TeamLeaderDecisionState = 'still_actionable' | 'done_waiting_on_leader' | 'stuck_waiting_on_leader';
+
+export interface TeamLeaderAttentionState {
+  team_name: string;
+  updated_at: string;
+  source: 'notify_hook' | 'native_stop' | 'native_session_end';
+  leader_decision_state: TeamLeaderDecisionState;
+  leader_attention_pending: boolean;
+  leader_attention_reason: string | null;
+  attention_reasons: string[];
+  leader_stale: boolean;
+  leader_session_active: boolean;
+  leader_session_id: string | null;
+  leader_session_stopped_at: string | null;
+  unread_leader_message_count: number;
+  work_remaining: boolean;
+  stalled_for_ms: number | null;
+}
+
 function teamPhasePath(teamName: string, cwd: string): string {
   return join(teamDir(teamName, cwd), 'phase.json');
 }
 
 function monitorSnapshotPath(teamName: string, cwd: string): string {
   return join(teamDir(teamName, cwd), 'monitor-snapshot.json');
+}
+
+function leaderAttentionPath(teamName: string, cwd: string): string {
+  return join(teamDir(teamName, cwd), 'leader-attention.json');
+}
+
+function normalizeTeamLeaderAttentionState(
+  teamName: string,
+  raw: unknown,
+): TeamLeaderAttentionState | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const parsed = raw as Record<string, unknown>;
+  const source = parsed.source === 'native_stop'
+    ? 'native_stop'
+    : parsed.source === 'native_session_end'
+      ? 'native_session_end'
+      : 'notify_hook';
+  const leaderDecisionState = parsed.leader_decision_state === 'done_waiting_on_leader'
+    || parsed.leader_decision_state === 'stuck_waiting_on_leader'
+    ? parsed.leader_decision_state
+    : 'still_actionable';
+  const attentionReasons = Array.isArray(parsed.attention_reasons)
+    ? parsed.attention_reasons.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    : [];
+  return {
+    team_name: typeof parsed.team_name === 'string' && parsed.team_name.trim() !== '' ? parsed.team_name : teamName,
+    updated_at: typeof parsed.updated_at === 'string' && parsed.updated_at.trim() !== '' ? parsed.updated_at : new Date().toISOString(),
+    source,
+    leader_decision_state: leaderDecisionState,
+    leader_attention_pending: parsed.leader_attention_pending === true,
+    leader_attention_reason:
+      typeof parsed.leader_attention_reason === 'string' && parsed.leader_attention_reason.trim() !== ''
+        ? parsed.leader_attention_reason
+        : null,
+    attention_reasons: attentionReasons,
+    leader_stale: parsed.leader_stale === true,
+    leader_session_active: parsed.leader_session_active !== false,
+    leader_session_id:
+      typeof parsed.leader_session_id === 'string' && parsed.leader_session_id.trim() !== ''
+        ? parsed.leader_session_id
+        : null,
+    leader_session_stopped_at:
+      typeof parsed.leader_session_stopped_at === 'string' && parsed.leader_session_stopped_at.trim() !== ''
+        ? parsed.leader_session_stopped_at
+        : null,
+    unread_leader_message_count:
+      typeof parsed.unread_leader_message_count === 'number' && Number.isFinite(parsed.unread_leader_message_count)
+        ? parsed.unread_leader_message_count
+        : 0,
+    work_remaining: parsed.work_remaining === true,
+    stalled_for_ms:
+      typeof parsed.stalled_for_ms === 'number' && Number.isFinite(parsed.stalled_for_ms)
+        ? parsed.stalled_for_ms
+        : null,
+  };
 }
 
 export async function readMonitorSnapshot(
@@ -1751,6 +1994,166 @@ export async function writeTeamPhase(
   cwd: string,
 ): Promise<void> {
   await writeTeamPhaseImpl(teamName, phaseState, cwd, teamPhasePath, writeAtomic);
+}
+
+export async function readTeamLeaderAttention(
+  teamName: string,
+  cwd: string,
+): Promise<TeamLeaderAttentionState | null> {
+  const path = leaderAttentionPath(teamName, cwd);
+  if (!existsSync(path)) return null;
+  try {
+    return normalizeTeamLeaderAttentionState(teamName, JSON.parse(await readFile(path, 'utf-8')));
+  } catch {
+    return null;
+  }
+}
+
+export async function writeTeamLeaderAttention(
+  teamName: string,
+  attentionState: TeamLeaderAttentionState,
+  cwd: string,
+): Promise<void> {
+  await writeAtomic(leaderAttentionPath(teamName, cwd), JSON.stringify({
+    ...attentionState,
+    team_name: teamName,
+  }, null, 2));
+}
+
+async function deriveLeaderStopAttentionState(
+  teamName: string,
+  cwd: string,
+  existing: TeamLeaderAttentionState | null,
+): Promise<Pick<
+  TeamLeaderAttentionState,
+  'leader_decision_state' | 'leader_attention_pending' | 'leader_attention_reason' | 'attention_reasons' | 'unread_leader_message_count' | 'work_remaining'
+>> {
+  const [config, tasks, snapshot, mailbox] = await Promise.all([
+    readTeamConfig(teamName, cwd),
+    listTasks(teamName, cwd).catch(() => [] as TeamTask[]),
+    readMonitorSnapshot(teamName, cwd),
+    listMailboxMessages(teamName, 'leader-fixed', cwd).catch(() => [] as TeamMailboxMessage[]),
+  ]);
+
+  const pendingCount = tasks.filter((task) => task.status === 'pending').length;
+  const blockedCount = tasks.filter((task) => task.status === 'blocked').length;
+  const inProgressCount = tasks.filter((task) => task.status === 'in_progress').length;
+  const workRemaining = pendingCount + blockedCount + inProgressCount > 0;
+
+  const workerNames = config?.workers.map((worker) => worker.name) ?? Object.keys(snapshot?.workerStateByName ?? {});
+  const workerStates = workerNames
+    .map((workerName) => snapshot?.workerStateByName?.[workerName] ?? '')
+    .filter((state) => typeof state === 'string' && state.trim() !== '');
+  const allWorkersIdle =
+    workerStates.length > 0
+    && workerStates.every((state) => state === 'idle' || state === 'done');
+
+  const leaderDecisionState: TeamLeaderDecisionState =
+    pendingCount === 0 && blockedCount === 0 && inProgressCount === 0 && allWorkersIdle
+      ? 'done_waiting_on_leader'
+      : blockedCount > 0 && pendingCount === 0 && inProgressCount === 0 && allWorkersIdle
+        ? 'stuck_waiting_on_leader'
+        : existing?.leader_decision_state ?? 'still_actionable';
+
+  const unreadLeaderMessageCount = mailbox.filter((message) => {
+    const deliveredAt = typeof message.delivered_at === 'string' ? message.delivered_at.trim() : '';
+    return deliveredAt.length === 0;
+  }).length;
+  const attentionReasons = new Set(existing?.attention_reasons ?? []);
+  const leaderAttentionPending =
+    leaderDecisionState !== 'still_actionable'
+    || unreadLeaderMessageCount > 0
+    || existing?.leader_attention_pending === true;
+  if (leaderAttentionPending) {
+    attentionReasons.add('leader_session_stopped');
+  }
+
+  return {
+    leader_decision_state: leaderDecisionState,
+    leader_attention_pending: leaderAttentionPending,
+    leader_attention_reason: leaderAttentionPending ? (existing?.leader_attention_reason ?? 'leader_session_stopped') : null,
+    attention_reasons: [...attentionReasons],
+    unread_leader_message_count: unreadLeaderMessageCount,
+    work_remaining: workRemaining,
+  };
+}
+
+export async function markTeamLeaderSessionStopped(
+  teamName: string,
+  cwd: string,
+  leaderSessionId: string,
+  nowIso: string = new Date().toISOString(),
+): Promise<TeamLeaderAttentionState> {
+  return await markTeamLeaderStopObserved(teamName, cwd, leaderSessionId, nowIso, 'native_session_end');
+}
+
+export async function markTeamLeaderStopObserved(
+  teamName: string,
+  cwd: string,
+  leaderSessionId: string,
+  nowIso: string = new Date().toISOString(),
+  source: TeamLeaderAttentionState['source'] = 'native_stop',
+): Promise<TeamLeaderAttentionState> {
+  const existing = await readTeamLeaderAttention(teamName, cwd);
+  const derived = await deriveLeaderStopAttentionState(teamName, cwd, existing);
+  const nextSource =
+    existing?.source === 'native_stop' && source === 'native_session_end'
+      ? 'native_stop'
+      : source;
+  const next: TeamLeaderAttentionState = {
+    team_name: teamName,
+    updated_at: nowIso,
+    source: nextSource,
+    leader_decision_state: derived.leader_decision_state,
+    leader_attention_pending: derived.leader_attention_pending,
+    leader_attention_reason: derived.leader_attention_reason,
+    attention_reasons: derived.attention_reasons,
+    leader_stale: existing?.leader_stale ?? false,
+    leader_session_active: false,
+    leader_session_id: leaderSessionId || existing?.leader_session_id || null,
+    leader_session_stopped_at: nowIso,
+    unread_leader_message_count: derived.unread_leader_message_count,
+    work_remaining: derived.work_remaining,
+    stalled_for_ms: existing?.stalled_for_ms ?? null,
+  };
+  await writeTeamLeaderAttention(teamName, next, cwd);
+  return next;
+}
+
+export async function markOwnedTeamsLeaderSessionStopped(
+  cwd: string,
+  leaderSessionId: string,
+  nowIso: string = new Date().toISOString(),
+): Promise<string[]> {
+  return await markOwnedTeamsLeaderStopObserved(cwd, leaderSessionId, nowIso, 'native_session_end');
+}
+
+export async function markOwnedTeamsLeaderStopObserved(
+  cwd: string,
+  leaderSessionId: string,
+  nowIso: string = new Date().toISOString(),
+  source: TeamLeaderAttentionState['source'] = 'native_stop',
+): Promise<string[]> {
+  if (!leaderSessionId.trim()) return [];
+  const teamsRoot = join(omxStateDir(cwd), 'team');
+  if (!existsSync(teamsRoot)) return [];
+  const entries = await readdir(teamsRoot, { withFileTypes: true }).catch(() => []);
+  const updatedTeams: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const teamName = entry.name.trim();
+    if (!teamName) continue;
+    const [manifest, phase] = await Promise.all([
+      readTeamManifestV2(teamName, cwd),
+      readTeamPhase(teamName, cwd),
+    ]);
+    if (!manifest) continue;
+    if ((manifest.leader?.session_id ?? '').trim() !== leaderSessionId.trim()) continue;
+    if (phase && isTerminalPhase(phase.current_phase)) continue;
+    await markTeamLeaderStopObserved(teamName, cwd, leaderSessionId, nowIso, source);
+    updatedTeams.push(teamName);
+  }
+  return updatedTeams;
 }
 
 // === Config persistence (public wrapper) ===

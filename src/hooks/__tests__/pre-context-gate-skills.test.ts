@@ -34,6 +34,7 @@ describe('pre-context gate guidance in planning/execution-heavy skills', () => {
     assert.match(teamSkill, /Pre-context Intake Gate/i);
     assert.match(teamSkill, /\.omx\/context\/\{slug\}-\{timestamp\}\.md/);
     assert.match(teamSkill, /\$deep-interview\s+--quick/i);
+    assert.match(teamSkill, /initialize\/sync it from canonical team runtime state before proceeding/i);
   });
 
   it('autopilot documents required pre-context intake before expansion', () => {
@@ -47,5 +48,11 @@ describe('pre-context gate guidance in planning/execution-heavy skills', () => {
     assert.match(ralphSkill, /Pre-context intake/i);
     assert.match(ralphSkill, /\.omx\/context\/\{task-slug\}-\{timestamp\}\.md/);
     assert.match(ralphSkill, /\$deep-interview\s+--quick/i);
+  });
+
+  it('ralph documents state CLI retry guidance when the MCP channel is unavailable', () => {
+    assert.match(ralphSkill, /do \*\*not\*\* retry the same MCP call/i);
+    assert.match(ralphSkill, /omx state write --input '<json>' --json/i);
+    assert.match(ralphSkill, /preserving `workingDirectory` and `session_id`/i);
   });
 });

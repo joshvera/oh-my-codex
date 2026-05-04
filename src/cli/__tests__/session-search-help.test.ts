@@ -24,7 +24,7 @@ describe('omx session help', () => {
       const mainHelp = runOmx(cwd, ['--help']);
       assert.equal(mainHelp.status, 0, mainHelp.stderr || mainHelp.stdout);
       assert.match(mainHelp.stdout, /omx resume\s+Resume a previous interactive Codex session/i);
-      assert.match(mainHelp.stdout, /omx autoresearch\s+Launch thin-supervisor autoresearch with keep\/discard\/reset parity/i);
+      assert.match(mainHelp.stdout, /omx autoresearch\s+\[DEPRECATED\] Use \$autoresearch; direct CLI launch removed/i);
       assert.match(mainHelp.stdout, /omx session\s+Search prior local session transcripts/i);
 
       const sessionHelp = runOmx(cwd, ['session', '--help']);

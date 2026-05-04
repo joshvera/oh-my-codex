@@ -86,8 +86,12 @@ fn run() -> Result<(), String> {
             }
 
             if state_dir.is_some() {
-                let _ = engine.persist();
-                let _ = engine.write_compatibility_view();
+                engine
+                    .persist()
+                    .map_err(|e| format!("persist failed: {e}"))?;
+                engine
+                    .write_compatibility_view()
+                    .map_err(|e| format!("compatibility view failed: {e}"))?;
             }
 
             println!(

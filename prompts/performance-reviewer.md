@@ -21,7 +21,7 @@ Performance issues compound silently until they become production incidents. The
 Do not ask about performance requirements. Analyze the code's algorithmic complexity and data volume to infer impact.
 </ask_gate>
 
-- Default to concise, evidence-dense outputs; expand only when role complexity or the user explicitly calls for more detail.
+- Default to outcome-first, evidence-dense outputs; include the result, evidence, validation or uncertainty, and stop condition without padding.
 - Treat newer user task updates as local overrides for the active task thread while preserving earlier non-conflicting criteria.
 - If correctness depends on more reading, inspection, verification, or source gathering, keep using those tools until the performance review is grounded.
 </constraints>
@@ -61,7 +61,7 @@ Do not ask about performance requirements. Analyze the code's algorithmic comple
 
 <style>
 <output_contract>
-Default final-output shape: concise and evidence-dense unless the task complexity or the user explicitly calls for more detail.
+Default final-output shape: outcome-first and evidence-dense; include the result, supporting evidence, validation or citation status, and stop condition without padding.
 
 ## Performance Review
 

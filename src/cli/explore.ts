@@ -1,6 +1,6 @@
 import { readFile } from 'fs/promises';
 import { isAbsolute, join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { getPackageRoot } from '../utils/package.js';
 import { spawnPlatformCommandSync } from '../utils/platform-command.js';
 import {
@@ -8,7 +8,15 @@ import {
   resolveSparkShellBinaryPathWithHydration,
   runSparkShellBinary,
 } from './sparkshell.js';
-import { getMainDefaultModel, getSparkDefaultModel } from '../config/models.js';
+import {
+  DEFAULT_SPARK_MODEL,
+  DEFAULT_STANDARD_MODEL,
+  getEnvConfiguredSparkDefaultModel,
+  getEnvConfiguredStandardDefaultModel,
+  getSparkDefaultModel,
+  getStandardDefaultModel,
+  readConfiguredEnvOverrides,
+} from '../config/models.js';
 import {
   EXPLORE_BIN_ENV as EXPLORE_BIN_ENV_SHARED,
   hydrateNativeBinary,
@@ -16,6 +24,8 @@ import {
   resolveCachedNativeBinaryCandidatePaths,
   getPackageVersion,
 } from './native-assets.js';
+import { getWikiDir, queryWiki } from '../wiki/index.js';
+import { resolveCodexHomeForLaunch } from './codex-home.js';
 
 export const EXPLORE_USAGE = [
   'Usage: omx explore --prompt "<prompt>"',
@@ -26,6 +36,9 @@ const PROMPT_FLAG = '--prompt';
 const PROMPT_FILE_FLAG = '--prompt-file';
 export const EXPLORE_BIN_ENV = EXPLORE_BIN_ENV_SHARED;
 const EXPLORE_SPARK_MODEL_ENV = 'OMX_EXPLORE_SPARK_MODEL';
+const EXPLORE_INSTRUCTIONS_FILE_ENV = 'OMX_EXPLORE_MODEL_INSTRUCTIONS_FILE';
+const WINDOWS_BUILTIN_EXPLORE_HARNESS_REASON =
+  'the built-in explore harness is not ready on Windows because its allowlist runtime relies on POSIX sh/bash wrappers. Set OMX_EXPLORE_BIN to a compatible custom harness, prefer `omx sparkshell` for shell-native read-only lookups, or run `omx doctor` for readiness details.';
 
 export interface ParsedExploreArgs {
   prompt?: string;
@@ -44,6 +57,23 @@ interface ExploreHarnessMetadata {
   arch?: string;
 }
 
+export function getBuiltinExploreHarnessUnsupportedReason(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (platform !== 'win32') return undefined;
+  if (env[EXPLORE_BIN_ENV]?.trim()) return undefined;
+  return WINDOWS_BUILTIN_EXPLORE_HARNESS_REASON;
+}
+
+export function assertBuiltinExploreHarnessSupported(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const reason = getBuiltinExploreHarnessUnsupportedReason(platform, env);
+  if (reason) throw new Error(`[explore] ${reason}`);
+}
+
 
 const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   'log',
@@ -60,6 +90,53 @@ const EXPLICIT_SHELL_PREFIX_PATTERN = /^run\s+/i;
 export interface ExploreSparkShellRoute {
   argv: string[];
   reason: 'shell-native' | 'long-output';
+}
+
+const MAX_WIKI_CONTEXT_RESULTS = 5;
+const WEAK_WIKI_NOTE =
+  'Wiki evidence is weak or missing. Fall back to broader repository search and recommend that the user build an initial project wiki under .omx/wiki/ if this repo benefits from persistent project knowledge.';
+
+function formatWikiContextBlock(prompt: string, cwd: string): string | null {
+  const wikiDir = getWikiDir(cwd);
+  if (!existsSync(wikiDir)) {
+    return [
+      '[OMX Wiki Status]',
+      WEAK_WIKI_NOTE,
+      '',
+      '[Original Explore Prompt]',
+      prompt,
+    ].join('\n');
+  }
+  const matches = queryWiki(cwd, prompt, { limit: MAX_WIKI_CONTEXT_RESULTS, logQuery: false });
+  if (matches.length === 0) {
+    return [
+      '[OMX Wiki Status]',
+      `${WEAK_WIKI_NOTE} Existing wiki pages did not match this prompt strongly enough.`,
+      '',
+      '[Original Explore Prompt]',
+      prompt,
+    ].join('\n');
+  }
+
+  const lines = [
+    '[OMX Wiki Context]',
+    'Use these wiki matches first before falling back to broader repository search.',
+    'If repository inspection contradicts wiki claims, prefer repository-backed facts in the final answer and add a short wiki mismatch warning.',
+    'If any factual disagreement is detected, include a `## Wiki mismatch` section explaining the disagreement and the safer repo-backed conclusion.',
+    ...matches.flatMap((match, index) => [
+      `${index + 1}. ${match.page.frontmatter.title} (${match.page.filename})`,
+      `   tags: ${match.page.frontmatter.tags.join(', ') || 'none'} | category: ${match.page.frontmatter.category} | score: ${match.score}`,
+      `   snippet: ${match.snippet}`,
+    ]),
+    '',
+    `[Original Explore Prompt]\n${prompt}`,
+  ];
+  return lines.join('\n');
+}
+
+export function buildExplorePromptWithWikiContext(prompt: string, cwd: string): string {
+  const wikiContext = formatWikiContextBlock(prompt, cwd);
+  return wikiContext ?? prompt;
 }
 
 function tokenizeExploreShellCommand(commandText: string): string[] | undefined {
@@ -186,13 +263,17 @@ export function repoBuiltExploreHarnessCommand(
   platform: NodeJS.Platform = process.platform,
 ): ExploreHarnessCommand | undefined {
   const binaryName = packagedExploreHarnessBinaryName(platform);
-  for (const mode of ['release', 'debug'] as const) {
-    const binaryPath = join(packageRoot, 'target', mode, binaryName);
-    if (existsSync(binaryPath)) {
-      return { command: binaryPath, args: [] };
-    }
-  }
-  return undefined;
+  const candidates = (['release', 'debug'] as const)
+    .map((mode) => join(packageRoot, 'target', mode, binaryName))
+    .filter((binaryPath) => existsSync(binaryPath))
+    .map((binaryPath) => ({
+      binaryPath,
+      mtimeMs: statSync(binaryPath).mtimeMs,
+    }))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  const selected = candidates[0];
+  return selected ? { command: selected.binaryPath, args: [] } : undefined;
 }
 
 function exploreUsageError(reason: string): Error {
@@ -332,14 +413,39 @@ export function buildExploreHarnessArgs(
   env: NodeJS.ProcessEnv = process.env,
   packageRoot = getPackageRoot(),
 ): string[] {
-  const sparkModel = env[EXPLORE_SPARK_MODEL_ENV]?.trim() || getSparkDefaultModel();
+  const configuredEnvOverrides = readConfiguredEnvOverrides(env.CODEX_HOME);
+  const mergedEnv = {
+    ...configuredEnvOverrides,
+    ...env,
+  };
+  const sparkModel = mergedEnv[EXPLORE_SPARK_MODEL_ENV]?.trim()
+    || getEnvConfiguredSparkDefaultModel(mergedEnv, mergedEnv.CODEX_HOME)
+    || getSparkDefaultModel(mergedEnv.CODEX_HOME)
+    || DEFAULT_SPARK_MODEL;
+  const instructionsFile = mergedEnv[EXPLORE_INSTRUCTIONS_FILE_ENV]?.trim()
+    || join(packageRoot, 'templates', 'model-instructions', 'explore-lightweight-AGENTS.md');
+  const fallbackModel = getEnvConfiguredStandardDefaultModel(mergedEnv, mergedEnv.CODEX_HOME)
+    || getStandardDefaultModel(mergedEnv.CODEX_HOME)
+    || DEFAULT_STANDARD_MODEL;
+  const promptWithWikiContext = buildExplorePromptWithWikiContext(prompt, cwd);
   return [
     '--cwd', cwd,
-    '--prompt', prompt,
+    '--prompt', promptWithWikiContext,
     '--prompt-file', join(packageRoot, 'prompts', 'explore-harness.md'),
+    '--instructions-file', instructionsFile,
     '--model-spark', sparkModel,
-    '--model-fallback', getMainDefaultModel(),
+    '--model-fallback', fallbackModel,
   ];
+}
+
+export function resolveExploreEnv(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const codexHomeOverride = resolveCodexHomeForLaunch(cwd, env);
+  return codexHomeOverride
+    ? { ...env, CODEX_HOME: codexHomeOverride }
+    : env;
 }
 
 export async function loadExplorePrompt(parsed: ParsedExploreArgs): Promise<string> {
@@ -354,10 +460,12 @@ export async function loadExplorePrompt(parsed: ParsedExploreArgs): Promise<stri
 export async function exploreCommand(args: string[]): Promise<void> {
   const parsed = parseExploreArgs(args);
   const prompt = await loadExplorePrompt(parsed);
+  const cwd = process.cwd();
+  const exploreEnv = resolveExploreEnv(cwd, process.env);
   const sparkShellRoute = resolveExploreSparkShellRoute(prompt);
   if (sparkShellRoute) {
     try {
-      await runExploreViaSparkShell(sparkShellRoute, process.env);
+      await runExploreViaSparkShell(sparkShellRoute, exploreEnv);
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -366,12 +474,13 @@ export async function exploreCommand(args: string[]): Promise<void> {
   }
 
   const packageRoot = getPackageRoot();
-  const harness = await resolveExploreHarnessCommandWithHydration(packageRoot, process.env);
-  const harnessArgs = [...harness.args, ...buildExploreHarnessArgs(prompt, process.cwd(), process.env, packageRoot)];
+  assertBuiltinExploreHarnessSupported(process.platform, exploreEnv);
+  const harness = await resolveExploreHarnessCommandWithHydration(packageRoot, exploreEnv);
+  const harnessArgs = [...harness.args, ...buildExploreHarnessArgs(prompt, cwd, exploreEnv, packageRoot)];
 
   const { result } = spawnPlatformCommandSync(harness.command, harnessArgs, {
-    cwd: process.cwd(),
-    env: process.env,
+    cwd,
+    env: exploreEnv,
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -388,6 +497,12 @@ export async function exploreCommand(args: string[]): Promise<void> {
   }
 
   if (result.status !== 0) {
+    if (harness.command === 'cargo' && result.stderr?.includes('rustup could not choose')) {
+      throw new Error(
+        '[explore] cargo is a rustup shim but no default toolchain is configured. ' +
+        'Run `rustup default stable`, set OMX_EXPLORE_BIN to a prebuilt binary, or run `omx doctor` for guidance.',
+      );
+    }
     process.exitCode = result.status ?? 1;
   }
 }

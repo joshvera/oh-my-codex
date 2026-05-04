@@ -5,24 +5,38 @@
 
 import { execFileSync, spawn } from "child_process";
 import { basename, dirname, join } from "path";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { copyFile, cp, lstat, mkdir, readdir, rm, symlink } from "fs/promises";
 import { constants as osConstants } from "os";
-import { setup, SETUP_SCOPES, type SetupScope } from "./setup.js";
+import { setup, SETUP_SCOPES, type SetupInstallMode, type SetupScope } from "./setup.js";
 import { uninstall } from "./uninstall.js";
 import { version } from "./version.js";
 import { tmuxHookCommand } from "./tmux-hook.js";
 import { hooksCommand } from "./hooks.js";
 import { hudCommand } from "../hud/index.js";
+import { sidecarCommand } from "../sidecar/index.js";
 import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
 import { askCommand } from "./ask.js";
-import { cleanupCommand } from "./cleanup.js";
+import { questionCommand } from "./question.js";
+import { stateCommand } from "./state.js";
+import {
+  cleanupCommand,
+  cleanupOmxMcpProcesses,
+  findLaunchSafeCleanupCandidates,
+  type CleanupDependencies,
+  type CleanupResult,
+} from "./cleanup.js";
 import { exploreCommand } from "./explore.js";
 import { sparkshellCommand } from "./sparkshell.js";
 import { agentsInitCommand } from "./agents-init.js";
 import { agentsCommand } from "./agents.js";
 import { sessionCommand } from "./session-search.js";
 import { autoresearchCommand } from "./autoresearch.js";
+import { mcpParityCommand } from "./mcp-parity.js";
+import { mcpServeCommand } from "./mcp-serve.js";
+import { adaptCommand } from "./adapt.js";
+import { listCommand } from "./list.js";
 import {
   MADMAX_FLAG,
   CODEX_BYPASS_FLAG,
@@ -38,7 +52,22 @@ import {
   getStateDir,
   listModeStateFilesWithScopePreference,
 } from "../mcp/state-paths.js";
-import { maybeCheckAndPromptUpdate } from "./update.js";
+import {
+  resolveCodexConfigPathForLaunch,
+  resolveCodexHomeForLaunch,
+  resolveProjectLocalCodexHomeForLaunch,
+} from "./codex-home.js";
+
+export {
+  readPersistedSetupPreferences,
+  readPersistedSetupScope,
+  resolveCodexConfigPathForLaunch,
+  resolveCodexHomeForLaunch,
+  resolveProjectLocalCodexHomeForLaunch,
+} from "./codex-home.js";
+import { SKILL_ACTIVE_STATE_MODE, syncCanonicalSkillStateForMode } from "../state/skill-active.js";
+import { isTrackedWorkflowMode } from "../state/workflow-transition.js";
+import { maybeCheckAndPromptUpdate, runImmediateUpdate } from "./update.js";
 import { maybePromptGithubStar } from "./star-prompt.js";
 import {
   generateOverlay,
@@ -64,15 +93,28 @@ import {
   buildUnregisterClientAttachedReconcileArgs,
   buildUnregisterResizeHookArgs,
   enableMouseScrolling,
+  isMsysOrGitBash,
   isNativeWindows,
   isTmuxAvailable,
+  mitigateCopyModeUnderlineArtifacts,
 } from "../team/tmux-session.js";
 import { getPackageRoot } from "../utils/package.js";
-import { codexConfigPath } from "../utils/paths.js";
-import { repairConfigIfNeeded } from "../config/generator.js";
+import { codexConfigPath, rememberOmxLaunchContext, resolveOmxEntryPath } from "../utils/paths.js";
+import { cleanCodexModelAvailabilityNuxIfNeeded, repairConfigIfNeeded } from "../config/generator.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
 import {
+  createHudWatchPane as createSharedHudWatchPane,
+  killTmuxPane as killSharedTmuxPane,
+  listCurrentWindowHudPaneIds,
+  parsePaneIdFromTmuxOutput,
+} from "../hud/tmux.js";
+
+export { parseTmuxPaneSnapshot, isHudWatchPane, findHudWatchPaneIds } from "../hud/tmux.js";
+
+rememberOmxLaunchContext();
+import {
   classifySpawnError,
+  resolveTmuxBinaryForPlatform,
   spawnPlatformCommandSync,
 } from "../utils/platform-command.js";
 import {
@@ -91,6 +133,7 @@ import {
   planWorktreeTarget,
   ensureWorktree,
 } from "../team/worktree.js";
+import { ensureReusableNodeModules } from "../utils/repo-deps.js";
 import {
   OMX_NOTIFY_TEMP_CONTRACT_ENV,
   parseNotifyTempContractFromArgs,
@@ -98,31 +141,43 @@ import {
   type NotifyTempContract,
   type ParseNotifyTempContractResult,
 } from "../notifications/temp-contract.js";
+import { execInjectCommand } from "../exec/followup.js";
 
 export function resolveNotifyFallbackWatcherScript(pkgRoot = getPackageRoot()): string {
-  return join(pkgRoot, "dist", "scripts", "notify-fallback-watcher.js");
+  return resolveDistScript(pkgRoot, "notify-fallback-watcher.js");
 }
 
 export function resolveHookDerivedWatcherScript(pkgRoot = getPackageRoot()): string {
-  return join(pkgRoot, "dist", "scripts", "hook-derived-watcher.js");
+  return resolveDistScript(pkgRoot, "hook-derived-watcher.js");
 }
 
 export function resolveNotifyHookScript(pkgRoot = getPackageRoot()): string {
-  return join(pkgRoot, "dist", "scripts", "notify-hook.js");
+  return resolveDistScript(pkgRoot, "notify-hook.js");
 }
 
-const HELP = `
+function resolveDistScript(pkgRoot: string, scriptName: string): string {
+  return join(pkgRoot, "dist", "scripts", scriptName);
+}
+
+export const HELP = `
 oh-my-codex (omx) - Multi-agent orchestration for Codex CLI
 
 Usage:
-  omx           Launch Codex CLI (HUD auto-attaches only when already inside tmux)
+  omx           Launch Codex CLI (detached tmux by default on supported interactive terminals)
   omx exec      Run codex exec non-interactively with OMX AGENTS/overlay injection
+  omx exec inject <session-id> --prompt <text>
+                Queue audited follow-up instructions for a running non-interactive exec job
   omx setup     Install skills, prompts, MCP servers, and scope-specific AGENTS.md
+                (user scope prompts for legacy vs plugin skill delivery when needed)
+  omx update    Check npm now, update the global install immediately, then refresh setup
   omx uninstall Remove OMX configuration and clean up installed artifacts
   omx doctor    Check installation health
+  omx list      List packaged OMX skills and native agent prompts (--json)
   omx cleanup   Kill orphaned OMX MCP server processes and remove stale OMX /tmp directories
   omx doctor --team  Check team/swarm runtime health diagnostics
   omx ask       Ask local provider CLI (claude|gemini) and write artifact output
+  omx question  OMX-owned blocking question UI entrypoint for agent-invoked user questions
+  omx adapt     Scaffold OMX-owned adapter foundations for persistent external targets
   omx resume    Resume a previous interactive Codex session
   omx explore   Default read-only exploration entrypoint (may adaptively use sparkshell backend)
   omx session   Search prior local session transcripts and history artifacts
@@ -133,11 +188,21 @@ Usage:
                 Alias for agents-init (lightweight AGENTS bootstrap only)
   omx team      Spawn parallel worker panes in tmux and bootstrap inbox/task state
   omx ralph     Launch Codex with ralph persistence mode active
-  omx autoresearch Launch thin-supervisor autoresearch with keep/discard/reset parity
+  omx autoresearch [DEPRECATED] Use $autoresearch; direct CLI launch removed
   omx version   Show version information
   omx tmux-hook Manage tmux prompt injection workaround (init|status|validate|test)
   omx hooks     Manage hook plugins (init|status|validate|test)
   omx hud       Show HUD statusline (--watch, --json, --preset=NAME)
+  omx sidecar   Show read-only team/multi-agent visualization (--watch, --json, --tmux)
+  omx state     Read/write/list OMX mode state via CLI parity surface
+  omx notepad   CLI parity for OMX notepad MCP tools
+  omx project-memory
+                CLI parity for OMX project-memory MCP tools
+  omx trace     CLI parity for OMX trace MCP tools
+  omx code-intel
+                CLI parity for OMX code-intel MCP tools
+  omx wiki      CLI parity for OMX wiki MCP tools
+  omx mcp-serve Launch an OMX stdio MCP server target (plugin/runtime use)
   omx sparkshell <command> [args...]
   omx sparkshell --tmux-pane <pane-id> [--tail-lines <100-1000>]
                 Run native sparkshell sidecar for direct command execution or explicit tmux-pane summarization
@@ -160,6 +225,8 @@ Options:
   --madmax-spark  spark model for workers + bypass approvals for leader and workers
                 (shorthand for: --spark --madmax)
   --notify-temp  Enable temporary notification routing for this run/session only
+  --direct       Launch the interactive leader directly without OMX tmux/HUD management
+  --tmux         Launch the interactive leader session in detached tmux
   --discord      Select Discord provider for temporary notification mode
   --slack        Select Slack provider for temporary notification mode
   --telegram     Select Telegram provider for temporary notification mode
@@ -168,15 +235,32 @@ Options:
   -w, --worktree[=<name>]
                 Launch Codex in a git worktree (detached when no name is given)
   --force       Force reinstall (overwrite existing files)
+  --merge-agents
+                Merge OMX-managed AGENTS.md sections into an existing AGENTS.md
+                instead of overwriting user-authored content
   --dry-run     Show what would be done without doing it
+  --plugin      Use Codex plugin delivery for omx setup and remove legacy OMX-managed user/project components
+  --legacy      Use legacy setup delivery for omx setup, overriding persisted plugin mode
+  --install-mode <legacy|plugin>
+                Explicit setup install mode (canonical form; --legacy/--plugin are aliases)
   --keep-config Skip config.toml cleanup during uninstall
   --purge       Remove .omx/ cache directory during uninstall
   --verbose     Show detailed output
   --scope       Setup scope for "omx setup" only:
                 user | project
-  --skill-target
-                User-scope skills target for "omx setup" only:
-                codex-home
+
+Launch policy:
+  OMX_LAUNCH_POLICY=direct|tmux|detached-tmux|auto
+                Choose the default leader launch policy when no CLI policy flag is present
+  unset OMX_LAUNCH_POLICY
+                Return to the auto/default policy (detached tmux on supported interactive terminals)
+  omx --direct --yolo
+                Run this launch without OMX tmux/HUD management
+  OMX_LAUNCH_POLICY=direct omx --yolo
+                Use direct launch from the environment
+  OMX_LAUNCH_POLICY=direct omx --tmux --yolo
+                CLI policy flags override the environment for one launch
+  Config files are intentionally not used for launch policy in this release.
 `;
 
 const REASONING_KEY = "model_reasoning_effort";
@@ -185,6 +269,7 @@ const TEAM_WORKER_LAUNCH_ARGS_ENV = "OMX_TEAM_WORKER_LAUNCH_ARGS";
 const TEAM_INHERIT_LEADER_FLAGS_ENV = "OMX_TEAM_INHERIT_LEADER_FLAGS";
 const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = "OMX_BYPASS_DEFAULT_SYSTEM_PROMPT";
 const OMX_MODEL_INSTRUCTIONS_FILE_ENV = "OMX_MODEL_INSTRUCTIONS_FILE";
+const OMX_INSTANCE_OPTION = "@omx_instance_id";
 const OMX_RALPH_APPEND_INSTRUCTIONS_FILE_ENV =
   "OMX_RALPH_APPEND_INSTRUCTIONS_FILE";
 const OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE_ENV =
@@ -195,11 +280,19 @@ const REASONING_MODE_SET = new Set<string>(REASONING_MODES);
 const REASONING_USAGE = "Usage: omx reasoning <low|medium|high|xhigh>";
 const WINDOWS_DETACHED_BOOTSTRAP_DELAY_MS = 2500;
 const CODEX_VERSION_FLAGS = new Set(["--version", "-V"]);
+const TMUX_EXTENDED_KEYS_MODE = "always";
+const TMUX_EXTENDED_KEYS_FALLBACK_MODE = "off";
+const TMUX_EXTENDED_KEYS_LEASE_DIR = "tmux-extended-keys";
+const TMUX_EXTENDED_KEYS_LOCK_RETRY_MS = 20;
+const TMUX_EXTENDED_KEYS_LOCK_MAX_ATTEMPTS = 100;
+const TMUX_EXTENDED_KEYS_LOCK_STALE_MS = 30_000;
 
 type CliCommand =
   | "launch"
   | "exec"
   | "setup"
+  | "update"
+  | "list"
   | "agents"
   | "agents-init"
   | "deepinit"
@@ -207,6 +300,8 @@ type CliCommand =
   | "doctor"
   | "cleanup"
   | "ask"
+  | "question"
+  | "adapt"
   | "explore"
   | "sparkshell"
   | "team"
@@ -216,6 +311,10 @@ type CliCommand =
   | "tmux-hook"
   | "hooks"
   | "hud"
+  | "sidecar"
+  | "state"
+  | "wiki"
+  | "mcp-serve"
   | "status"
   | "cancel"
   | "help"
@@ -224,14 +323,21 @@ type CliCommand =
 
 const NESTED_HELP_COMMANDS = new Set<CliCommand>([
   "ask",
+  "question",
   "cleanup",
+  "adapt",
   "autoresearch",
   "agents",
   "agents-init",
   "deepinit",
   "exec",
   "hooks",
+  "list",
   "hud",
+  "sidecar",
+  "state",
+  "wiki",
+  "mcp-serve",
   "ralph",
   "resume",
   "session",
@@ -245,54 +351,55 @@ export interface ResolvedCliInvocation {
   launchArgs: string[];
 }
 
-/**
- * Legacy scope values that may appear in persisted setup-scope.json files.
- * Both 'project-local' (renamed) and old 'project' (minimal, removed) are
- * migrated to the current 'project' scope on read.
- */
-const LEGACY_SCOPE_MIGRATION_SYNC: Record<string, SetupScope> = {
-  "project-local": "project",
-};
-
-export function readPersistedSetupScope(cwd: string): SetupScope | undefined {
-  return readPersistedSetupPreferences(cwd)?.scope;
-}
-
-export function readPersistedSetupPreferences(
-  cwd: string,
-): Partial<{ scope: SetupScope }> | undefined {
-  const scopePath = join(cwd, ".omx", "setup-scope.json");
-  if (!existsSync(scopePath)) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(scopePath, "utf-8")) as Partial<{
-      scope: string;
-    }>;
-    const persisted: Partial<{ scope: SetupScope }> = {};
-    if (typeof parsed.scope === "string") {
-      if (SETUP_SCOPES.includes(parsed.scope as SetupScope)) {
-        persisted.scope = parsed.scope as SetupScope;
-      }
-      const migrated = LEGACY_SCOPE_MIGRATION_SYNC[parsed.scope];
-      if (migrated) persisted.scope = migrated;
+export function resolveSetupInstallModeArg(args: string[]): SetupInstallMode | undefined {
+  let value: SetupInstallMode | undefined;
+  const setValue = (next: SetupInstallMode, source: string): void => {
+    if (value && value !== next) {
+      throw new Error(
+        `Conflicting setup install mode flags: ${source} selects ${next}, but another flag already selected ${value}`,
+      );
     }
-    return Object.keys(persisted).length > 0 ? persisted : undefined;
-  } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
-    // Ignore malformed persisted scope and use defaults.
-  }
-  return undefined;
-}
+    value = next;
+  };
 
-export function resolveCodexHomeForLaunch(
-  cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
-  if (env.CODEX_HOME && env.CODEX_HOME.trim() !== "") return env.CODEX_HOME;
-  const persistedScope = readPersistedSetupScope(cwd);
-  if (persistedScope === "project") {
-    return join(cwd, ".codex");
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--plugin") {
+      setValue("plugin", arg);
+      continue;
+    }
+    if (arg === "--legacy") {
+      setValue("legacy", arg);
+      continue;
+    }
+    if (arg === "--install-mode") {
+      const next = args[index + 1];
+      if (!next || next.startsWith("-")) {
+        throw new Error(
+          `Missing setup install mode value after --install-mode. Expected one of: legacy, plugin`,
+        );
+      }
+      if (next !== "legacy" && next !== "plugin") {
+        throw new Error(
+          `Invalid setup install mode: ${next}. Expected one of: legacy, plugin`,
+        );
+      }
+      setValue(next, arg);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--install-mode=")) {
+      const next = arg.slice("--install-mode=".length);
+      if (next !== "legacy" && next !== "plugin") {
+        throw new Error(
+          `Invalid setup install mode: ${next}. Expected one of: legacy, plugin`,
+        );
+      }
+      setValue(next, "--install-mode");
+    }
   }
-  return undefined;
+
+  return value;
 }
 
 export function resolveSetupScopeArg(args: string[]): SetupScope | undefined {
@@ -359,6 +466,81 @@ export function commandOwnsLocalHelp(command: CliCommand): boolean {
 
 export type CodexLaunchPolicy = "inside-tmux" | "detached-tmux" | "direct";
 
+const OMX_LAUNCH_POLICY_ENV = "OMX_LAUNCH_POLICY";
+let warnedInvalidEnvLaunchPolicy = false;
+
+function splitLeaderLaunchPolicyArgs(args: string[]): {
+  explicitPolicy?: CodexLaunchPolicy;
+  remainingArgs: string[];
+} {
+  const remainingArgs: string[] = [];
+  let explicitPolicy: CodexLaunchPolicy | undefined;
+  let passthroughOnly = false;
+
+  for (const arg of args) {
+    if (passthroughOnly) {
+      remainingArgs.push(arg);
+      continue;
+    }
+
+    if (arg === "--") {
+      passthroughOnly = true;
+      remainingArgs.push(arg);
+      continue;
+    }
+
+    if (arg === "--direct") {
+      explicitPolicy = "direct";
+      continue;
+    }
+
+    if (arg === "--tmux") {
+      explicitPolicy = "detached-tmux";
+      continue;
+    }
+
+    remainingArgs.push(arg);
+  }
+
+  return { explicitPolicy, remainingArgs };
+}
+
+export function resolveLeaderLaunchPolicyOverride(
+  args: string[],
+): CodexLaunchPolicy | undefined {
+  return splitLeaderLaunchPolicyArgs(args).explicitPolicy;
+}
+
+export function resolveEnvLaunchPolicyOverride(
+  env: NodeJS.ProcessEnv = process.env,
+): CodexLaunchPolicy | undefined {
+  const rawValue = env[OMX_LAUNCH_POLICY_ENV]?.trim();
+  if (!rawValue) return undefined;
+
+  const value = rawValue.toLowerCase();
+  if (value === "auto") return undefined;
+  if (value === "direct") return "direct";
+  if (value === "tmux" || value === "detached-tmux") return "detached-tmux";
+
+  if (!warnedInvalidEnvLaunchPolicy) {
+    warnedInvalidEnvLaunchPolicy = true;
+    console.warn(
+      `[omx] warning: invalid ${OMX_LAUNCH_POLICY_ENV}="${rawValue}". ` +
+        "Expected direct, tmux, detached-tmux, or auto. Falling back to auto/default launch policy.",
+    );
+  }
+  return undefined;
+}
+
+export function resolveEffectiveLeaderLaunchPolicyOverride(
+  args: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): CodexLaunchPolicy | undefined {
+  return (
+    resolveLeaderLaunchPolicyOverride(args) ?? resolveEnvLaunchPolicyOverride(env)
+  );
+}
+
 export function resolveCodexLaunchPolicy(
   env: NodeJS.ProcessEnv = process.env,
   _platform: NodeJS.Platform = process.platform,
@@ -366,8 +548,12 @@ export function resolveCodexLaunchPolicy(
   nativeWindows: boolean = isNativeWindows(),
   stdinIsTTY: boolean = Boolean(process.stdin.isTTY),
   stdoutIsTTY: boolean = Boolean(process.stdout.isTTY),
+  explicitPolicy?: CodexLaunchPolicy,
 ): CodexLaunchPolicy {
+  if (explicitPolicy === "direct") return "direct";
   if (env.TMUX) return "inside-tmux";
+  if (explicitPolicy === "detached-tmux") return tmuxAvailable ? "detached-tmux" : "direct";
+  if (_platform === "win32") return "direct";
   if (nativeWindows) return "direct";
   if (!stdinIsTTY || !stdoutIsTTY) return "direct";
   return tmuxAvailable ? "detached-tmux" : "direct";
@@ -378,6 +564,104 @@ type ExecFileSyncFailure = NodeJS.ErrnoException & {
   signal?: NodeJS.Signals | null;
 };
 
+function resolveTmuxExecutableForLaunch(): string {
+  return resolveTmuxBinaryForPlatform() || "tmux";
+}
+
+
+export interface PreparedCodexHomeForLaunch {
+  codexHomeOverride?: string;
+  projectLocalCodexHomeForCleanup?: string;
+  runtimeCodexHomeForCleanup?: string;
+}
+
+export function runtimeCodexHomePath(cwd: string, sessionId: string): string {
+  return join(cwd, ".omx", "runtime", "codex-home", sessionId);
+}
+
+async function linkOrCopyCodexHomeEntry(source: string, destination: string): Promise<void> {
+  const stat = await lstat(source);
+  try {
+    await symlink(source, destination, stat.isDirectory() && process.platform === "win32" ? "junction" : undefined);
+  } catch {
+    if (stat.isDirectory()) {
+      await cp(source, destination, { recursive: true, force: true, verbatimSymlinks: true });
+      return;
+    }
+    await copyFile(source, destination);
+  }
+}
+
+/**
+ * Project-scope setup keeps durable Codex config under <repo>/.codex, but the
+ * Codex TUI also stores model-availability NUX counters in CODEX_HOME/config.toml.
+ * Launch against a session mirror so those runtime writes never dirty the
+ * durable project config while preserving the project config as the launch input.
+ */
+export async function prepareRuntimeCodexHomeForProjectLaunch(
+  cwd: string,
+  sessionId: string,
+  projectCodexHome: string,
+): Promise<string> {
+  const runtimeCodexHome = runtimeCodexHomePath(cwd, sessionId);
+  await rm(runtimeCodexHome, { recursive: true, force: true });
+  await mkdir(runtimeCodexHome, { recursive: true });
+
+  if (!existsSync(projectCodexHome)) return runtimeCodexHome;
+
+  for (const entry of await readdir(projectCodexHome, { withFileTypes: true })) {
+    const source = join(projectCodexHome, entry.name);
+    const destination = join(runtimeCodexHome, entry.name);
+    if (entry.name === "config.toml") {
+      await copyFile(source, destination);
+      continue;
+    }
+    await linkOrCopyCodexHomeEntry(source, destination);
+  }
+
+  return runtimeCodexHome;
+}
+
+export async function prepareCodexHomeForLaunch(
+  cwd: string,
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<PreparedCodexHomeForLaunch> {
+  const projectLocalCodexHomeForCleanup = resolveProjectLocalCodexHomeForLaunch(cwd, env);
+  if (projectLocalCodexHomeForCleanup) {
+    const runtimeCodexHome = await prepareRuntimeCodexHomeForProjectLaunch(
+      cwd,
+      sessionId,
+      projectLocalCodexHomeForCleanup,
+    );
+    return {
+      codexHomeOverride: runtimeCodexHome,
+      projectLocalCodexHomeForCleanup,
+      runtimeCodexHomeForCleanup: runtimeCodexHome,
+    };
+  }
+
+  return {
+    codexHomeOverride: resolveCodexHomeForLaunch(cwd, env),
+    projectLocalCodexHomeForCleanup,
+  };
+}
+
+async function cleanupRuntimeCodexHome(runtimeCodexHomeForCleanup?: string): Promise<void> {
+  if (!runtimeCodexHomeForCleanup) return;
+  await rm(runtimeCodexHomeForCleanup, { recursive: true, force: true });
+}
+
+function execTmuxFileSync(
+  args: string[],
+  options?: Parameters<typeof execFileSync>[2],
+): string {
+  return execFileSync(resolveTmuxExecutableForLaunch(), args, {
+    ...(options ?? {}),
+    ...(process.platform === "win32" ? { windowsHide: true } : {}),
+  }) as string;
+}
+
 function hasErrnoCode(error: unknown, code: string): boolean {
   return Boolean(
     error &&
@@ -385,6 +669,106 @@ function hasErrnoCode(error: unknown, code: string): boolean {
     "code" in error &&
     error.code === code,
   );
+}
+
+
+function isMissingTmuxLaunchNoise(error: unknown): boolean {
+  return error instanceof Error && /spawnSync tmux ENOENT/i.test(error.message);
+}
+
+function logCliOperationFailure(error: unknown): void {
+  if (isMissingTmuxLaunchNoise(error)) return;
+  process.stderr.write(`[cli/index] operation failed: ${error}
+`);
+}
+
+function tmuxFailureMessage(error: unknown): string {
+  if (!error || typeof error !== "object") return String(error);
+  const err = error as ExecFileSyncFailure & {
+    stdout?: Buffer | string;
+    stderr?: Buffer | string;
+  };
+  const stderr =
+    typeof err.stderr === "string" ? err.stderr : err.stderr?.toString();
+  const stdout =
+    typeof err.stdout === "string" ? err.stdout : err.stdout?.toString();
+  const detail = (stderr || stdout || err.message || String(error)).trim();
+  return detail.replace(/\s+/g, " ");
+}
+
+function isUnsupportedTmuxExtendedKeysFailure(error: unknown): boolean {
+  const message = tmuxFailureMessage(error).toLowerCase();
+  return (
+    message.includes("extended-keys") &&
+    /(?:invalid|unknown|unsupported) (?:option|flag|argument)|no such option|unknown option/.test(
+      message,
+    )
+  );
+}
+
+function isBenignMissingTmuxServerMessage(message: string): boolean {
+  return (
+    /no server running/i.test(message) ||
+    /error connecting to .*\(No such file or directory\)/i.test(message)
+  );
+}
+
+export interface TmuxLaunchHealth {
+  usable: boolean;
+  reason?: string;
+}
+
+export function checkDetachedTmuxLaunchHealth(): TmuxLaunchHealth {
+  try {
+    execTmuxFileSync(["list-sessions"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf-8",
+    });
+    return { usable: true };
+  } catch (err) {
+    const reason = tmuxFailureMessage(err);
+    if (isBenignMissingTmuxServerMessage(reason)) {
+      return { usable: true };
+    }
+    return { usable: false, reason };
+  }
+}
+
+function warnDetachedTmuxFallback(reason?: string): void {
+  const suffix = reason ? ` (${reason})` : "";
+  console.warn(
+    `[omx] warning: tmux is installed but its server/socket is unusable${suffix}. Falling back to direct Codex launch.`,
+  );
+}
+
+function resolveTmuxAwareLaunchPolicy(
+  explicitLaunchPolicy: CodexLaunchPolicy | undefined,
+  nativeWindows: boolean,
+): {
+  launchPolicy: CodexLaunchPolicy;
+  effectiveExplicitLaunchPolicy: CodexLaunchPolicy | undefined;
+} {
+  const launchPolicy = resolveCodexLaunchPolicy(
+    process.env,
+    process.platform,
+    undefined,
+    nativeWindows,
+    undefined,
+    undefined,
+    explicitLaunchPolicy,
+  );
+
+  if (launchPolicy !== "detached-tmux") {
+    return { launchPolicy, effectiveExplicitLaunchPolicy: explicitLaunchPolicy };
+  }
+
+  const tmuxHealth = checkDetachedTmuxLaunchHealth();
+  if (tmuxHealth.usable) {
+    return { launchPolicy, effectiveExplicitLaunchPolicy: explicitLaunchPolicy };
+  }
+
+  warnDetachedTmuxFallback(tmuxHealth.reason);
+  return { launchPolicy: "direct", effectiveExplicitLaunchPolicy: "direct" };
 }
 
 export interface CodexExecFailureClassification {
@@ -484,51 +868,9 @@ function runCodexBlocking(
   }
 }
 
-interface TmuxPaneSnapshot {
-  paneId: string;
-  currentCommand: string;
-  startCommand: string;
-}
-
 export interface DetachedSessionTmuxStep {
   name: string;
   args: string[];
-}
-
-export function parseTmuxPaneSnapshot(output: string): TmuxPaneSnapshot[] {
-  return output
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [paneId = "", currentCommand = "", ...startCommandParts] =
-        line.split("\t");
-      return {
-        paneId: paneId.trim(),
-        currentCommand: currentCommand.trim(),
-        startCommand: startCommandParts.join("\t").trim(),
-      };
-    })
-    .filter((pane) => pane.paneId.startsWith("%"));
-}
-
-export function isHudWatchPane(pane: TmuxPaneSnapshot): boolean {
-  const command = `${pane.startCommand} ${pane.currentCommand}`.toLowerCase();
-  return (
-    /\bhud\b/.test(command) &&
-    /--watch\b/.test(command) &&
-    (/\bomx(?:\.js)?\b/.test(command) || /\bnode\b/.test(command))
-  );
-}
-
-export function findHudWatchPaneIds(
-  panes: TmuxPaneSnapshot[],
-  currentPaneId?: string,
-): string[] {
-  return panes
-    .filter((pane) => pane.paneId !== currentPaneId)
-    .filter((pane) => isHudWatchPane(pane))
-    .map((pane) => pane.paneId);
 }
 
 export function buildHudPaneCleanupTargets(
@@ -554,6 +896,8 @@ export async function main(args: string[]): Promise<void> {
     "launch",
     "exec",
     "setup",
+    "update",
+    "list",
     "agents",
     "agents-init",
     "deepinit",
@@ -561,6 +905,7 @@ export async function main(args: string[]): Promise<void> {
     "doctor",
     "cleanup",
     "ask",
+    "question",
     "autoresearch",
     "explore",
     "sparkshell",
@@ -572,6 +917,9 @@ export async function main(args: string[]): Promise<void> {
     "tmux-hook",
     "hooks",
     "hud",
+    "sidecar",
+    "state",
+    "mcp-serve",
     "status",
     "cancel",
     "help",
@@ -583,6 +931,7 @@ export async function main(args: string[]): Promise<void> {
   const flags = new Set(args.filter((a) => a.startsWith("--")));
   const options = {
     force: flags.has("--force"),
+    mergeAgents: flags.has("--merge-agents"),
     dryRun: flags.has("--dry-run"),
     verbose: flags.has("--verbose"),
     team: flags.has("--team"),
@@ -604,10 +953,18 @@ export async function main(args: string[]): Promise<void> {
       case "setup":
         await setup({
           force: options.force,
+          mergeAgents: options.mergeAgents,
           dryRun: options.dryRun,
           verbose: options.verbose,
           scope: resolveSetupScopeArg(args.slice(1)),
+          installMode: resolveSetupInstallModeArg(args.slice(1)),
         });
+        break;
+      case "update":
+        await runImmediateUpdate(process.cwd());
+        break;
+      case "list":
+        await listCommand(args.slice(1));
         break;
       case "agents":
         await agentsCommand(args.slice(1));
@@ -635,6 +992,12 @@ export async function main(args: string[]): Promise<void> {
       case "ask":
         await askCommand(args.slice(1));
         break;
+      case "question":
+        await questionCommand(args.slice(1));
+        break;
+      case "adapt":
+        await adaptCommand(args.slice(1));
+        break;
       case "cleanup":
         await cleanupCommand(args.slice(1));
         break;
@@ -645,7 +1008,11 @@ export async function main(args: string[]): Promise<void> {
         await exploreCommand(args.slice(1));
         break;
       case "exec":
-        await execWithOverlay(launchArgs);
+        if (launchArgs[0] === "inject") {
+          await execInjectCommand(launchArgs);
+        } else {
+          await execWithOverlay(launchArgs);
+        }
         break;
       case "sparkshell":
         await sparkshellCommand(args.slice(1));
@@ -664,6 +1031,30 @@ export async function main(args: string[]): Promise<void> {
         break;
       case "hud":
         await hudCommand(args.slice(1));
+        break;
+      case "sidecar":
+        await sidecarCommand(args.slice(1));
+        break;
+      case "state":
+        await stateCommand(args.slice(1));
+        break;
+      case "notepad":
+        await mcpParityCommand("notepad", args.slice(1));
+        break;
+      case "project-memory":
+        await mcpParityCommand("project-memory", args.slice(1));
+        break;
+      case "trace":
+        await mcpParityCommand("trace", args.slice(1));
+        break;
+      case "code-intel":
+        await mcpParityCommand("code-intel", args.slice(1));
+        break;
+      case "wiki":
+        await mcpParityCommand("wiki", args.slice(1));
+        break;
+      case "mcp-serve":
+        await mcpServeCommand(args.slice(1));
         break;
       case "tmux-hook":
         await tmuxHookCommand(args.slice(1));
@@ -720,7 +1111,7 @@ async function showStatus(): Promise<void> {
       try {
         state = JSON.parse(content) as Record<string, unknown>;
       } catch (err) {
-        process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+        logCliOperationFailure(err);
         continue;
       }
       const file = basename(path);
@@ -730,7 +1121,7 @@ async function showStatus(): Promise<void> {
       );
     }
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     console.log("No active modes.");
   }
 }
@@ -813,46 +1204,59 @@ export async function launchWithHud(args: string[]): Promise<void> {
     parsedWorktree.remainingArgs,
     process.env,
   );
-  const codexHomeOverride = resolveCodexHomeForLaunch(launchCwd, process.env);
-  const launchPolicy = resolveCodexLaunchPolicy(
+  const explicitLaunchPolicy = resolveEffectiveLeaderLaunchPolicyOverride(
+    notifyTempResult.passthroughArgs,
     process.env,
-    process.platform,
-    undefined,
-    isNativeWindows(),
   );
+  const persistentCodexHomeForLaunch = resolveCodexHomeForLaunch(launchCwd, process.env);
+  const { launchPolicy, effectiveExplicitLaunchPolicy } =
+    resolveTmuxAwareLaunchPolicy(explicitLaunchPolicy, isNativeWindows());
   const enableNotifyFallbackAuthority = launchPolicy === "direct";
   const workerSparkModel = resolveWorkerSparkModel(
     notifyTempResult.passthroughArgs,
-    codexHomeOverride,
+    persistentCodexHomeForLaunch,
   );
   const normalizedArgs = normalizeCodexLaunchArgs(
     notifyTempResult.passthroughArgs,
   );
   let cwd = launchCwd;
+  let worktreeDirty = false;
   if (parsedWorktree.mode.enabled) {
     const planned = planWorktreeTarget({
       cwd: launchCwd,
       scope: "launch",
       mode: parsedWorktree.mode,
     });
-    const ensured = ensureWorktree(planned);
+    const ensured = ensureWorktree(planned, { allowDirtyReuse: true });
     if (ensured.enabled) {
       cwd = ensured.worktreePath;
+      if (ensured.dirty) {
+        worktreeDirty = true;
+        process.stderr.write(
+          `[omx] Caution: worktree at ${cwd} has uncommitted changes.\n` +
+          `  The session will launch as-is. Resolve the dirty state with OMX after launch, then proceed with your task.\n`,
+        );
+      }
+      const depBootstrap = ensureReusableNodeModules(cwd);
+      if (depBootstrap.strategy === "symlink") {
+        console.log(`[omx] Reusing node_modules from ${depBootstrap.sourceNodeModulesPath}`);
+      } else if (depBootstrap.strategy === "missing" && depBootstrap.warning) {
+        console.warn(`[omx] ${depBootstrap.warning}`);
+      }
     }
   }
   const sessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
   try {
     await maybeCheckAndPromptUpdate(cwd);
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal: update checks must never block launch
   }
 
   try {
     await maybePromptGithubStar();
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal: star prompt must never block launch
   }
 
@@ -862,19 +1266,23 @@ export async function launchWithHud(args: string[]): Promise<void> {
   // TOML parser rejects duplicates, so we repair before spawning the CLI.
   try {
     const repaired = await repairConfigIfNeeded(
-      codexConfigPath(),
+      resolveCodexConfigPathForLaunch(launchCwd, process.env),
       getPackageRoot(),
     );
     if (repaired) {
-      console.log("[omx] Repaired duplicate [tui] section in config.toml.");
+      console.log("[omx] Repaired managed config.toml compatibility issue.");
     }
   } catch {
     // Non-fatal: repair failure must not block launch
   }
 
+  const preparedCodexHome = await prepareCodexHomeForLaunch(launchCwd, sessionId, process.env);
+  const codexHomeOverride = preparedCodexHome.codexHomeOverride;
+  const projectLocalCodexHomeForCleanup = preparedCodexHome.projectLocalCodexHomeForCleanup;
+
   // ── Phase 1: preLaunch ──────────────────────────────────────────────────
   try {
-    await preLaunch(cwd, sessionId, notifyTempResult.contract, codexHomeOverride, enableNotifyFallbackAuthority);
+    await preLaunch(cwd, sessionId, notifyTempResult.contract, codexHomeOverride, enableNotifyFallbackAuthority, worktreeDirty);
   } catch (err) {
     // preLaunch errors must NOT prevent Codex from starting
     console.error(
@@ -883,21 +1291,29 @@ export async function launchWithHud(args: string[]): Promise<void> {
   }
 
   // ── Phase 2: run ────────────────────────────────────────────────────────
+  let postLaunchHandledExternally = false;
   try {
     const notifyTempContractRaw = notifyTempResult.contract.active
       ? serializeNotifyTempContract(notifyTempResult.contract)
       : null;
-    runCodex(
+    const launchResult = runCodex(
       cwd,
       normalizedArgs,
       sessionId,
       workerSparkModel,
       codexHomeOverride,
       notifyTempContractRaw,
+      effectiveExplicitLaunchPolicy,
+      projectLocalCodexHomeForCleanup,
+      preparedCodexHome.runtimeCodexHomeForCleanup,
     );
+    postLaunchHandledExternally = launchResult.postLaunchHandledExternally;
   } finally {
     // ── Phase 3: postLaunch ─────────────────────────────────────────────
-    await postLaunch(cwd, sessionId, codexHomeOverride, enableNotifyFallbackAuthority);
+    if (!postLaunchHandledExternally) {
+      await postLaunch(cwd, sessionId, codexHomeOverride, enableNotifyFallbackAuthority, projectLocalCodexHomeForCleanup);
+      await cleanupRuntimeCodexHome(preparedCodexHome.runtimeCodexHomeForCleanup).catch(logCliOperationFailure);
+    }
   }
 }
 
@@ -908,11 +1324,11 @@ export async function execWithOverlay(args: string[]): Promise<void> {
     parsedWorktree.remainingArgs,
     process.env,
   );
-  const codexHomeOverride = resolveCodexHomeForLaunch(launchCwd, process.env);
   const normalizedArgs = normalizeCodexLaunchArgs(
     notifyTempResult.passthroughArgs,
   );
   let cwd = launchCwd;
+  let worktreeDirty = false;
 
   if (parsedWorktree.mode.enabled) {
     const planned = planWorktreeTarget({
@@ -920,9 +1336,22 @@ export async function execWithOverlay(args: string[]): Promise<void> {
       scope: "launch",
       mode: parsedWorktree.mode,
     });
-    const ensured = ensureWorktree(planned);
+    const ensured = ensureWorktree(planned, { allowDirtyReuse: true });
     if (ensured.enabled) {
       cwd = ensured.worktreePath;
+      if (ensured.dirty) {
+        worktreeDirty = true;
+        process.stderr.write(
+          `[omx] Caution: worktree at ${cwd} has uncommitted changes.\n` +
+          `  The session will launch as-is. Resolve the dirty state with OMX after launch, then proceed with your task.\n`,
+        );
+      }
+      const depBootstrap = ensureReusableNodeModules(cwd);
+      if (depBootstrap.strategy === "symlink") {
+        console.log(`[omx] Reusing node_modules from ${depBootstrap.sourceNodeModulesPath}`);
+      } else if (depBootstrap.strategy === "missing" && depBootstrap.warning) {
+        console.warn(`[omx] ${depBootstrap.warning}`);
+      }
     }
   }
 
@@ -931,29 +1360,33 @@ export async function execWithOverlay(args: string[]): Promise<void> {
   try {
     await maybeCheckAndPromptUpdate(cwd);
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
   }
 
   try {
     await maybePromptGithubStar();
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
   }
 
   try {
     const repaired = await repairConfigIfNeeded(
-      codexConfigPath(),
+      resolveCodexConfigPathForLaunch(launchCwd, process.env),
       getPackageRoot(),
     );
     if (repaired) {
-      console.log("[omx] Repaired duplicate [tui] section in config.toml.");
+      console.log("[omx] Repaired managed config.toml compatibility issue.");
     }
   } catch {
     // Non-fatal
   }
 
+  const preparedCodexHome = await prepareCodexHomeForLaunch(launchCwd, sessionId, process.env);
+  const codexHomeOverride = preparedCodexHome.codexHomeOverride;
+  const projectLocalCodexHomeForCleanup = preparedCodexHome.projectLocalCodexHomeForCleanup;
+
   try {
-    await preLaunch(cwd, sessionId, notifyTempResult.contract, codexHomeOverride, true);
+    await preLaunch(cwd, sessionId, notifyTempResult.contract, codexHomeOverride, true, worktreeDirty);
   } catch (err) {
     console.error(
       `[omx] preLaunch warning: ${err instanceof Error ? err.message : err}`,
@@ -981,18 +1414,20 @@ export async function execWithOverlay(args: string[]): Promise<void> {
       : codexEnvBase;
     runCodexBlocking(cwd, codexArgs, codexEnv);
   } finally {
-    await postLaunch(cwd, sessionId, codexHomeOverride, true);
+    await postLaunch(cwd, sessionId, codexHomeOverride, true, projectLocalCodexHomeForCleanup);
+    await cleanupRuntimeCodexHome(preparedCodexHome.runtimeCodexHomeForCleanup).catch(logCliOperationFailure);
   }
 }
 
 export function normalizeCodexLaunchArgs(args: string[]): string[] {
   const parsed = parseWorktreeMode(args);
+  const launchPolicyParsed = splitLeaderLaunchPolicyArgs(parsed.remainingArgs);
   const normalized: string[] = [];
   let wantsBypass = false;
   let hasBypass = false;
   let reasoningMode: ReasoningMode | null = null;
 
-  for (const arg of parsed.remainingArgs) {
+  for (const arg of launchPolicyParsed.remainingArgs) {
     if (arg === MADMAX_FLAG) {
       wantsBypass = true;
       continue;
@@ -1122,12 +1557,19 @@ function extractIssueNumber(text: string): number | undefined {
   return generic ? Number.parseInt(generic[2], 10) : undefined;
 }
 
-function resolveNativeSessionName(cwd: string, sessionId: string): string {
-  if (process.env.TMUX) {
+export function resolveNativeSessionName(
+  cwd: string,
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (env.TMUX) {
     try {
-      const tmuxSession = execFileSync(
-        "tmux",
-        ["display-message", "-p", "#S"],
+      const tmuxPaneTarget = env.TMUX_PANE?.trim();
+      const displayArgs = tmuxPaneTarget
+        ? ["display-message", "-p", "-t", tmuxPaneTarget, "#S"]
+        : ["display-message", "-p", "#S"];
+      const tmuxSession = execTmuxFileSync(
+        displayArgs,
         {
           encoding: "utf-8",
           stdio: ["ignore", "pipe", "ignore"],
@@ -1142,10 +1584,45 @@ function resolveNativeSessionName(cwd: string, sessionId: string): string {
   return buildTmuxSessionName(cwd, sessionId);
 }
 
+function tagTmuxSessionWithInstance(sessionName: string, sessionId: string): void {
+  const target = sessionName.trim();
+  const instanceId = sessionId.trim();
+  if (!target || !instanceId) return;
+  execFileSync("tmux", ["set-option", "-t", target, OMX_INSTANCE_OPTION, instanceId], {
+    stdio: ["ignore", "ignore", "ignore"],
+    timeout: 2000,
+  });
+}
+
+function tagCurrentTmuxSessionWithInstance(sessionId: string): void {
+  if (!process.env.TMUX) return;
+  try {
+    const tmuxPaneTarget = process.env.TMUX_PANE;
+    const displayArgs = tmuxPaneTarget
+      ? ["display-message", "-p", "-t", tmuxPaneTarget, "#S"]
+      : ["display-message", "-p", "#S"];
+    const sessionName = execFileSync("tmux", displayArgs, {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2000,
+    }).trim();
+    if (sessionName) tagTmuxSessionWithInstance(sessionName, sessionId);
+  } catch {
+    // Best effort only: launch should not fail just because tmux tagging failed.
+  }
+}
+
 function buildNativeHookBaseContext(
   cwd: string,
   sessionId: string,
-  normalizedEvent: "started" | "blocked" | "finished" | "failed",
+  normalizedEvent:
+    | "started"
+    | "blocked"
+    | "run.heartbeat"
+    | "run.blocked_on_user"
+    | "run.blocked_on_system"
+    | "finished"
+    | "failed",
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
   const repoPath =
@@ -1317,13 +1794,19 @@ export function buildTmuxSessionName(cwd: string, sessionId: string): string {
   const branch = tryReadGitValue(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   if (branch) branchToken = sanitizeTmuxToken(branch);
   const sessionToken = sanitizeTmuxToken(sessionId.replace(/^omx-/, ""));
-  const name = `omx-${dirToken}-${branchToken}-${sessionToken}`;
-  return name.length > 120 ? name.slice(0, 120) : name;
+  const prefix = `omx-${dirToken}-${branchToken}`;
+  const name = `${prefix}-${sessionToken}`;
+  if (name.length <= 120) return name;
+  const prefixBudget = Math.max(4, 120 - sessionToken.length - 1);
+  const trimmedPrefix = prefix.slice(0, prefixBudget).replace(/-+$/g, "");
+  return `${trimmedPrefix}-${sessionToken}`.slice(0, 120);
 }
 
-function parsePaneIdFromTmuxOutput(rawOutput: string): string | null {
-  const paneId = rawOutput.split("\n")[0]?.trim() || "";
-  return paneId.startsWith("%") ? paneId : null;
+export function buildDetachedTmuxSessionName(
+  cwd: string,
+  sessionId: string,
+): string {
+  return buildTmuxSessionName(cwd, sessionId);
 }
 
 function parseWindowIndexFromTmuxOutput(rawOutput: string): string | null {
@@ -1331,16 +1814,15 @@ function parseWindowIndexFromTmuxOutput(rawOutput: string): string | null {
   return /^[0-9]+$/.test(windowIndex) ? windowIndex : null;
 }
 
-function detectDetachedSessionWindowIndex(sessionName: string): string | null {
+export function detectDetachedSessionWindowIndex(sessionName: string): string | null {
   try {
-    const output = execFileSync(
-      "tmux",
+    const output = execTmuxFileSync(
       ["display-message", "-p", "-t", sessionName, "#{window_index}"],
       { encoding: "utf-8" },
     );
     return parseWindowIndexFromTmuxOutput(output);
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     return null;
   }
 }
@@ -1349,18 +1831,472 @@ function escapeShellDoubleQuotedValue(value: string): string {
   return value.replace(/["\\$`]/g, "\\$&");
 }
 
+interface TmuxExtendedKeysLeaseHolderRecord {
+  id: string;
+  pid: number;
+  platform?: NodeJS.Platform;
+  linuxStartTicks?: number;
+}
+
+type TmuxExtendedKeysLeaseHolder = string | TmuxExtendedKeysLeaseHolderRecord;
+
+interface TmuxExtendedKeysLeaseState {
+  originalMode: string;
+  holders: TmuxExtendedKeysLeaseHolder[];
+}
+
+function sanitizeTmuxLeaseKey(value: string): string {
+  const cleaned = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "default";
+}
+
+function blockMs(ms: number): void {
+  const delay = Math.max(1, Math.floor(ms));
+  const shared = new SharedArrayBuffer(4);
+  const view = new Int32Array(shared);
+  Atomics.wait(view, 0, 0, delay);
+}
+
+function tmuxExtendedKeysLeaseRoot(cwd: string): string {
+  return join(cwd, ".omx", "state", TMUX_EXTENDED_KEYS_LEASE_DIR);
+}
+
+function resolveTmuxSocketPath(
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+    }) as string,
+): string {
+  return (
+    execTmuxSync(["display-message", "-p", "#{socket_path}"], execFileSyncImpl) ||
+    "default"
+  );
+}
+
+function tmuxExtendedKeysLeasePath(cwd: string, socketPath: string): string {
+  return join(
+    tmuxExtendedKeysLeaseRoot(cwd),
+    `${sanitizeTmuxLeaseKey(socketPath)}.json`,
+  );
+}
+
+function isTmuxExtendedKeysLeaseHolderRecord(
+  holder: unknown,
+): holder is TmuxExtendedKeysLeaseHolderRecord {
+  if (!holder || typeof holder !== "object") return false;
+  const record = holder as Record<string, unknown>;
+  if (typeof record.id !== "string" || !record.id.trim()) return false;
+  if (!Number.isSafeInteger(record.pid) || Number(record.pid) <= 0) return false;
+  if (record.platform !== undefined && typeof record.platform !== "string") return false;
+  if (
+    record.linuxStartTicks !== undefined &&
+    !Number.isSafeInteger(record.linuxStartTicks)
+  ) return false;
+  return true;
+}
+
+function isTmuxExtendedKeysLeaseHolder(
+  holder: unknown,
+): holder is TmuxExtendedKeysLeaseHolder {
+  return typeof holder === "string" || isTmuxExtendedKeysLeaseHolderRecord(holder);
+}
+
+function readTmuxExtendedKeysLeaseState(
+  leasePath: string,
+): TmuxExtendedKeysLeaseState | null {
+  if (!existsSync(leasePath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(leasePath, "utf-8")) as {
+      originalMode?: unknown;
+      holders?: unknown;
+    };
+    if (
+      typeof parsed.originalMode !== "string" ||
+      !Array.isArray(parsed.holders) ||
+      !parsed.holders.every(isTmuxExtendedKeysLeaseHolder)
+    ) {
+      return null;
+    }
+    return {
+      originalMode: parsed.originalMode,
+      holders: [...parsed.holders],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeTmuxExtendedKeysLeaseState(
+  leasePath: string,
+  state: TmuxExtendedKeysLeaseState,
+): void {
+  mkdirSync(dirname(leasePath), { recursive: true });
+  writeFileSync(leasePath, JSON.stringify(state, null, 2));
+}
+
+function parseTmuxExtendedKeysLeaseHolderPid(holder: string): number | null {
+  const match = /^([1-9]\d*)-/.exec(holder);
+  if (!match) return null;
+  const pid = Number.parseInt(match[1], 10);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}
+
+function getTmuxExtendedKeysLeaseHolderId(holder: TmuxExtendedKeysLeaseHolder): string {
+  return typeof holder === "string" ? holder : holder.id;
+}
+
+function getTmuxExtendedKeysLeaseHolderPid(holder: TmuxExtendedKeysLeaseHolder): number | null {
+  if (typeof holder === "string") return parseTmuxExtendedKeysLeaseHolderPid(holder);
+  return Number.isSafeInteger(holder.pid) && holder.pid > 0 ? holder.pid : null;
+}
+
+function parseLinuxProcStartTicks(statContent: string): number | null {
+  const commandEnd = statContent.lastIndexOf(")");
+  if (commandEnd === -1) return null;
+
+  const remainder = statContent.slice(commandEnd + 1).trim();
+  const fields = remainder.split(/\s+/);
+  if (fields.length <= 19) return null;
+
+  const startTicks = Number(fields[19]);
+  return Number.isSafeInteger(startTicks) ? startTicks : null;
+}
+
+function readLinuxProcessStartTicks(pid: number): number | null {
+  try {
+    return parseLinuxProcStartTicks(readFileSync(`/proc/${pid}/stat`, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function createTmuxExtendedKeysLeaseHolder(
+  id: string,
+  pid: number,
+): TmuxExtendedKeysLeaseHolderRecord {
+  const linuxStartTicks = process.platform === "linux"
+    ? readLinuxProcessStartTicks(pid) ?? undefined
+    : undefined;
+  return {
+    id,
+    pid,
+    platform: process.platform,
+    ...(linuxStartTicks !== undefined ? { linuxStartTicks } : {}),
+  };
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code =
+      err && typeof err === "object" && "code" in err
+        ? String((err as NodeJS.ErrnoException).code)
+        : "";
+    return code === "EPERM";
+  }
+}
+
+function isTmuxExtendedKeysLeaseHolderAlive(
+  holder: TmuxExtendedKeysLeaseHolder,
+): boolean {
+  const pid = getTmuxExtendedKeysLeaseHolderPid(holder);
+  if (pid === null || !isProcessAlive(pid)) return false;
+
+  if (typeof holder === "string") return true;
+  if (holder.platform !== "linux" || process.platform !== "linux") return true;
+  if (holder.linuxStartTicks === undefined) return true;
+
+  return readLinuxProcessStartTicks(pid) === holder.linuxStartTicks;
+}
+
+function reapDeadTmuxExtendedKeysLeaseHolders(
+  state: TmuxExtendedKeysLeaseState,
+): TmuxExtendedKeysLeaseState {
+  return {
+    originalMode: state.originalMode,
+    holders: state.holders.filter(isTmuxExtendedKeysLeaseHolderAlive),
+  };
+}
+
+function withTmuxExtendedKeysLeaseLock<T>(
+  cwd: string,
+  socketPath: string,
+  run: () => T,
+): T {
+  const leaseRoot = tmuxExtendedKeysLeaseRoot(cwd);
+  mkdirSync(leaseRoot, { recursive: true });
+  const lockPath = join(
+    leaseRoot,
+    `${sanitizeTmuxLeaseKey(socketPath)}.lock`,
+  );
+  for (let attempt = 0; attempt < TMUX_EXTENDED_KEYS_LOCK_MAX_ATTEMPTS; attempt++) {
+    try {
+      mkdirSync(lockPath);
+      try {
+        writeFileSync(join(lockPath, "pid"), String(process.pid));
+        return run();
+      } finally {
+        rmSync(lockPath, { recursive: true, force: true });
+      }
+    } catch (err) {
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? String((err as NodeJS.ErrnoException).code)
+          : "";
+      if (code !== "EEXIST") throw err;
+      const lockStat = statSync(lockPath, { throwIfNoEntry: false });
+      if (lockStat && Date.now() - lockStat.mtimeMs > TMUX_EXTENDED_KEYS_LOCK_STALE_MS) {
+        let holderAlive = false;
+        try {
+          const holderPid = Number.parseInt(readFileSync(join(lockPath, "pid"), "utf-8").trim(), 10);
+          if (Number.isFinite(holderPid) && holderPid > 0) {
+            process.kill(holderPid, 0);
+            holderAlive = true;
+          }
+        } catch {
+          // PID file missing/unreadable or process dead (ESRCH) — treat as stale
+        }
+        if (!holderAlive) {
+          rmSync(lockPath, { recursive: true, force: true });
+          continue;
+        }
+      }
+      blockMs(TMUX_EXTENDED_KEYS_LOCK_RETRY_MS);
+    }
+  }
+  throw new Error(`timed out waiting for tmux extended-keys lease lock: ${lockPath}`);
+}
+
 function buildDetachedSessionLeaderCommand(
+  cwd: string,
   sessionName: string,
   codexCmd: string,
+  sessionId?: string,
+  codexHomeOverride?: string,
+  projectLocalCodexHomeForCleanup?: string,
+  runtimeCodexHomeForCleanup?: string,
 ): string {
-  const cleanupTrap = [
+  const detachedPostLaunchHelper = sessionId
+    ? `${buildDetachedSessionPostLaunchHelperCommand(cwd, sessionId, codexHomeOverride, projectLocalCodexHomeForCleanup, runtimeCodexHomeForCleanup)} >/dev/null 2>&1 || true;`
+    : "";
+  const wrapped = [
+    buildTmuxExtendedKeysAcquireShellSnippet(cwd),
+    'exec 3<&0;',
+    'omx_codex_pid="";',
+    "omx_detached_session_cleanup() {",
     "status=$?;",
     "trap - 0 INT TERM HUP;",
+    'if [ -n "$omx_codex_pid" ] && kill -0 "$omx_codex_pid" 2>/dev/null; then',
+    'kill -TERM "$omx_codex_pid" 2>/dev/null || true;',
+    'wait "$omx_codex_pid" 2>/dev/null || true;',
+    "fi;",
+    'exec 3<&- 2>/dev/null || true;',
+    buildTmuxExtendedKeysReleaseShellSnippet(cwd),
+    detachedPostLaunchHelper,
+    'if [ "$status" -lt 128 ]; then',
     `tmux kill-session -t "${escapeShellDoubleQuotedValue(sessionName)}" >/dev/null 2>&1 || true;`,
+    "fi;",
     "exit $status;",
+    "};",
+    "trap omx_detached_session_cleanup 0 INT TERM HUP;",
+    `${codexCmd} <&3 &`,
+    "omx_codex_pid=$!;",
+    'wait "$omx_codex_pid";',
   ].join(" ");
-  const wrapped = [`trap '${cleanupTrap}' 0 INT TERM HUP;`, codexCmd].join(" ");
-  return `/bin/sh -lc ${quoteShellArg(wrapped)}`;
+  return `/bin/sh -c ${quoteShellArg(wrapped)}`;
+}
+
+function buildDetachedSessionPostLaunchHelperCommand(
+  cwd: string,
+  sessionId: string,
+  codexHomeOverride?: string,
+  projectLocalCodexHomeForCleanup?: string,
+  runtimeCodexHomeForCleanup?: string,
+): string {
+  const cwdLiteral = JSON.stringify(cwd);
+  const sessionIdLiteral = JSON.stringify(sessionId);
+  const codexHomeLiteral =
+    typeof codexHomeOverride === "string" && codexHomeOverride.length > 0
+      ? JSON.stringify(codexHomeOverride)
+      : "undefined";
+  const projectLocalCleanupLiteral =
+    typeof projectLocalCodexHomeForCleanup === "string" &&
+    projectLocalCodexHomeForCleanup.length > 0
+      ? JSON.stringify(projectLocalCodexHomeForCleanup)
+      : "undefined";
+  const runtimeCodexHomeCleanupLiteral =
+    typeof runtimeCodexHomeForCleanup === "string" &&
+    runtimeCodexHomeForCleanup.length > 0
+      ? JSON.stringify(runtimeCodexHomeForCleanup)
+      : "undefined";
+  const moduleUrlLiteral = JSON.stringify(import.meta.url);
+  const script = [
+    `const mod = await import(${moduleUrlLiteral});`,
+    `await mod.runDetachedSessionPostLaunch(${cwdLiteral}, ${sessionIdLiteral}, ${codexHomeLiteral}, ${projectLocalCleanupLiteral}, ${runtimeCodexHomeCleanupLiteral});`,
+  ].join(" ");
+  return `${quoteShellArg(process.execPath)} --input-type=module -e ${quoteShellArg(script)}`;
+}
+
+type TmuxExecSync = (file: string, args: readonly string[]) => string;
+
+function execTmuxSync(
+  args: readonly string[],
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+      ...(process.platform === "win32" ? { windowsHide: true } : {}),
+    }) as string,
+): string {
+  return execFileSyncImpl(resolveTmuxExecutableForLaunch(), [...args]).trim();
+}
+
+export function acquireTmuxExtendedKeysLease(
+  cwd: string,
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+      ...(process.platform === "win32" ? { windowsHide: true } : {}),
+    }) as string,
+  ownerPid = process.pid,
+): string | null {
+  try {
+    const socketPath = resolveTmuxSocketPath(execFileSyncImpl);
+    const leasePath = tmuxExtendedKeysLeasePath(cwd, socketPath);
+    const holderPid =
+      Number.isSafeInteger(ownerPid) && ownerPid > 0 ? ownerPid : process.pid;
+    const leaseId = `${holderPid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    withTmuxExtendedKeysLeaseLock(cwd, socketPath, () => {
+      const stateRaw = readTmuxExtendedKeysLeaseState(leasePath);
+      const state = stateRaw ? reapDeadTmuxExtendedKeysLeaseHolders(stateRaw) : null;
+      if (stateRaw && state?.holders.length === 0) {
+        execTmuxSync(
+          ["set-option", "-sq", "extended-keys", state.originalMode],
+          execFileSyncImpl,
+        );
+        rmSync(leasePath, { force: true });
+      }
+      if (!state || state.holders.length === 0) {
+        const previousMode =
+          execTmuxSync(["show-options", "-sv", "extended-keys"], execFileSyncImpl) ||
+          TMUX_EXTENDED_KEYS_FALLBACK_MODE;
+        execTmuxSync(
+          ["set-option", "-sq", "extended-keys", TMUX_EXTENDED_KEYS_MODE],
+          execFileSyncImpl,
+        );
+        writeTmuxExtendedKeysLeaseState(leasePath, {
+          originalMode: previousMode,
+          holders: [createTmuxExtendedKeysLeaseHolder(leaseId, holderPid)],
+        });
+        return;
+      }
+
+      state.holders.push(createTmuxExtendedKeysLeaseHolder(leaseId, holderPid));
+      writeTmuxExtendedKeysLeaseState(leasePath, state);
+    });
+    return `${socketPath}\t${leaseId}`;
+  } catch (err) {
+    if (!isUnsupportedTmuxExtendedKeysFailure(err)) {
+      logCliOperationFailure(err);
+    }
+    return null;
+  }
+}
+
+export function releaseTmuxExtendedKeysLease(
+  cwd: string,
+  leaseHandle: string,
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+      ...(process.platform === "win32" ? { windowsHide: true } : {}),
+    }) as string,
+): void {
+  if (!leaseHandle.trim()) return;
+  const [socketPathRaw = "", leaseId = ""] = leaseHandle.split("\t");
+  const socketPath = socketPathRaw.trim() || "default";
+  if (!leaseId) return;
+
+  try {
+    const leasePath = tmuxExtendedKeysLeasePath(cwd, socketPath);
+    withTmuxExtendedKeysLeaseLock(cwd, socketPath, () => {
+      const stateRaw = readTmuxExtendedKeysLeaseState(leasePath);
+      const state = stateRaw ? reapDeadTmuxExtendedKeysLeaseHolders(stateRaw) : null;
+      if (!state || state.holders.length === 0) {
+        if (stateRaw) {
+          execTmuxSync(
+            ["set-option", "-sq", "extended-keys", stateRaw.originalMode],
+            execFileSyncImpl,
+          );
+        }
+        rmSync(leasePath, { force: true });
+        return;
+      }
+
+      const holders = state.holders.filter(
+        (holder) => getTmuxExtendedKeysLeaseHolderId(holder) !== leaseId,
+      );
+      if (holders.length > 0) {
+        writeTmuxExtendedKeysLeaseState(leasePath, {
+          originalMode: state.originalMode,
+          holders,
+        });
+        return;
+      }
+
+      execTmuxSync(
+        ["set-option", "-sq", "extended-keys", state.originalMode],
+        execFileSyncImpl,
+      );
+      rmSync(leasePath, { force: true });
+    });
+  } catch (err) {
+    if (!isUnsupportedTmuxExtendedKeysFailure(err)) {
+      logCliOperationFailure(err);
+    }
+  }
+}
+
+function buildTmuxExtendedKeysHelperCommand(
+  cwd: string,
+  operation: "acquire" | "release",
+): string {
+  const cwdLiteral = JSON.stringify(cwd);
+  const moduleUrlLiteral = JSON.stringify(import.meta.url);
+  const script =
+    operation === "acquire"
+      ? `const mod = await import(${moduleUrlLiteral}); const ownerPid = Number.parseInt(process.argv[1] ?? "", 10); const lease = mod.acquireTmuxExtendedKeysLease(${cwdLiteral}, undefined, Number.isSafeInteger(ownerPid) && ownerPid > 0 ? ownerPid : undefined); if (lease) process.stdout.write(lease);`
+      : `const mod = await import(${moduleUrlLiteral}); mod.releaseTmuxExtendedKeysLease(${cwdLiteral}, process.argv[1] ?? "");`;
+  return `${quoteShellArg(process.execPath)} --input-type=module -e ${quoteShellArg(script)}`;
+}
+
+function buildTmuxExtendedKeysAcquireShellSnippet(cwd: string): string {
+  return `OMX_TMUX_EXTENDED_KEYS_LEASE=$(${buildTmuxExtendedKeysHelperCommand(cwd, "acquire")} "$$" 2>/dev/null || true);`;
+}
+
+function buildTmuxExtendedKeysReleaseShellSnippet(cwd: string): string {
+  return `if [ -n "\${OMX_TMUX_EXTENDED_KEYS_LEASE:-}" ]; then ${buildTmuxExtendedKeysHelperCommand(cwd, "release")} "\${OMX_TMUX_EXTENDED_KEYS_LEASE}" >/dev/null 2>&1 || true; fi;`;
+}
+
+export function withTmuxExtendedKeys<T>(
+  cwd: string,
+  run: () => T,
+  execFileSyncImpl: TmuxExecSync = (file, tmuxArgs) =>
+    execFileSync(file, tmuxArgs, {
+      encoding: "utf-8",
+      ...(process.platform === "win32" ? { windowsHide: true } : {}),
+    }) as string,
+): T {
+  const leaseHandle = acquireTmuxExtendedKeysLease(cwd, execFileSyncImpl);
+  try {
+    return run();
+  } finally {
+    if (leaseHandle) releaseTmuxExtendedKeysLease(cwd, leaseHandle, execFileSyncImpl);
+  }
 }
 
 export function buildDetachedSessionBootstrapSteps(
@@ -1372,10 +2308,21 @@ export function buildDetachedSessionBootstrapSteps(
   codexHomeOverride?: string,
   notifyTempContractRaw?: string | null,
   nativeWindows = false,
+  sessionId?: string,
+  projectLocalCodexHomeForCleanup?: string,
+  runtimeCodexHomeForCleanup?: string,
 ): DetachedSessionTmuxStep[] {
   const detachedLeaderCmd = nativeWindows
     ? "powershell.exe"
-    : buildDetachedSessionLeaderCommand(sessionName, codexCmd);
+    : buildDetachedSessionLeaderCommand(
+        cwd,
+        sessionName,
+        codexCmd,
+        sessionId,
+        codexHomeOverride,
+        projectLocalCodexHomeForCleanup,
+        runtimeCodexHomeForCleanup,
+      );
   const newSessionArgs: string[] = [
     "new-session",
     "-d",
@@ -1389,6 +2336,7 @@ export function buildDetachedSessionBootstrapSteps(
     ...(workerLaunchArgs
       ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`]
       : []),
+    ...(sessionId ? ["-e", `OMX_SESSION_ID=${sessionId}`] : []),
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
     ...(notifyTempContractRaw
       ? ["-e", `${OMX_NOTIFY_TEMP_CONTRACT_ENV}=${notifyTempContractRaw}`]
@@ -1412,6 +2360,14 @@ export function buildDetachedSessionBootstrapSteps(
   ];
   return [
     { name: "new-session", args: newSessionArgs },
+    ...(sessionId
+      ? [
+          {
+            name: "tag-session",
+            args: ["set-option", "-t", sessionName, OMX_INSTANCE_OPTION, sessionId],
+          },
+        ]
+      : []),
     { name: "split-and-capture-hud-pane", args: splitCaptureArgs },
   ];
 }
@@ -1491,6 +2447,10 @@ export function buildDetachedSessionFinalizeSteps(
       name: "set-mouse",
       args: ["set-option", "-t", sessionName, "mouse", "on"],
     });
+    steps.push({
+      name: "sanitize-copy-mode-style",
+      args: [],
+    });
   }
   steps.push({
     name: "attach-session",
@@ -1553,6 +2513,7 @@ export function buildNotifyFallbackWatcherEnv(
   options: {
     codexHomeOverride?: string;
     enableAuthority?: boolean;
+    sessionId?: string;
   } = {},
 ): NodeJS.ProcessEnv {
   const nextEnv = { ...env };
@@ -1561,18 +2522,284 @@ export function buildNotifyFallbackWatcherEnv(
   return {
     ...nextEnv,
     ...(options.codexHomeOverride ? { CODEX_HOME: options.codexHomeOverride } : {}),
+    ...(options.sessionId ? { OMX_SESSION_ID: options.sessionId } : {}),
     OMX_HUD_AUTHORITY: options.enableAuthority ? "1" : "0",
   };
 }
 
+export function shouldEnableNotifyFallbackWatcher(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const toggle = String(env.OMX_NOTIFY_FALLBACK ?? "").trim();
+  if (platform === "win32") {
+    return toggle === "1";
+  }
+  return toggle !== "0";
+}
+
+export async function cleanupLaunchOrphanedMcpProcesses(
+  dependencies: CleanupDependencies = {},
+): Promise<CleanupResult> {
+  return cleanupOmxMcpProcesses([], {
+    ...dependencies,
+    selectCandidates: dependencies.selectCandidates ?? findLaunchSafeCleanupCandidates,
+    writeLine: dependencies.writeLine ?? (() => {}),
+  });
+}
+
+interface PostLaunchCleanupDependencies {
+  cleanup?: () => Promise<CleanupResult>;
+  writeInfo?: (line: string) => void;
+  writeWarn?: (line: string) => void;
+  writeError?: (line: string) => void;
+}
+
+interface PostLaunchModeCleanupDependencies {
+  readdir?: typeof import("fs/promises").readdir;
+  readFile?: typeof import("fs/promises").readFile;
+  writeFile?: typeof import("fs/promises").writeFile;
+  sleep?: (ms: number) => Promise<void>;
+  writeWarn?: (line: string) => void;
+  now?: () => Date;
+}
+
+type PostLaunchModeStateReadResult =
+  | { kind: "ok"; state: Record<string, unknown> }
+  | { kind: "missing" | "recoverable" }
+  | { kind: "malformed"; message: string };
+
+const POST_LAUNCH_MODE_STATE_RETRY_DELAY_MS = 10;
+const POST_LAUNCH_MODE_STATE_MAX_READ_ATTEMPTS = 2;
+
+function isLikelyTransientModeStateParseFailure(raw: string, err: unknown): boolean {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return true;
+  if (!(err instanceof SyntaxError)) return false;
+  if (!trimmed.startsWith("{") || trimmed.endsWith("}")) return false;
+  return (
+    /Unexpected end of JSON input/.test(err.message) ||
+    /Unterminated string in JSON/.test(err.message) ||
+    /Expected double-quoted property name in JSON/.test(err.message) ||
+    /Expected property name or '}' in JSON/.test(err.message) ||
+    /Expected ':' after property name in JSON/.test(err.message) ||
+    /Expected ',' or '}' after property value in JSON/.test(err.message)
+  );
+}
+
+async function readPostLaunchModeStateFile(
+  path: string,
+  dependencies: Pick<PostLaunchModeCleanupDependencies, "readFile" | "sleep"> = {},
+): Promise<PostLaunchModeStateReadResult> {
+  const readFile =
+    dependencies.readFile ?? (await import("fs/promises")).readFile;
+  const sleep =
+    dependencies.sleep
+    ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  for (let attempt = 1; attempt <= POST_LAUNCH_MODE_STATE_MAX_READ_ATTEMPTS; attempt += 1) {
+    try {
+      const raw = await readFile(path, "utf-8");
+      const trimmed = raw.trim();
+      if (trimmed.length === 0) {
+        if (attempt < POST_LAUNCH_MODE_STATE_MAX_READ_ATTEMPTS) {
+          await sleep(POST_LAUNCH_MODE_STATE_RETRY_DELAY_MS);
+          continue;
+        }
+        return { kind: "recoverable" };
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw) as unknown;
+      } catch (err) {
+        if (isLikelyTransientModeStateParseFailure(raw, err)) {
+          if (attempt < POST_LAUNCH_MODE_STATE_MAX_READ_ATTEMPTS) {
+            await sleep(POST_LAUNCH_MODE_STATE_RETRY_DELAY_MS);
+            continue;
+          }
+          return { kind: "recoverable" };
+        }
+        return {
+          kind: "malformed",
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+        return { kind: "malformed", message: "mode state must be a JSON object" };
+      }
+      return { kind: "ok", state: parsed as Record<string, unknown> };
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException;
+      if (error?.code === "ENOENT") return { kind: "missing" };
+      return {
+        kind: "malformed",
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  return { kind: "recoverable" };
+}
+
+function buildRecoveredPostLaunchModeState(
+  mode: string,
+  completedAt: string,
+): Record<string, unknown> {
+  return {
+    active: false,
+    mode,
+    current_phase: "cancelled",
+    completed_at: completedAt,
+    last_turn_at: completedAt,
+  };
+}
+
+function buildRecoveredPostLaunchSkillActiveState(
+  completedAt: string,
+): Record<string, unknown> {
+  return {
+    version: 1,
+    active: false,
+    skill: "",
+    phase: "complete",
+    updated_at: completedAt,
+    active_skills: [],
+  };
+}
+
+export async function cleanupPostLaunchModeStateFiles(
+  cwd: string,
+  sessionId: string,
+  dependencies: PostLaunchModeCleanupDependencies = {},
+): Promise<void> {
+  const readdir =
+    dependencies.readdir ?? (await import("fs/promises")).readdir;
+  const writeFile =
+    dependencies.writeFile ?? (await import("fs/promises")).writeFile;
+  const writeWarn = dependencies.writeWarn ?? console.warn;
+  const now = dependencies.now ?? (() => new Date());
+  const scopedDirs = [getBaseStateDir(cwd), getStateDir(cwd, sessionId)];
+
+  for (const stateDir of scopedDirs) {
+    const files = await readdir(stateDir).catch(() => [] as string[]);
+    for (const file of files) {
+      if (!file.endsWith("-state.json") || file === "session.json") continue;
+      const path = join(stateDir, file);
+      const mode = file.slice(0, -"-state.json".length);
+      const result = await readPostLaunchModeStateFile(path, dependencies);
+      if (result.kind !== "ok") {
+        if (result.kind === "recoverable") {
+          try {
+            const completedAt = now().toISOString();
+            await writeFile(
+              path,
+              JSON.stringify(
+                mode === SKILL_ACTIVE_STATE_MODE
+                  ? buildRecoveredPostLaunchSkillActiveState(completedAt)
+                  : buildRecoveredPostLaunchModeState(mode, completedAt),
+                null,
+                2,
+              ),
+            );
+            if (isTrackedWorkflowMode(mode)) {
+              await syncCanonicalSkillStateForMode({
+                cwd,
+                mode,
+                active: false,
+                currentPhase: "cancelled",
+                sessionId: stateDir === getStateDir(cwd, sessionId) ? sessionId : undefined,
+                nowIso: completedAt,
+                source: "postLaunchCleanup",
+              });
+            }
+          } catch (err) {
+            writeWarn(
+              `[omx] postLaunch: failed to recover mode state ${path}: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+        } else if (result.kind === "malformed") {
+          writeWarn(
+            `[omx] postLaunch: skipped malformed mode state ${path}: ${result.message}`,
+          );
+        }
+        continue;
+      }
+      const skillStateStillVisible = mode === SKILL_ACTIVE_STATE_MODE
+        && Array.isArray(result.state.active_skills)
+        && result.state.active_skills.length > 0;
+      if (result.state.active !== true && !skillStateStillVisible) continue;
+
+      try {
+        const completedAt = now().toISOString();
+        if (mode === SKILL_ACTIVE_STATE_MODE) {
+          result.state.active = false;
+          result.state.phase = "complete";
+          result.state.updated_at = completedAt;
+          result.state.active_skills = [];
+          await writeFile(path, JSON.stringify(result.state, null, 2));
+          continue;
+        }
+        result.state.active = false;
+        result.state.current_phase = "cancelled";
+        result.state.completed_at = completedAt;
+        await writeFile(path, JSON.stringify(result.state, null, 2));
+        if (isTrackedWorkflowMode(mode)) {
+          await syncCanonicalSkillStateForMode({
+            cwd,
+            mode,
+            active: false,
+            currentPhase: "cancelled",
+            sessionId: stateDir === getStateDir(cwd, sessionId) ? sessionId : undefined,
+            nowIso: completedAt,
+            source: "postLaunchCleanup",
+          });
+        }
+      } catch (err) {
+        writeWarn(
+          `[omx] postLaunch: failed to update mode state ${path}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+  }
+}
+
+export async function reapPostLaunchOrphanedMcpProcesses(
+  dependencies: PostLaunchCleanupDependencies = {},
+): Promise<void> {
+  const cleanup = dependencies.cleanup ?? cleanupLaunchOrphanedMcpProcesses;
+  const writeInfo = dependencies.writeInfo ?? console.log;
+  const writeWarn = dependencies.writeWarn ?? console.warn;
+  const writeError =
+    dependencies.writeError ?? ((line: string) => process.stderr.write(line));
+
+  try {
+    const result = await cleanup();
+    if (result.terminatedCount > 0) {
+      writeInfo(
+        `[omx] postLaunch: reaped ${result.terminatedCount} orphaned OMX MCP process(es).`,
+      );
+    }
+    if (result.failedPids.length > 0) {
+      writeWarn(
+        `[omx] postLaunch: failed to reap ${result.failedPids.length} orphaned OMX MCP process(es); continuing cleanup.`,
+      );
+    }
+  } catch (err) {
+    writeError(`[cli/index] postLaunch MCP cleanup failed: ${err}\n`);
+  }
+}
+
 /**
  * preLaunch: Prepare environment before Codex starts.
- * 1. Generate runtime overlay + write session-scoped model instructions file
- * 2. Write session.json
+ * 1. Best-effort launch-safe orphan cleanup for detached OMX MCP processes
+ * 2. Generate runtime overlay + write session-scoped model instructions file
+ * 3. Write session.json
  *
- * Automatic stale-session cleanup is intentionally disabled here. Destructive
- * cleanup must be explicit via `omx cleanup` so normal launches never reap
- * files or processes from other OMX sessions.
+ * Automatic broad stale-session cleanup remains disabled here. Only detached
+ * OMX MCP processes without a live Codex ancestor are reaped so new launches
+ * do not accumulate stale processes from prior crashed/closed sessions.
  */
 async function preLaunch(
   cwd: string,
@@ -1580,43 +2807,66 @@ async function preLaunch(
   notifyTempContract?: NotifyTempContract,
   codexHomeOverride?: string,
   enableNotifyFallbackAuthority: boolean = false,
+  worktreeDirty: boolean = false,
 ): Promise<void> {
-  // 1. Generate runtime overlay + write session-scoped model instructions file
+  // 1. Best-effort launch-safe orphan cleanup
+  try {
+    const cleanup = await cleanupLaunchOrphanedMcpProcesses();
+    if (cleanup.terminatedCount > 0) {
+      console.log(
+        `[omx] Reaped ${cleanup.terminatedCount} orphaned OMX MCP process(es) before launch.`,
+      );
+    }
+    if (cleanup.failedPids.length > 0) {
+      console.warn(
+        `[omx] Failed to reap ${cleanup.failedPids.length} orphaned OMX MCP process(es); continuing launch.`,
+      );
+    }
+  } catch (err) {
+    logCliOperationFailure(err);
+    // Non-fatal
+  }
+
+  // 2. Generate runtime overlay + write session-scoped model instructions file
   const orchestrationMode = await resolveSessionOrchestrationMode(
     cwd,
     sessionId,
   );
   const overlay = await generateOverlay(cwd, sessionId, { orchestrationMode });
   const launchAppendix = await readLaunchAppendInstructions();
+  const dirtyWorktreeGuidance = worktreeDirty
+    ? `\n\n## Session start: dirty worktree detected\n\nThis worktree has uncommitted changes that were present when the session launched.\nBefore executing the requested task, resolve the dirty state first:\n1. Review uncommitted changes with \`git status\` and \`git diff\`.\n2. Commit, stash, or discard changes as appropriate.\n3. Then proceed with the original task.`
+    : "";
   const sessionInstructions =
     launchAppendix.trim().length > 0
       ? `${overlay}
 
-${launchAppendix}`
-      : overlay;
+${launchAppendix}${dirtyWorktreeGuidance}`
+      : `${overlay}${dirtyWorktreeGuidance}`;
   await writeSessionModelInstructionsFile(cwd, sessionId, sessionInstructions);
 
-  // 2. Write session state
-  await resetSessionMetrics(cwd);
+  // 3. Write session state
+  await resetSessionMetrics(cwd, sessionId);
   await writeSessionStart(cwd, sessionId);
+  tagCurrentTmuxSessionWithInstance(sessionId);
 
-  // 3. Start notify fallback watcher (best effort)
+  // 4. Start notify fallback watcher (best effort)
   try {
-    await startNotifyFallbackWatcher(cwd, { codexHomeOverride, enableAuthority: enableNotifyFallbackAuthority });
+    await startNotifyFallbackWatcher(cwd, { codexHomeOverride, enableAuthority: enableNotifyFallbackAuthority, sessionId });
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal
   }
 
-  // 4. Start derived watcher (best effort, opt-in)
+  // 5. Start derived watcher (best effort, opt-in)
   try {
     await startHookDerivedWatcher(cwd);
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal
   }
 
-  // 5. Emit temp notification startup summary + warnings, then send session-start lifecycle notification (best effort)
+  // 6. Emit temp notification startup summary + warnings, then send session-start lifecycle notification (best effort)
   try {
     if (notifyTempContract?.active) {
       process.env[OMX_NOTIFY_TEMP_CONTRACT_ENV] =
@@ -1644,11 +2894,11 @@ ${launchAppendix}`
       projectName: basename(cwd),
     });
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal: notification failures must never block launch
   }
 
-  // 6. Dispatch native hook event (best effort)
+  // 7. Dispatch native hook event (best effort)
   try {
     await emitNativeHookEvent(cwd, "session-start", {
       session_id: sessionId,
@@ -1659,7 +2909,7 @@ ${launchAppendix}`
       }),
     });
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal
   }
 }
@@ -1675,7 +2925,10 @@ function runCodex(
   workerDefaultModel?: string,
   codexHomeOverride?: string,
   notifyTempContractRaw?: string | null,
-): void {
+  explicitLaunchPolicy?: CodexLaunchPolicy,
+  projectLocalCodexHomeForCleanup?: string,
+  runtimeCodexHomeForCleanup?: string,
+): { postLaunchHandledExternally: boolean } {
   const launchArgs = injectModelInstructionsBypassArgs(
     cwd,
     args,
@@ -1683,10 +2936,13 @@ function runCodex(
     sessionModelInstructionsPath(cwd, sessionId),
   );
   const nativeWindows = isNativeWindows();
-  const omxBin = process.argv[1];
+  const omxBin = resolveOmxEntryPath();
+  if (!omxBin) {
+    throw new Error("Unable to resolve OMX launcher path for tmux HUD bootstrap");
+  }
   const hudCmd = nativeWindows
     ? buildWindowsPromptCommand("node", [omxBin, "hud", "--watch"])
-    : buildTmuxPaneCommand("node", [omxBin, "hud", "--watch"]);
+    : buildTmuxPaneCommand("env", [`OMX_SESSION_ID=${sessionId}`, "node", omxBin, "hud", "--watch"]);
   const inheritLeaderFlags = process.env[TEAM_INHERIT_LEADER_FLAGS_ENV] !== "0";
   const workerLaunchArgs = resolveTeamWorkerLaunchArgsEnv(
     process.env[TEAM_WORKER_LAUNCH_ARGS_ENV],
@@ -1697,23 +2953,22 @@ function runCodex(
   const codexBaseEnv = codexHomeOverride
     ? { ...process.env, CODEX_HOME: codexHomeOverride }
     : process.env;
+  const codexEnvWithSession = { ...codexBaseEnv, OMX_SESSION_ID: sessionId };
   const codexEnv = workerLaunchArgs
-    ? { ...codexBaseEnv, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
-    : codexBaseEnv;
+    ? { ...codexEnvWithSession, [TEAM_WORKER_LAUNCH_ARGS_ENV]: workerLaunchArgs }
+    : codexEnvWithSession;
   const codexEnvWithNotify = notifyTempContractRaw
     ? { ...codexEnv, [OMX_NOTIFY_TEMP_CONTRACT_ENV]: notifyTempContractRaw }
     : codexEnv;
 
-  const launchPolicy = resolveCodexLaunchPolicy(
-    process.env,
-    process.platform,
-    undefined,
+  const { launchPolicy } = resolveTmuxAwareLaunchPolicy(
+    explicitLaunchPolicy,
     nativeWindows,
   );
 
   if (isCodexVersionRequest(launchArgs)) {
     runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
-    return;
+    return { postLaunchHandledExternally: false };
   }
 
   if (launchPolicy === "inside-tmux") {
@@ -1728,7 +2983,7 @@ function runCodex(
     try {
       hudPaneId = createHudWatchPane(cwd, hudCmd);
     } catch (err) {
-      process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+      logCliOperationFailure(err);
       // HUD split failed, continue without it
     }
 
@@ -1741,12 +2996,12 @@ function runCodex(
         const displayArgs = tmuxPaneTarget
           ? ["display-message", "-p", "-t", tmuxPaneTarget, "#S"]
           : ["display-message", "-p", "#S"];
-        const tmuxSession = execFileSync("tmux", displayArgs, {
+        const tmuxSession = execTmuxFileSync(displayArgs, {
           encoding: "utf-8",
         }).trim();
         if (tmuxSession) enableMouseScrolling(tmuxSession);
       } catch (err) {
-        process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+        logCliOperationFailure(err);
         // Non-fatal: mouse scrolling is a convenience feature
       }
     }
@@ -1754,14 +3009,16 @@ function runCodex(
     const activePaneId = process.env.TMUX_PANE?.trim();
     if (activePaneId) {
       try {
-        execFileSync("tmux", ["display-message", "-p", "-t", activePaneId, "#S"], {
+        execTmuxFileSync(["display-message", "-p", "-t", activePaneId, "#S"], {
           encoding: "utf-8",
         });
       } catch {}
     }
 
     try {
-      runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+      withTmuxExtendedKeys(cwd, () => {
+        runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+      });
     } finally {
       const cleanupPaneIds = buildHudPaneCleanupTargets(
         listHudWatchPaneIdsInCurrentWindow(currentPaneId),
@@ -1772,18 +3029,23 @@ function runCodex(
         killTmuxPane(paneId);
       }
     }
+    return { postLaunchHandledExternally: false };
   } else if (launchPolicy === "direct") {
     // Detached HUD sessions require tmux. Skip the bootstrap entirely when the
     // binary is unavailable so direct launches do not emit noisy ENOENT logs.
     runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+    return { postLaunchHandledExternally: false };
   } else {
     // Not in tmux: create a new tmux session with codex + HUD pane
     const codexCmd = buildTmuxPaneCommand("codex", launchArgs);
     const detachedWindowsCodexCmd = nativeWindows
       ? buildWindowsPromptCommand("codex", launchArgs)
       : null;
-    const tmuxSessionId = `omx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const sessionName = buildTmuxSessionName(cwd, tmuxSessionId);
+    const sessionName = buildDetachedTmuxSessionName(cwd, sessionId);
+    void writeSessionStart(cwd, sessionId, { tmuxSessionName: sessionName }).catch((err) => {
+      logCliOperationFailure(err);
+      // Non-fatal: managed tmux recovery can still use compatibility fallback.
+    });
     let createdDetachedSession = false;
     let registeredHookTarget: string | null = null;
     let registeredHookName: string | null = null;
@@ -1798,9 +3060,12 @@ function runCodex(
         codexHomeOverride,
         notifyTempContractRaw,
         nativeWindows,
+        sessionId,
+        projectLocalCodexHomeForCleanup,
+        runtimeCodexHomeForCleanup,
       );
       for (const step of bootstrapSteps) {
-        const output = execFileSync("tmux", step.args, {
+        const output = execTmuxFileSync(step.args, {
           stdio: "pipe",
           encoding: "utf-8",
         });
@@ -1849,12 +3114,20 @@ function runCodex(
             );
           }
           for (const finalizeStep of finalizeSteps) {
+            if (finalizeStep.name === "sanitize-copy-mode-style") {
+              try {
+                mitigateCopyModeUnderlineArtifacts(sessionName);
+              } catch (err) {
+                logCliOperationFailure(err);
+              }
+              continue;
+            }
             const stdio =
               finalizeStep.name === "attach-session" ? "inherit" : "ignore";
             try {
-              execFileSync("tmux", finalizeStep.args, { stdio });
+              execTmuxFileSync(finalizeStep.args, { stdio });
             } catch (err) {
-              process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+              logCliOperationFailure(err);
               if (finalizeStep.name === "attach-session")
                 throw new Error("failed to attach detached tmux session");
               continue;
@@ -1876,8 +3149,9 @@ function runCodex(
           }
         }
       }
+      return { postLaunchHandledExternally: !nativeWindows };
     } catch (err) {
-      process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+      logCliOperationFailure(err);
       if (createdDetachedSession) {
         const rollbackSteps = buildDetachedSessionRollbackSteps(
           sessionName,
@@ -1887,64 +3161,39 @@ function runCodex(
         );
         for (const rollbackStep of rollbackSteps) {
           try {
-            execFileSync("tmux", rollbackStep.args, { stdio: "ignore" });
+            execTmuxFileSync(rollbackStep.args, { stdio: "ignore" });
           } catch (err) {
-            process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+            logCliOperationFailure(err);
             // best-effort rollback only
           }
         }
       }
       // tmux not available or failed, just run codex directly
       runCodexBlocking(cwd, launchArgs, codexEnvWithNotify);
+      return { postLaunchHandledExternally: false };
     }
   }
 }
 
 function listHudWatchPaneIdsInCurrentWindow(currentPaneId?: string): string[] {
   try {
-    const output = execFileSync(
-      "tmux",
-      [
-        "list-panes",
-        "-F",
-        "#{pane_id}\t#{pane_current_command}\t#{pane_start_command}",
-      ],
-      { encoding: "utf-8" },
-    );
-    return findHudWatchPaneIds(parseTmuxPaneSnapshot(output), currentPaneId);
+    return listCurrentWindowHudPaneIds(currentPaneId);
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     return [];
   }
 }
 
 function createHudWatchPane(cwd: string, hudCmd: string): string | null {
-  const output = execFileSync(
-    "tmux",
-    [
-      "split-window",
-      "-v",
-      "-l",
-      String(HUD_TMUX_HEIGHT_LINES),
-      "-d",
-      "-c",
-      cwd,
-      "-P",
-      "-F",
-      "#{pane_id}",
-      hudCmd,
-    ],
-    { encoding: "utf-8" },
-  );
-  return parsePaneIdFromTmuxOutput(output);
+  return createSharedHudWatchPane(cwd, hudCmd, { heightLines: HUD_TMUX_HEIGHT_LINES });
 }
 
 function killTmuxPane(paneId: string): void {
   if (!paneId.startsWith("%")) return;
   try {
-    execFileSync("tmux", ["kill-pane", "-t", paneId], { stdio: "ignore" });
+    killSharedTmuxPane(paneId);
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Pane may already be gone; ignore.
   }
 }
@@ -1978,9 +3227,10 @@ export function buildWindowsPromptCommand(
 }
 
 /**
- * Wrap a command for tmux pane execution so the user's shell profile is
- * sourced.  Without this, tmux runs `default-shell -c "cmd"` which is
- * non-interactive/non-login and skips .zshrc / .bashrc.
+ * Wrap a command for tmux pane execution while preserving the tmux pane cwd.
+ * tmux already starts the pane at `-c <cwd>`; using a login shell here can
+ * reset that cwd back to the shell's startup directory on some setups.
+ * Source zsh/bash rc files explicitly when needed, then exec the target.
  */
 export function buildTmuxPaneCommand(
   command: string,
@@ -1996,7 +3246,7 @@ export function buildTmuxPaneCommand(
     ? `if [ -f ${launchSpec.rcFile} ]; then source ${launchSpec.rcFile}; fi; `
     : "";
   const inner = `${rcSource}exec ${bareCmd}`;
-  return `${quoteShellArg(launchSpec.shell)} -lc ${quoteShellArg(inner)}`;
+  return `${quoteShellArg(launchSpec.shell)} -c ${quoteShellArg(inner)}`;
 }
 
 function quoteShellArg(value: string): string {
@@ -2007,10 +3257,11 @@ function quotePowerShellArg(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-function buildDetachedWindowsBootstrapScript(
+export function buildDetachedWindowsBootstrapScript(
   sessionName: string,
   commandText: string,
   delayMs: number = WINDOWS_DETACHED_BOOTSTRAP_DELAY_MS,
+  tmuxCommand: string = resolveTmuxExecutableForLaunch(),
 ): string {
   const delay =
     Number.isFinite(delayMs) && delayMs > 0
@@ -2018,12 +3269,14 @@ function buildDetachedWindowsBootstrapScript(
       : WINDOWS_DETACHED_BOOTSTRAP_DELAY_MS;
   const targetLiteral = JSON.stringify(`${sessionName}:0.0`);
   const commandLiteral = JSON.stringify(commandText);
+  const tmuxCommandLiteral = JSON.stringify(tmuxCommand);
 
   return [
     "const { execFileSync } = require('child_process');",
+    `const tmuxCommand = ${tmuxCommandLiteral};`,
     `setTimeout(() => {`,
-    `try { execFileSync('tmux', ['send-keys', '-t', ${targetLiteral}, '-l', '--', ${commandLiteral}], { stdio: 'ignore' }); } catch {}`,
-    `try { execFileSync('tmux', ['send-keys', '-t', ${targetLiteral}, 'C-m'], { stdio: 'ignore' }); } catch {}`,
+    `try { execFileSync(tmuxCommand, ['send-keys', '-t', ${targetLiteral}, '-l', '--', ${commandLiteral}], { stdio: 'ignore' }); } catch {}`,
+    `try { execFileSync(tmuxCommand, ['send-keys', '-t', ${targetLiteral}, 'C-m'], { stdio: 'ignore' }); } catch {}`,
     `}, ${delay});`,
   ].join("");
 }
@@ -2053,6 +3306,7 @@ async function postLaunch(
   sessionId: string,
   codexHomeOverride?: string,
   enableNotifyFallbackAuthority: boolean = false,
+  projectLocalCodexHomeForCleanup?: string,
 ): Promise<void> {
   // Capture session start time before cleanup (writeSessionEnd deletes session.json)
   let sessionStartedAt: string | undefined;
@@ -2060,15 +3314,18 @@ async function postLaunch(
     const sessionState = await readSessionState(cwd);
     sessionStartedAt = sessionState?.started_at;
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal
   }
 
+  // 0. Reap MCP orphans left behind by the session that just exited.
+  await reapPostLaunchOrphanedMcpProcesses();
+
   // 0. Flush fallback watcher once to reduce race with fast codex exit.
   try {
-    await flushNotifyFallbackOnce(cwd, { codexHomeOverride, enableAuthority: enableNotifyFallbackAuthority });
+    await flushNotifyFallbackOnce(cwd, { codexHomeOverride, enableAuthority: enableNotifyFallbackAuthority, sessionId });
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal
   }
 
@@ -2076,7 +3333,7 @@ async function postLaunch(
   try {
     await stopNotifyFallbackWatcher(cwd);
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal
   }
 
@@ -2084,7 +3341,7 @@ async function postLaunch(
   try {
     await flushHookDerivedWatcherOnce(cwd);
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal
   }
 
@@ -2092,8 +3349,21 @@ async function postLaunch(
   try {
     await stopHookDerivedWatcher(cwd);
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal
+  }
+
+  // 0.5. Remove Codex transient TUI NUX counters from project-local config only.
+  try {
+    if (projectLocalCodexHomeForCleanup) {
+      await cleanCodexModelAvailabilityNuxIfNeeded(
+        join(projectLocalCodexHomeForCleanup, "config.toml"),
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[omx] postLaunch: project config transient NUX cleanup failed: ${err instanceof Error ? err.message : err}`,
+    );
   }
 
   // 1. Remove session-scoped model instructions file
@@ -2114,24 +3384,18 @@ async function postLaunch(
     );
   }
 
+  // 2.5. Best-effort wiki session capture
+  try {
+    const { onSessionEnd } = await import("../wiki/lifecycle.js");
+    onSessionEnd({ cwd, session_id: sessionId });
+  } catch (err) {
+    logCliOperationFailure(err);
+    // Non-fatal: wiki capture must never block session cleanup
+  }
+
   // 3. Cancel any still-active modes
   try {
-    const { readdir, writeFile, readFile } = await import("fs/promises");
-    const scopedDirs = [getBaseStateDir(cwd), getStateDir(cwd, sessionId)];
-    for (const stateDir of scopedDirs) {
-      const files = await readdir(stateDir).catch(() => [] as string[]);
-      for (const file of files) {
-        if (!file.endsWith("-state.json") || file === "session.json") continue;
-        const path = join(stateDir, file);
-        const content = await readFile(path, "utf-8");
-        const state = JSON.parse(content);
-        if (state.active) {
-          state.active = false;
-          state.completed_at = new Date().toISOString();
-          await writeFile(path, JSON.stringify(state, null, 2));
-        }
-      }
-    }
+    await cleanupPostLaunchModeStateFiles(cwd, sessionId);
   } catch (err) {
     console.error(
       `[omx] postLaunch: mode cleanup failed: ${err instanceof Error ? err.message : err}`,
@@ -2152,8 +3416,17 @@ async function postLaunch(
       reason: "session_exit",
     });
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal: notification failures must never block session cleanup
+  }
+
+  // 4.5. Persist team leader attention when an active leader session exits.
+  try {
+    const { markOwnedTeamsLeaderSessionStopped } = await import("../team/state.js");
+    await markOwnedTeamsLeaderSessionStopped(cwd, sessionId);
+  } catch (err) {
+    logCliOperationFailure(err);
+    // Non-fatal
   }
 
   // 5. Dispatch native hook event (best effort)
@@ -2182,9 +3455,26 @@ async function postLaunch(
       }),
     });
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     // Non-fatal
   }
+}
+
+export async function runDetachedSessionPostLaunch(
+  cwd: string,
+  sessionId: string,
+  codexHomeOverride?: string,
+  projectLocalCodexHomeForCleanup?: string,
+  runtimeCodexHomeForCleanup?: string,
+): Promise<void> {
+  await postLaunch(
+    cwd,
+    sessionId,
+    codexHomeOverride,
+    false,
+    projectLocalCodexHomeForCleanup,
+  );
+  await cleanupRuntimeCodexHome(runtimeCodexHomeForCleanup).catch(logCliOperationFailure);
 }
 
 async function emitNativeHookEvent(
@@ -2220,19 +3510,209 @@ function hookDerivedWatcherPidPath(cwd: string): string {
   return join(cwd, ".omx", "state", "hook-derived-watcher.pid");
 }
 
+export function shouldDetachBackgroundHelper(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  // The long-running watcher/helper itself must stay detached so it can
+  // survive parent loss. Windows Git Bash/MSYS uses a short hidden bootstrap
+  // process so the detached helper is created without stealing focus.
+  void env;
+  void platform;
+  return true;
+}
+
+export type BackgroundHelperLaunchMode =
+  | "direct-detached"
+  | "windows-msys-bootstrap";
+
+export function resolveBackgroundHelperLaunchMode(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): BackgroundHelperLaunchMode {
+  return platform === "win32" && isMsysOrGitBash(env, platform)
+    ? "windows-msys-bootstrap"
+    : "direct-detached";
+}
+
+export function buildWindowsMsysBackgroundHelperBootstrapScript(
+  helperArgs: readonly string[],
+  cwd: string,
+): string {
+  const helperArgsLiteral = JSON.stringify(helperArgs);
+  const cwdLiteral = JSON.stringify(cwd);
+  return [
+    "const { spawn } = require('child_process');",
+    `const child = spawn(process.execPath, ${helperArgsLiteral}, { cwd: ${cwdLiteral}, detached: true, stdio: 'ignore', windowsHide: true, env: process.env });`,
+    "if (!child.pid) process.exit(1);",
+    "process.stdout.write(String(child.pid));",
+    "child.unref();",
+  ].join("");
+}
+
+async function launchBackgroundHelper(
+  helperArgs: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv },
+): Promise<number | undefined> {
+  const launchMode = resolveBackgroundHelperLaunchMode(
+    options.env,
+    process.platform,
+  );
+
+  if (launchMode === "windows-msys-bootstrap") {
+    const { spawnSync } = await import("child_process");
+    const bootstrap = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        buildWindowsMsysBackgroundHelperBootstrapScript(
+          helperArgs,
+          options.cwd,
+        ),
+      ],
+      {
+        cwd: options.cwd,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        env: options.env,
+      },
+    );
+
+    if (bootstrap.error) {
+      throw bootstrap.error;
+    }
+
+    if (bootstrap.status !== 0) {
+      const detail = (bootstrap.stderr || bootstrap.stdout || "").trim();
+      throw new Error(
+        detail || `background helper bootstrap exited ${bootstrap.status}`,
+      );
+    }
+
+    const helperPid = Number.parseInt((bootstrap.stdout || "").trim(), 10);
+    return Number.isFinite(helperPid) && helperPid > 0
+      ? helperPid
+      : undefined;
+  }
+
+  const child = spawn(process.execPath, helperArgs, {
+    cwd: options.cwd,
+    detached: shouldDetachBackgroundHelper(options.env, process.platform),
+    stdio: "ignore",
+    windowsHide: true,
+    env: options.env,
+  });
+  child.unref();
+  return child.pid;
+}
+
 function parseWatcherPidFile(content: string): number | null {
   const trimmed = content.trim();
   if (!trimmed) return null;
   try {
-    const parsed = JSON.parse(trimmed) as { pid?: unknown };
-    return typeof parsed.pid === "number" &&
-      Number.isFinite(parsed.pid) &&
-      parsed.pid > 0
-      ? parsed.pid
-      : null;
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (typeof parsed === "number") {
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    }
+    const pid =
+      typeof parsed === "object" && parsed !== null
+        ? (parsed as { pid?: unknown }).pid
+        : undefined;
+    return typeof pid === "number" && Number.isFinite(pid) && pid > 0 ? pid : null;
   } catch {
     const pid = Number.parseInt(trimmed, 10);
     return Number.isFinite(pid) && pid > 0 ? pid : null;
+  }
+}
+
+interface WatcherPidRecord {
+  pid: number;
+  startedAt: string | null;
+}
+
+function parseWatcherPidRecord(content: string): WatcherPidRecord | null {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (typeof parsed === "object" && parsed !== null) {
+      const { pid, started_at: startedAtRaw } = parsed as {
+        pid?: unknown;
+        started_at?: unknown;
+      };
+      if (typeof pid === "number" && Number.isFinite(pid) && pid > 0) {
+        return {
+          pid,
+          startedAt: typeof startedAtRaw === "string" ? startedAtRaw : null,
+        };
+      }
+    }
+  } catch {
+  }
+
+  const pid = parseWatcherPidFile(trimmed);
+  return pid ? { pid, startedAt: null } : null;
+}
+
+function isLikelyOmxWatcherProcess(
+  pid: number,
+  execFileSyncFn: typeof execFileSync = execFileSync,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform === "win32") {
+    // ps is unavailable on native Windows; fall back to unconditional reap
+    // to preserve the pre-identity-check behavior on opted-in Windows hosts.
+    return true;
+  }
+  try {
+    const cmd = execFileSyncFn("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf-8",
+      timeout: 2000,
+      windowsHide: true,
+    }) as string;
+    return cmd.includes("notify-fallback-watcher") || cmd.includes("hook-derived-watcher");
+  } catch {
+    return false;
+  }
+}
+
+export async function reapStaleNotifyFallbackWatcher(
+  pidPath: string,
+  deps: {
+    exists?: (path: string) => boolean;
+    readFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
+    tryKillPid?: (pid: number, signal?: NodeJS.Signals) => boolean;
+    hasErrnoCode?: (error: unknown, code: string) => boolean;
+    warn?: (message?: unknown, ...optionalParams: unknown[]) => void;
+    isWatcherProcess?: (pid: number) => boolean;
+  } = {},
+): Promise<void> {
+  const exists = deps.exists ?? existsSync;
+  if (!exists(pidPath)) return;
+
+  const { readFile } = await import("fs/promises");
+  const readFileImpl = deps.readFile ?? readFile;
+  const tryKillPidImpl = deps.tryKillPid ?? tryKillPid;
+  const hasErrnoCodeImpl = deps.hasErrnoCode ?? hasErrnoCode;
+  const warn = deps.warn ?? console.warn;
+  const isWatcherProcessImpl = deps.isWatcherProcess ?? isLikelyOmxWatcherProcess;
+
+  try {
+    const record = parseWatcherPidRecord(await readFileImpl(pidPath, "utf-8"));
+    if (record && isWatcherProcessImpl(record.pid)) {
+      tryKillPidImpl(record.pid, "SIGTERM");
+    }
+  } catch (error: unknown) {
+    if (!hasErrnoCodeImpl(error, "ESRCH")) {
+      warn(
+        "[omx] warning: failed to stop stale notify fallback watcher",
+        {
+          path: pidPath,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
   }
 }
 
@@ -2249,36 +3729,18 @@ function tryKillPid(pid: number, signal: NodeJS.Signals = "SIGTERM"): boolean {
 
 async function startNotifyFallbackWatcher(
   cwd: string,
-  options: { codexHomeOverride?: string; enableAuthority?: boolean } = {},
+  options: { codexHomeOverride?: string; enableAuthority?: boolean; sessionId?: string } = {},
 ): Promise<void> {
-  if (process.env.OMX_NOTIFY_FALLBACK === "0") return;
-
-  const { mkdir, writeFile, readFile } = await import("fs/promises");
+  const { mkdir, writeFile } = await import("fs/promises");
   const pidPath = notifyFallbackPidPath(cwd);
+  await reapStaleNotifyFallbackWatcher(pidPath);
+
+  if (!shouldEnableNotifyFallbackWatcher(process.env, process.platform)) return;
+
   const pkgRoot = getPackageRoot();
   const watcherScript = resolveNotifyFallbackWatcherScript(pkgRoot);
   const notifyScript = resolveNotifyHookScript(pkgRoot);
   if (!existsSync(watcherScript) || !existsSync(notifyScript)) return;
-
-  // Stop stale watcher from a previous run.
-  if (existsSync(pidPath)) {
-    try {
-      const prevPid = parseWatcherPidFile(await readFile(pidPath, "utf-8"));
-      if (prevPid) {
-        tryKillPid(prevPid, "SIGTERM");
-      }
-    } catch (error: unknown) {
-      if (!hasErrnoCode(error, "ESRCH")) {
-        console.warn(
-          "[omx] warning: failed to stop stale notify fallback watcher",
-          {
-            path: pidPath,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        );
-      }
-    }
-  }
 
   await mkdir(join(cwd, ".omx", "state"), { recursive: true }).catch(
     (error: unknown) => {
@@ -2291,38 +3753,50 @@ async function startNotifyFallbackWatcher(
       );
     },
   );
-  const child = spawn(
-    process.execPath,
-    [
-      watcherScript,
-      "--cwd",
+  const watcherEnv = buildNotifyFallbackWatcherEnv(process.env, {
+    codexHomeOverride: options.codexHomeOverride,
+    enableAuthority: options.enableAuthority === true,
+    sessionId: options.sessionId,
+  });
+  let watcherPid: number | undefined;
+  try {
+    watcherPid = await launchBackgroundHelper(
+      [
+        watcherScript,
+        "--cwd",
+        cwd,
+        "--notify-script",
+        notifyScript,
+        "--pid-file",
+        pidPath,
+        "--parent-pid",
+        String(process.pid),
+        ...(process.env.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS
+          ? [
+            "--max-lifetime-ms",
+            process.env.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS,
+          ]
+          : []),
+      ],
+      {
+        cwd,
+        env: watcherEnv,
+      },
+    );
+  } catch (error: unknown) {
+    console.warn("[omx] warning: failed to launch notify fallback watcher", {
       cwd,
-      "--notify-script",
-      notifyScript,
-      "--pid-file",
-      pidPath,
-      "--parent-pid",
-      String(process.pid),
-      ...(process.env.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS
-        ? ["--max-lifetime-ms", process.env.OMX_NOTIFY_FALLBACK_MAX_LIFETIME_MS]
-        : []),
-    ],
-    {
-      cwd,
-      detached: true,
-      stdio: "ignore",
-      env: buildNotifyFallbackWatcherEnv(process.env, {
-        codexHomeOverride: options.codexHomeOverride,
-        enableAuthority: options.enableAuthority === true,
-      }),
-    },
-  );
-  child.unref();
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  if (!watcherPid) return;
 
   await writeFile(
     pidPath,
     JSON.stringify(
-      { pid: child.pid, started_at: new Date().toISOString() },
+      { pid: watcherPid, started_at: new Date().toISOString() },
       null,
       2,
     ),
@@ -2373,18 +3847,26 @@ async function startHookDerivedWatcher(cwd: string): Promise<void> {
       );
     },
   );
-  const child = spawn(process.execPath, [watcherScript, "--cwd", cwd], {
-    cwd,
-    detached: true,
-    stdio: "ignore",
-    env: process.env,
-  });
-  child.unref();
+  let watcherPid: number | undefined;
+  try {
+    watcherPid = await launchBackgroundHelper([watcherScript, "--cwd", cwd], {
+      cwd,
+      env: process.env,
+    });
+  } catch (error: unknown) {
+    console.warn("[omx] warning: failed to launch hook-derived watcher", {
+      cwd,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  if (!watcherPid) return;
 
   await writeFile(
     pidPath,
     JSON.stringify(
-      { pid: child.pid, started_at: new Date().toISOString() },
+      { pid: watcherPid, started_at: new Date().toISOString() },
       null,
       2,
     ),
@@ -2464,8 +3946,9 @@ async function stopHookDerivedWatcher(cwd: string): Promise<void> {
 
 async function flushNotifyFallbackOnce(
   cwd: string,
-  options: { codexHomeOverride?: string; enableAuthority?: boolean } = {},
+  options: { codexHomeOverride?: string; enableAuthority?: boolean; sessionId?: string } = {},
 ): Promise<void> {
+  if (!shouldEnableNotifyFallbackWatcher(process.env, process.platform)) return;
   const { spawnSync } = await import("child_process");
   const pkgRoot = getPackageRoot();
   const watcherScript = resolveNotifyFallbackWatcherScript(pkgRoot);
@@ -2478,9 +3961,11 @@ async function flushNotifyFallbackOnce(
       cwd,
       stdio: "ignore",
       timeout: 3000,
+      windowsHide: true,
       env: buildNotifyFallbackWatcherEnv(process.env, {
         codexHomeOverride: options.codexHomeOverride,
         enableAuthority: options.enableAuthority === true,
+        sessionId: options.sessionId,
       }),
     },
   );
@@ -2496,6 +3981,7 @@ async function flushHookDerivedWatcherOnce(cwd: string): Promise<void> {
     cwd,
     stdio: "ignore",
     timeout: 3000,
+    windowsHide: true,
     env: {
       ...process.env,
       OMX_HOOK_DERIVED_SIGNALS: "1",
@@ -2524,7 +4010,7 @@ async function cancelModes(): Promise<void> {
       try {
         parsedState = JSON.parse(content) as Record<string, unknown>;
       } catch (err) {
-        process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+        logCliOperationFailure(err);
         continue;
       }
       states.set(ref.mode, {
@@ -2589,7 +4075,7 @@ async function cancelModes(): Promise<void> {
       console.log("No active modes to cancel.");
     }
   } catch (err) {
-    process.stderr.write(`[cli/index] operation failed: ${err}\n`);
+    logCliOperationFailure(err);
     console.log("No active modes to cancel.");
   }
 }

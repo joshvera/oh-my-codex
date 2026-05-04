@@ -180,6 +180,7 @@ describe("omx setup scope behavior", () => {
       const localPrompts = join(wd, ".codex", "prompts");
       const localSkills = join(wd, ".codex", "skills");
       const localConfig = join(wd, ".codex", "config.toml");
+      const localHooks = join(wd, ".codex", "hooks.json");
       const localAgents = join(wd, ".codex", "agents");
       const scopeFile = join(wd, ".omx", "setup-scope.json");
       const agentsMdPath = join(wd, "AGENTS.md");
@@ -187,6 +188,7 @@ describe("omx setup scope behavior", () => {
       assert.equal(existsSync(localPrompts), true);
       assert.equal(existsSync(localSkills), true);
       assert.equal(existsSync(localConfig), true);
+      assert.equal(existsSync(localHooks), true);
       assert.equal(existsSync(localAgents), true);
       assert.equal(existsSync(join(localAgents, "executor.toml")), true);
       assert.equal(
@@ -211,15 +213,100 @@ describe("omx setup scope behavior", () => {
       assert.match(configToml, /^\[agents\]$/m);
       assert.match(configToml, /^max_threads = 6$/m);
       assert.match(configToml, /^max_depth = 2$/m);
-      assert.match(configToml, /^\[env\]$/m);
+      assert.doesNotMatch(configToml, /^\[env\]$/m);
+      assert.match(configToml, /^\[shell_environment_policy\.set\]$/m);
       assert.match(configToml, /^USE_OMX_EXPLORE_CMD = "1"$/m);
+      assert.match(configToml, /^codex_hooks = true$/m);
+      const hooksJson = JSON.parse(await readFile(localHooks, "utf-8")) as {
+        hooks?: Record<string, unknown>;
+      };
+      assert.ok(hooksJson.hooks, "hooks.json should include a hooks object");
+      assert.ok(hooksJson.hooks?.SessionStart, "hooks.json should register SessionStart");
+      assert.ok(hooksJson.hooks?.UserPromptSubmit, "hooks.json should register UserPromptSubmit");
+      assert.ok(hooksJson.hooks?.Stop, "hooks.json should register Stop");
       const agentsMd = await readFile(agentsMdPath, "utf-8");
-      assert.match(agentsMd, /\.\/\.codex\/prompts/);
+      assert.match(agentsMd, /prompts\/\*\.md/);
       assert.match(agentsMd, /\.\/\.codex\/skills/);
       const persistedScope = JSON.parse(await readFile(scopeFile, "utf-8")) as {
         scope: string;
       };
       assert.equal(persistedScope.scope, "project");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("setup preserves user hooks while replacing stale OMX wrappers", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-scope-"));
+    try {
+      const home = join(wd, "home");
+      const codexDir = join(wd, ".codex");
+      await mkdir(home, { recursive: true });
+      await mkdir(codexDir, { recursive: true });
+      await writeFile(
+        join(codexDir, "hooks.json"),
+        JSON.stringify(
+          {
+            hooks: {
+              SessionStart: [
+                {
+                  hooks: [
+                    {
+                      type: "command",
+                      command: 'node "/old/dist/scripts/codex-native-hook.js"',
+                    },
+                    { type: "command", command: "echo keep-me" },
+                  ],
+                },
+              ],
+              Stop: [
+                {
+                  hooks: [
+                    {
+                      type: "command",
+                      command: 'node "/old/dist/scripts/codex-native-hook.js"',
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+
+      const res = runOmx(wd, ["setup", "--scope", "project"], { HOME: home });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+
+      const hooksJson = JSON.parse(
+        await readFile(join(codexDir, "hooks.json"), "utf-8"),
+      ) as {
+        hooks: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+      };
+      const sessionStartHooks = hooksJson.hooks.SessionStart.flatMap((entry) =>
+        entry.hooks ?? []
+      );
+      const stopHooks = hooksJson.hooks.Stop.flatMap((entry) => entry.hooks ?? []);
+
+      assert.equal(
+        sessionStartHooks.filter((hook) =>
+          String(hook.command ?? "").includes("codex-native-hook.js")
+        ).length,
+        1,
+      );
+      assert.equal(
+        stopHooks.filter((hook) =>
+          String(hook.command ?? "").includes("codex-native-hook.js")
+        ).length,
+        1,
+      );
+      assert.match(JSON.stringify(sessionStartHooks), /echo keep-me/);
+      assert.doesNotMatch(
+        JSON.stringify(hooksJson),
+        /\/old\/dist\/scripts\/codex-native-hook\.js/,
+      );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -244,6 +331,7 @@ describe("omx setup scope behavior", () => {
       assert.equal(existsSync(join(home, ".codex", "prompts")), true);
       assert.equal(existsSync(join(home, ".codex", "skills")), true);
       assert.equal(existsSync(join(home, ".codex", "agents")), true);
+      assert.equal(existsSync(join(home, ".codex", "hooks.json")), true);
       assert.equal(existsSync(join(home, ".codex", "AGENTS.md")), true);
       assert.equal(existsSync(join(wd, ".omx", "setup-scope.json")), true);
       const persistedScope = JSON.parse(

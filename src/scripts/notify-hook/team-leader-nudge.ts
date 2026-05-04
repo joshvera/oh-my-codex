@@ -5,23 +5,51 @@
 
 import { readFile, writeFile, mkdir, appendFile, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
+import { readUsableSessionState } from '../../hooks/session.js';
 import { asNumber, safeString, isTerminalPhase } from './utils.js';
 import { readJsonIfExists, getScopedStateDirsForCurrentSession } from './state-io.js';
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
 import { evaluatePaneInjectionReadiness, sendPaneInput } from './team-tmux-guard.js';
+import { resolvePaneTarget } from './tmux-injection.js';
+import { listNotifyCanonicalActiveTeams } from './active-team.js';
+import {
+  classifyLeaderActionState,
+  resolveLeaderNudgeIntent,
+} from './orchestration-intent.js';
 import { DEFAULT_MARKER } from '../tmux-hook-engine.js';
 import { isLeaderRuntimeStale } from '../../team/leader-activity.js';
+import { appendTeamDeliveryLog } from '../../team/delivery-log.js';
+import { writeTeamLeaderAttention } from '../../team/state.js';
+import { readLatestTeamProgressEvidenceMs } from '../../team/progress-evidence.js';
+import { validateSessionId } from '../../mcp/state-paths.js';
+import { TEAM_NAME_SAFE_PATTERN } from '../../team/contracts.js';
 const LEADER_PANE_MISSING_NO_INJECTION_REASON = 'leader_pane_missing_no_injection';
 const LEADER_PANE_SHELL_NO_INJECTION_REASON = 'leader_pane_shell_no_injection';
+const LEADER_PANE_SAME_CLASSIFIED_STATE_SUPPRESSED_REASON = 'pane_already_shows_same_classified_state';
 const LEADER_NOTIFICATION_DEFERRED_TYPE = 'leader_notification_deferred';
 const ACK_WITHOUT_START_EVIDENCE_REASON = 'ack_without_start_evidence';
 const ACK_LIKE_PATTERNS = [
   /^ack(?::\s*[a-z0-9-]+(?:\s+initialized)?)?[.!]*$/i,
   /^(?:ok|okay|k|roger|copy|received|got it|understood|sounds good)[.!]*$/i,
-  /^(?:on it|will do|i(?:'|’)ll do it|working on it)[.!]*$/i,
+  /^(?:on it|will do|i(?:'|')ll do it|working on it)[.!]*$/i,
 ];
+
+function normalizeValidSessionId(value) {
+  const trimmed = safeString(value).trim();
+  if (!trimmed) return '';
+  try {
+    return validateSessionId(trimmed) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizeValidTeamName(value) {
+  const trimmed = safeString(value).trim();
+  return TEAM_NAME_SAFE_PATTERN.test(trimmed) ? trimmed : '';
+}
 
 export function resolveLeaderNudgeIntervalMs() {
   const raw = safeString(process.env.OMX_TEAM_LEADER_NUDGE_MS || '');
@@ -122,6 +150,31 @@ function buildLeaderActionGuidance(teamName, {
   return buildStatusCheckReminder(teamName);
 }
 
+function buildIdleContextText(teamName, {
+  allWorkersIdle = false,
+  workerPanesAlive = false,
+  taskCounts = {},
+  leaderActionState = 'still_actionable',
+} = {}) {
+  const pending = Number.isFinite(taskCounts.pending) ? taskCounts.pending : 0;
+  const blocked = Number.isFinite(taskCounts.blocked) ? taskCounts.blocked : 0;
+  const inProgress = Number.isFinite(taskCounts.in_progress) ? taskCounts.in_progress : 0;
+  const pendingFollowUpTasks = allWorkersIdle && pending > 0 && blocked === 0 && inProgress === 0;
+
+  if (pendingFollowUpTasks) {
+    return workerPanesAlive
+      ? ` Team ${teamName} has idle workers ready.`
+      : ` Team ${teamName} has follow-up work ready.`;
+  }
+  if (leaderActionState === 'done_waiting_on_leader') {
+    return ` Team ${teamName} looks complete.`;
+  }
+  if (leaderActionState === 'stuck_waiting_on_leader') {
+    return ` Team ${teamName} needs leader review.`;
+  }
+  return '';
+}
+
 export async function checkWorkerPanesAlive(tmuxTarget, workerPaneIds = []) {
   const sessionName = tmuxTarget.split(':')[0];
   try {
@@ -215,17 +268,9 @@ async function resolveCurrentSessionId(stateDir) {
     || process.env.SESSION_ID
     || '',
   ).trim();
-  if (fromEnv) return fromEnv;
-
-  const sessionPath = join(stateDir, 'session.json');
-  try {
-    if (!existsSync(sessionPath)) return '';
-    const parsed = JSON.parse(await readFile(sessionPath, 'utf-8'));
-    const sessionId = safeString(parsed && parsed.session_id ? parsed.session_id : '').trim();
-    return sessionId;
-  } catch {
-    return '';
-  }
+  const envSessionId = normalizeValidSessionId(fromEnv);
+  if (envSessionId) return envSessionId;
+  return normalizeValidSessionId((await readUsableSessionState(resolve(stateDir, '..', '..')))?.session_id);
 }
 
 async function readWorkerStatusSnapshot(stateDir, teamName, workerName) {
@@ -413,6 +458,27 @@ function formatMailboxBodyForLeader(body, maxLength = 40) {
   return `${normalized.slice(0, maxLength - 1)}…`;
 }
 
+function normalizeVisibleLeaderStateText(text) {
+  return safeString(text)
+    .toLowerCase()
+    .replace(/\[omx_tmux_inject\]/g, ' ')
+    .replace(/\[omx_intent:[^\]]+\]/g, ' ')
+    .replace(/said\s+"[^"]*"/g, 'said "<content>"')
+    .replace(/said\s+'[^']*'/g, 'said "<content>"')
+    .replace(/\b\d+[smhd](?:\s+\d+[smhd])*\b/g, '<duration>')
+    .replace(/\b\d+\b/g, '<n>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function paneAlreadyShowsVisibleLeaderState(paneCapture, visibleText) {
+  const normalizedVisibleText = normalizeVisibleLeaderStateText(visibleText);
+  if (!normalizedVisibleText) return false;
+  const normalizedPaneCapture = normalizeVisibleLeaderStateText(paneCapture);
+  if (!normalizedPaneCapture) return false;
+  return normalizedPaneCapture.includes(normalizedVisibleText);
+}
+
 async function workerHasOwnedStartedTask(stateDir, teamName, workerName) {
   const tasksDir = join(stateDir, 'team', teamName, 'tasks');
   if (!existsSync(tasksDir)) return false;
@@ -466,7 +532,7 @@ async function getAckWithoutStartEvidence(stateDir, teamName, msg) {
   };
 }
 
-export async function emitTeamNudgeEvent(cwd, teamName, reason, nowIso) {
+export async function emitTeamNudgeEvent(cwd, teamName, reason, orchestrationIntent, nowIso) {
   const eventsDir = join(cwd, '.omx', 'state', 'team', teamName, 'events');
   const eventsPath = join(eventsDir, 'events.ndjson');
   try {
@@ -477,6 +543,7 @@ export async function emitTeamNudgeEvent(cwd, teamName, reason, nowIso) {
       type: 'team_leader_nudge',
       worker: 'leader-fixed',
       reason,
+      orchestration_intent: orchestrationIntent,
       created_at: nowIso,
     };
     await appendFile(eventsPath, JSON.stringify(event) + '\n');
@@ -485,7 +552,7 @@ export async function emitTeamNudgeEvent(cwd, teamName, reason, nowIso) {
   }
 }
 
-async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmuxSession = '', leaderPaneId = '', paneCurrentCommand = '', sourceType = 'leader_nudge' } = {}) {
+async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, orchestrationIntent, nowIso, { tmuxSession = '', leaderPaneId = '', paneCurrentCommand = '', sourceType = 'leader_nudge' } = {}) {
   const eventsDir = join(cwd, '.omx', 'state', 'team', teamName, 'events');
   const eventsPath = join(eventsDir, 'events.ndjson');
   try {
@@ -500,6 +567,7 @@ async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmu
       created_at: nowIso,
       tmux_session: tmuxSession || null,
       leader_pane_id: leaderPaneId || null,
+      orchestration_intent: orchestrationIntent,
       tmux_injection_attempted: false,
       pane_current_command: paneCurrentCommand || null,
       source_type: sourceType,
@@ -510,7 +578,14 @@ async function emitLeaderNudgeDeferredEvent(cwd, teamName, reason, nowIso, { tmu
   }
 }
 
-export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderStale }) {
+export async function maybeNudgeTeamLeader({
+  cwd,
+  stateDir,
+  logsDir,
+  preComputedLeaderStale,
+  allowFreshMailboxNudges = true,
+  source = 'notify_hook',
+}) {
   const intervalMs = resolveLeaderNudgeIntervalMs();
   const idleCooldownMs = resolveLeaderAllIdleNudgeCooldownMs();
   const fallbackProgressStallThresholdMs = resolveFallbackProgressStallThresholdMs();
@@ -544,7 +619,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       if (!existsSync(teamStatePath)) continue;
       const parsed = JSON.parse(await readFile(teamStatePath, 'utf-8'));
       if (!parsed) continue;
-      const teamName = safeString(parsed.team_name || '').trim();
+      const teamName = normalizeValidTeamName(parsed.team_name || '');
       if (!teamName) continue;
 
       const phaseSnapshot = await readTeamPhaseSnapshot(stateDir, teamName, nowIso);
@@ -558,6 +633,13 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     }
   } catch {
     // Non-critical
+  }
+
+  const canonicalFallbackTeams = await listNotifyCanonicalActiveTeams(cwd, currentSessionId).catch(() => []);
+  for (const team of canonicalFallbackTeams) {
+    const teamName = normalizeValidTeamName(team.teamName);
+    if (!teamName) continue;
+    candidateTeamNames.add(teamName);
   }
 
   // Use pre-computed staleness (captured before HUD state was updated this turn)
@@ -602,7 +684,21 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       : [];
     const canonicalLeaderPaneId = safeString(leaderPaneId).trim();
     if (!tmuxSession && !canonicalLeaderPaneId) continue;
-    const tmuxTarget = canonicalLeaderPaneId;
+    let tmuxTarget = canonicalLeaderPaneId;
+    if (canonicalLeaderPaneId) {
+      const resolvedLeaderTarget = await resolvePaneTarget(
+        { type: 'pane', value: canonicalLeaderPaneId },
+        '',
+        canonicalLeaderPaneId,
+        '',
+        {},
+      ).catch(() => null);
+      if (resolvedLeaderTarget?.paneTarget) {
+        tmuxTarget = safeString(resolvedLeaderTarget.paneTarget).trim();
+      } else if (resolvedLeaderTarget && ['target_is_hud_pane', 'pane_cwd_mismatch'].includes(safeString(resolvedLeaderTarget.reason).trim())) {
+        tmuxTarget = '';
+      }
+    }
     const paneStatus = tmuxSession
       ? await checkWorkerPanesAlive(tmuxSession, workerPaneIds)
       : { alive: false, paneCount: 0 };
@@ -621,11 +717,15 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
     const workerTurnProgress = hasWorkerTurnProgress(progressSnapshot.workerSnapshot, previousTurnCounts);
     const hasTrackableTurnSignals = hasTrackableActiveWorkerTurns(progressSnapshot.workerSnapshot, previousTurnCounts);
     const progressChanged = !previousSignature || previousSignature !== progressSnapshot.signature || workerTurnProgress;
+    const extraProgressEvidenceMs = await readLatestTeamProgressEvidenceMs(cwd, teamName).catch(() => Number.NaN);
     const effectiveProgressAtMs = progressChanged || !Number.isFinite(previousProgressAtMs)
       ? nowMs
       : previousProgressAtMs;
-    const effectiveProgressAtIso = new Date(effectiveProgressAtMs).toISOString();
-    const stalledForMs = Math.max(0, nowMs - effectiveProgressAtMs);
+    const latestProgressEvidenceMs = Number.isFinite(extraProgressEvidenceMs)
+      ? Math.max(effectiveProgressAtMs, extraProgressEvidenceMs)
+      : effectiveProgressAtMs;
+    const effectiveProgressAtIso = new Date(latestProgressEvidenceMs).toISOString();
+    const stalledForMs = Math.max(0, nowMs - latestProgressEvidenceMs);
     const stallThresholdMs = hasTrackableTurnSignals ? workerTurnStallThresholdMs : fallbackProgressStallThresholdMs;
     const teamProgressStalled =
       progressSnapshot.workRemaining
@@ -633,6 +733,9 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       && !allWorkersIdle
       && !progressChanged
       && stalledForMs >= stallThresholdMs;
+    const hasFreshProgressEvidence =
+      progressSnapshot.workRemaining
+      && stalledForMs < stallThresholdMs;
     const leaderActionState = classifyLeaderActionState({
       allWorkersIdle,
       workerPanesAlive: paneStatus.alive,
@@ -645,15 +748,6 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       taskCounts: progressSnapshot.taskCounts,
       leaderActionState,
     });
-    nudgeState.progress_by_team[teamName] = {
-      signature: progressSnapshot.signature,
-      last_progress_at: effectiveProgressAtIso,
-      observed_at: nowIso,
-      missing_signal_workers: progressSnapshot.missingSignalWorkers,
-      work_remaining: progressSnapshot.workRemaining,
-      leader_action_state: leaderActionState,
-    };
-
     const prev = nudgeState.last_nudged_by_team[teamName] && typeof nudgeState.last_nudged_by_team[teamName] === 'object'
       ? nudgeState.last_nudged_by_team[teamName]
       : {};
@@ -678,12 +772,11 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
 
     // Stale-leader follow-up is the only periodic visible nudge path.
     // This keeps the leader pane quieter when the leader is not actually stale.
-    const stalePanesNudge = paneStatus.alive && leaderStale;
+    const stalePanesNudge = paneStatus.alive && leaderStale && !hasFreshProgressEvidence;
     const previousStalledTeamNudge = prevReason === 'stuck_waiting_on_leader';
     const stalledTeamNudge = teamProgressStalled && (dueByTime || !previousStalledTeamNudge);
     const staleFollowupDue = stalePanesNudge && dueByTime;
-
-    if (!shouldSendAllIdleNudge && !hasNewMessage && !stalledTeamNudge && !staleFollowupDue) continue;
+    const hasActionableNewMessage = hasNewMessage && (allowFreshMailboxNudges || leaderStale);
 
     let nudgeReason = '';
     let text = '';
@@ -694,11 +787,12 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
           ? 'stuck_waiting_on_leader'
           : 'all_workers_idle';
       const N = workerNames.length;
-      const waitingText = leaderActionState === 'done_waiting_on_leader'
-        ? ` Team ${teamName} is complete and waiting on leader action.`
-        : leaderActionState === 'stuck_waiting_on_leader'
-          ? ` Team ${teamName} is stuck and waiting on leader action.`
-          : '';
+      const waitingText = buildIdleContextText(teamName, {
+        allWorkersIdle,
+        workerPanesAlive: paneStatus.alive,
+        taskCounts: progressSnapshot.taskCounts,
+        leaderActionState,
+      });
       text = `[OMX] All ${N} worker${N === 1 ? '' : 's'} idle.${waitingText} ${leaderActionGuidance}`;
     } else if (ackWithoutStartEvidence) {
       nudgeReason = ACK_WITHOUT_START_EVIDENCE_REASON;
@@ -708,16 +802,11 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
         + buildWorkerStartEvidenceReminder(teamName, ackWithoutStartEvidence.worker);
     } else if (stalledTeamNudge) {
       nudgeReason = 'stuck_waiting_on_leader';
-      const { pending, in_progress, blocked } = progressSnapshot.taskCounts;
-      const missingSignals = progressSnapshot.missingSignalWorkers > 0
-        ? `; ${progressSnapshot.missingSignalWorkers} signal${progressSnapshot.missingSignalWorkers === 1 ? '' : 's'} missing`
-        : '';
       const stallPrefix = leaderStale ? 'leader stale, ' : 'worker panes stalled, ';
       text =
         `Team ${teamName}: ${stallPrefix}no progress ${formatDurationMs(stalledForMs)}. `
-        + `${leaderActionGuidance} `
-        + `(p:${pending} ip:${in_progress} b:${blocked}${missingSignals})`;
-    } else if (stalePanesNudge && hasNewMessage) {
+        + leaderActionGuidance;
+    } else if (stalePanesNudge && hasActionableNewMessage) {
       nudgeReason = 'stale_leader_with_messages';
       text =
         `Team ${teamName}: leader stale, ${paneStatus.paneCount} pane(s) active, ${messages.length} msg(s) pending. `
@@ -727,21 +816,68 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       text =
         `Team ${teamName}: leader stale, ${paneStatus.paneCount} worker pane(s) still active. `
         + leaderActionGuidance;
-    } else if (hasNewMessage) {
+    } else if (hasActionableNewMessage) {
       nudgeReason = 'new_mailbox_message';
       text = `Team ${teamName}: ${messages.length} msg(s) for leader. ${buildMailboxCheckReminder(teamName)}`;
-    } else {
-      continue;
     }
+
+    const unreadLeaderMessageCount = messages.filter((message) => !safeString(message?.delivered_at).trim()).length;
+    nudgeState.progress_by_team[teamName] = {
+      signature: progressSnapshot.signature,
+      last_progress_at: effectiveProgressAtIso,
+      observed_at: nowIso,
+      missing_signal_workers: progressSnapshot.missingSignalWorkers,
+      work_remaining: progressSnapshot.workRemaining,
+      leader_action_state: leaderActionState,
+      leader_attention_pending: !!nudgeReason,
+      leader_attention_reason: nudgeReason || null,
+      leader_stale: leaderStale,
+      all_workers_idle: allWorkersIdle,
+      pending_task_count:
+        (progressSnapshot.taskCounts.pending || 0)
+        + (progressSnapshot.taskCounts.blocked || 0)
+        + (progressSnapshot.taskCounts.in_progress || 0),
+      unread_leader_message_count: unreadLeaderMessageCount,
+      stalled_for_ms: teamProgressStalled ? stalledForMs : null,
+      source: source === 'notify_fallback_watcher' ? 'notify_hook' : source,
+    };
+    await writeTeamLeaderAttention(teamName, {
+      team_name: teamName,
+      updated_at: nowIso,
+      source: 'notify_hook',
+      leader_decision_state: leaderActionState,
+      leader_attention_pending: !!nudgeReason,
+      leader_attention_reason: nudgeReason || null,
+      attention_reasons: nudgeReason ? [nudgeReason] : [],
+      leader_stale: leaderStale,
+      leader_session_active: true,
+      leader_session_id: currentSessionId || ownerSessionId || null,
+      leader_session_stopped_at: null,
+      unread_leader_message_count: unreadLeaderMessageCount,
+      work_remaining: progressSnapshot.workRemaining,
+      stalled_for_ms: teamProgressStalled ? stalledForMs : null,
+    }, cwd).catch(() => {});
+
+    if (!nudgeReason) continue;
+    const orchestrationIntent = resolveLeaderNudgeIntent({ nudgeReason, leaderActionState });
     const capped = text.length > 180 ? `${text.slice(0, 177)}...` : text;
     const markedText = `${capped} ${DEFAULT_MARKER}`;
 
     if (!tmuxTarget) {
-      nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '', reason: nudgeReason };
+      nudgeState.last_nudged_by_team[teamName] = {
+        at: nowIso,
+        last_message_id: newestId || prevMsgId || '',
+        reason: nudgeReason,
+        orchestration_intent: orchestrationIntent,
+      };
       if (shouldSendAllIdleNudge) {
-        nudgeState.last_idle_nudged_by_team[teamName] = { at: nowIso, worker_count: workerNames.length };
+        nudgeState.last_idle_nudged_by_team[teamName] = {
+          at: nowIso,
+          worker_count: workerNames.length,
+          orchestration_intent: orchestrationIntent,
+        };
       }
-      await emitLeaderNudgeDeferredEvent(cwd, teamName, LEADER_PANE_MISSING_NO_INJECTION_REASON, nowIso, {
+      await emitLeaderNudgeDeferredEvent(cwd, teamName, LEADER_PANE_MISSING_NO_INJECTION_REASON, orchestrationIntent, nowIso, {
         tmuxSession,
         leaderPaneId,
         sourceType: 'leader_nudge',
@@ -756,23 +892,50 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
           reason: LEADER_PANE_MISSING_NO_INJECTION_REASON,
           leader_pane_id: leaderPaneId || null,
           tmux_session: tmuxSession || null,
+          orchestration_intent: orchestrationIntent,
           tmux_injection_attempted: false,
           source_type: 'leader_nudge',
         });
       } catch { /* ignore */ }
+      await appendTeamDeliveryLog(logsDir, {
+        event: 'nudge_triggered',
+        source,
+        team: teamName,
+        to_worker: 'leader-fixed',
+        transport: 'none',
+        result: 'deferred',
+        reason: LEADER_PANE_MISSING_NO_INJECTION_REASON,
+        orchestration_intent: orchestrationIntent,
+      }).catch(() => {});
       continue;
     }
 
-    const paneGuard = await evaluatePaneInjectionReadiness(tmuxTarget, { skipIfScrolling: true });
+    const paneGuard = await evaluatePaneInjectionReadiness(tmuxTarget, {
+      skipIfScrolling: true,
+      // Leader nudges should still queue into a live Codex pane even while the
+      // agent is busy; shell/copy-mode guards stay enforced.
+      requireRunningAgent: true,
+      requireReady: false,
+      requireIdle: false,
+    });
     if (!paneGuard.ok) {
       const deferredReason = paneGuard.reason === 'pane_running_shell'
         ? LEADER_PANE_SHELL_NO_INJECTION_REASON
         : paneGuard.reason;
-      nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '', reason: nudgeReason };
+      nudgeState.last_nudged_by_team[teamName] = {
+        at: nowIso,
+        last_message_id: newestId || prevMsgId || '',
+        reason: nudgeReason,
+        orchestration_intent: orchestrationIntent,
+      };
       if (shouldSendAllIdleNudge) {
-        nudgeState.last_idle_nudged_by_team[teamName] = { at: nowIso, worker_count: workerNames.length };
+        nudgeState.last_idle_nudged_by_team[teamName] = {
+          at: nowIso,
+          worker_count: workerNames.length,
+          orchestration_intent: orchestrationIntent,
+        };
       }
-      await emitLeaderNudgeDeferredEvent(cwd, teamName, deferredReason, nowIso, {
+      await emitLeaderNudgeDeferredEvent(cwd, teamName, deferredReason, orchestrationIntent, nowIso, {
         tmuxSession,
         leaderPaneId,
         paneCurrentCommand: paneGuard.paneCurrentCommand,
@@ -789,11 +952,73 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
           leader_pane_id: leaderPaneId || null,
           tmux_session: tmuxSession || null,
           tmux_injection_attempted: false,
+          pane_target: tmuxTarget,
+          orchestration_intent: orchestrationIntent,
+          readiness_evidence: paneGuard.readinessEvidence || null,
           pane_current_command: paneGuard.paneCurrentCommand || null,
           injection_skip_reason: paneGuard.reason,
           source_type: 'leader_nudge',
         });
       } catch { /* ignore */ }
+      await appendTeamDeliveryLog(logsDir, {
+        event: 'nudge_triggered',
+        source,
+        team: teamName,
+        to_worker: 'leader-fixed',
+        transport: 'none',
+        result: 'deferred',
+        reason: deferredReason,
+        orchestration_intent: orchestrationIntent,
+      }).catch(() => {});
+      continue;
+    }
+
+    if (paneAlreadyShowsVisibleLeaderState(paneGuard.paneCapture, capped)) {
+      nudgeState.last_nudged_by_team[teamName] = {
+        at: nowIso,
+        last_message_id: newestId || prevMsgId || '',
+        reason: nudgeReason,
+        orchestration_intent: orchestrationIntent,
+      };
+      if (shouldSendAllIdleNudge) {
+        nudgeState.last_idle_nudged_by_team[teamName] = {
+          at: nowIso,
+          worker_count: workerNames.length,
+          orchestration_intent: orchestrationIntent,
+        };
+      }
+
+      await emitTeamNudgeEvent(cwd, teamName, nudgeReason, orchestrationIntent, nowIso);
+
+      try {
+        await logTmuxHookEvent(logsDir, {
+          timestamp: nowIso,
+          type: 'team_leader_nudge',
+          team: teamName,
+          tmux_target: tmuxTarget,
+          reason: nudgeReason,
+          orchestration_intent: orchestrationIntent,
+          pane_count: paneStatus.paneCount,
+          leader_stale: leaderStale,
+          message_count: messages.length,
+          stalled_for_ms: teamProgressStalled ? stalledForMs : undefined,
+          missing_signal_workers: progressSnapshot.missingSignalWorkers,
+          visible_injection_suppressed: true,
+          suppression_reason: LEADER_PANE_SAME_CLASSIFIED_STATE_SUPPRESSED_REASON,
+        });
+      } catch { /* ignore */ }
+      await appendTeamDeliveryLog(logsDir, {
+        event: 'nudge_triggered',
+        source,
+        team: teamName,
+        to_worker: 'leader-fixed',
+        transport: 'send-keys',
+        result: 'suppressed',
+        reason: nudgeReason,
+        orchestration_intent: orchestrationIntent,
+        visible_injection_suppressed: true,
+        suppression_reason: LEADER_PANE_SAME_CLASSIFIED_STATE_SUPPRESSED_REASON,
+      }).catch(() => {});
       continue;
     }
 
@@ -807,12 +1032,21 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
       if (!sendResult.ok) {
         throw new Error(sendResult.error || sendResult.reason);
       }
-      nudgeState.last_nudged_by_team[teamName] = { at: nowIso, last_message_id: newestId || prevMsgId || '', reason: nudgeReason };
+      nudgeState.last_nudged_by_team[teamName] = {
+        at: nowIso,
+        last_message_id: newestId || prevMsgId || '',
+        reason: nudgeReason,
+        orchestration_intent: orchestrationIntent,
+      };
       if (shouldSendAllIdleNudge) {
-        nudgeState.last_idle_nudged_by_team[teamName] = { at: nowIso, worker_count: workerNames.length };
+        nudgeState.last_idle_nudged_by_team[teamName] = {
+          at: nowIso,
+          worker_count: workerNames.length,
+          orchestration_intent: orchestrationIntent,
+        };
       }
 
-      await emitTeamNudgeEvent(cwd, teamName, nudgeReason, nowIso);
+      await emitTeamNudgeEvent(cwd, teamName, nudgeReason, orchestrationIntent, nowIso);
 
       try {
         await logTmuxHookEvent(logsDir, {
@@ -821,6 +1055,7 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
           team: teamName,
           tmux_target: tmuxTarget,
           reason: nudgeReason,
+          orchestration_intent: orchestrationIntent,
           pane_count: paneStatus.paneCount,
           leader_stale: leaderStale,
           message_count: messages.length,
@@ -828,6 +1063,16 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
           missing_signal_workers: progressSnapshot.missingSignalWorkers,
         });
       } catch { /* ignore */ }
+      await appendTeamDeliveryLog(logsDir, {
+        event: 'nudge_triggered',
+        source,
+        team: teamName,
+        to_worker: 'leader-fixed',
+        transport: 'send-keys',
+        result: 'sent',
+        reason: nudgeReason,
+        orchestration_intent: orchestrationIntent,
+      }).catch(() => {});
     } catch (err) {
       try {
         await logTmuxHookEvent(logsDir, {
@@ -836,9 +1081,21 @@ export async function maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputed
           team: teamName,
           tmux_target: tmuxTarget,
           reason: nudgeReason,
+          orchestration_intent: orchestrationIntent,
           error: safeString(err && err.message ? err.message : err),
         });
       } catch { /* ignore */ }
+      await appendTeamDeliveryLog(logsDir, {
+        event: 'nudge_triggered',
+        source,
+        team: teamName,
+        to_worker: 'leader-fixed',
+        transport: 'send-keys',
+        result: 'failed',
+        reason: nudgeReason,
+        orchestration_intent: orchestrationIntent,
+        error: safeString(err && err.message ? err.message : err),
+      }).catch(() => {});
     }
   }
 

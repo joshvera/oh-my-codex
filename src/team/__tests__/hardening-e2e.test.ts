@@ -83,4 +83,30 @@ describe('team hardening e2e', () => {
       await rm(repo, { recursive: true, force: true });
     }
   });
+
+  it('tolerates malformed worker status from an external team state root', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-team-hardening-worker-state-'));
+    const sharedRoot = join(cwd, 'shared-state');
+    try {
+      process.env.OMX_TEAM_STATE_ROOT = sharedRoot;
+      await initTeamState('team-hardening-worker-state', 'worker status corruption smoke', 'executor', 1, cwd);
+
+      const statusPath = join(
+        sharedRoot,
+        'team',
+        'team-hardening-worker-state',
+        'workers',
+        'worker-1',
+        'status.json',
+      );
+      await writeFile(statusPath, '{not valid json', 'utf-8');
+
+      const snapshot = await monitorTeam('team-hardening-worker-state', cwd);
+      assert.ok(snapshot);
+      assert.equal(snapshot?.workers[0]?.name, 'worker-1');
+      assert.equal(snapshot?.workers[0]?.status.state, 'unknown');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

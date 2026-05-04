@@ -10,6 +10,8 @@ import {
   type TeamDispatchRequest,
   type TeamDispatchRequestInput,
 } from './team-ops.js';
+import { appendTeamDeliveryLogForCwd } from './delivery-log.js';
+import type { TeamReminderIntent } from './reminder-intents.js';
 
 export interface TeamNotifierTarget {
   workerName: string;
@@ -60,6 +62,38 @@ function fallbackTransportForPreference(
 function notifyExceptionReason(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return `notify_exception:${message}`;
+}
+
+async function logDispatchOutcome(params: {
+  cwd: string;
+  teamName: string;
+  source: string;
+  requestId?: string;
+  messageId?: string;
+  toWorker: string;
+  dispatchKind: 'inbox' | 'mailbox';
+  outcome: DispatchOutcome;
+  intent?: TeamReminderIntent;
+  transportPreference?: TeamDispatchRequestInput['transport_preference'];
+}): Promise<void> {
+  const { cwd, teamName, source, requestId, messageId, toWorker, dispatchKind, outcome, intent, transportPreference } = params;
+  const result = outcome.ok
+    ? (outcome.reason === 'queued_for_hook_dispatch' ? 'queued' : 'ok')
+    : 'failed';
+  await appendTeamDeliveryLogForCwd(cwd, {
+    event: 'dispatch_result',
+    source,
+    team: teamName,
+    request_id: requestId,
+    message_id: messageId,
+    to_worker: toWorker,
+    dispatch_kind: dispatchKind,
+    intent,
+    transport_preference: transportPreference,
+    transport: outcome.transport,
+    result,
+    reason: outcome.reason,
+  });
 }
 
 async function markImmediateDispatchFailure(params: {
@@ -120,6 +154,7 @@ interface QueueInboxParams {
   paneId?: string;
   inbox: string;
   triggerMessage: string;
+  intent?: TeamReminderIntent;
   cwd: string;
   transportPreference?: TeamDispatchRequestInput['transport_preference'];
   fallbackAllowed?: boolean;
@@ -137,6 +172,7 @@ export async function queueInboxInstruction(params: QueueInboxParams): Promise<D
       worker_index: params.workerIndex,
       pane_id: params.paneId,
       trigger_message: params.triggerMessage,
+      intent: params.intent,
       transport_preference: params.transportPreference,
       fallback_allowed: params.fallbackAllowed,
       inbox_correlation_key: params.inboxCorrelationKey,
@@ -180,6 +216,18 @@ export async function queueInboxInstruction(params: QueueInboxParams): Promise<D
     });
   }
 
+  await logDispatchOutcome({
+    cwd: params.cwd,
+    teamName: params.teamName,
+    source: 'team.mcp-comm',
+    requestId: queued.request.request_id,
+    toWorker: params.workerName,
+    dispatchKind: 'inbox',
+    outcome,
+    intent: params.intent,
+    transportPreference: params.transportPreference,
+  });
+
   return outcome;
 }
 
@@ -191,6 +239,7 @@ interface QueueDirectMessageParams {
   toPaneId?: string;
   body: string;
   triggerMessage: string;
+  intent?: TeamReminderIntent;
   cwd: string;
   transportPreference?: TeamDispatchRequestInput['transport_preference'];
   fallbackAllowed?: boolean;
@@ -200,13 +249,25 @@ interface QueueDirectMessageParams {
 export async function queueDirectMailboxMessage(params: QueueDirectMessageParams): Promise<DispatchOutcome> {
   const message = await sendDirectMessage(params.teamName, params.fromWorker, params.toWorker, params.body, params.cwd);
   if (message.notified_at && !message.delivered_at) {
-    return {
+    const outcome = {
       ok: true,
       transport: params.toWorker === 'leader-fixed' ? 'mailbox' : fallbackTransportForPreference(params.transportPreference),
       reason: 'existing_message_already_notified',
       message_id: message.message_id,
       to_worker: params.toWorker,
     };
+    await logDispatchOutcome({
+      cwd: params.cwd,
+      teamName: params.teamName,
+      source: 'team.mcp-comm',
+      messageId: message.message_id,
+      toWorker: params.toWorker,
+      dispatchKind: 'mailbox',
+      outcome,
+      intent: params.intent,
+      transportPreference: params.transportPreference,
+    });
+    return outcome;
   }
   const queued = await enqueueDispatchRequest(
     params.teamName,
@@ -216,6 +277,7 @@ export async function queueDirectMailboxMessage(params: QueueDirectMessageParams
       worker_index: params.toWorkerIndex,
       pane_id: params.toPaneId,
       trigger_message: params.triggerMessage,
+      intent: params.intent,
       message_id: message.message_id,
       transport_preference: params.transportPreference,
       fallback_allowed: params.fallbackAllowed,
@@ -255,6 +317,18 @@ export async function queueDirectMailboxMessage(params: QueueDirectMessageParams
       cwd: params.cwd,
       messageId: message.message_id,
     });
+    await logDispatchOutcome({
+      cwd: params.cwd,
+      teamName: params.teamName,
+      source: 'team.mcp-comm',
+      requestId: queued.request.request_id,
+      messageId: message.message_id,
+      toWorker: params.toWorker,
+      dispatchKind: 'mailbox',
+      outcome,
+      intent: params.intent,
+      transportPreference: params.transportPreference,
+    });
     return outcome;
   }
   if (isConfirmedNotification(outcome)) {
@@ -274,6 +348,18 @@ export async function queueDirectMailboxMessage(params: QueueDirectMessageParams
       cwd: params.cwd,
     });
   }
+  await logDispatchOutcome({
+    cwd: params.cwd,
+    teamName: params.teamName,
+    source: 'team.mcp-comm',
+    requestId: queued.request.request_id,
+    messageId: message.message_id,
+    toWorker: params.toWorker,
+    dispatchKind: 'mailbox',
+    outcome,
+    intent: params.intent,
+    transportPreference: params.transportPreference,
+  });
   return outcome;
 }
 
@@ -284,6 +370,7 @@ interface QueueBroadcastParams {
   body: string;
   cwd: string;
   triggerFor: (workerName: string) => string;
+  intentFor?: (workerName: string) => TeamReminderIntent;
   transportPreference?: TeamDispatchRequestInput['transport_preference'];
   fallbackAllowed?: boolean;
   notify: TeamNotifier;
@@ -306,6 +393,7 @@ export async function queueBroadcastMailboxMessage(params: QueueBroadcastParams)
         worker_index: recipient.workerIndex,
         pane_id: recipient.paneId,
         trigger_message: params.triggerFor(recipient.workerName),
+        intent: params.intentFor?.(recipient.workerName),
         message_id: message.message_id,
         transport_preference: params.transportPreference,
         fallback_allowed: params.fallbackAllowed,
@@ -360,6 +448,18 @@ export async function queueBroadcastMailboxMessage(params: QueueBroadcastParams)
         cwd: params.cwd,
       });
     }
+    await logDispatchOutcome({
+      cwd: params.cwd,
+      teamName: params.teamName,
+      source: 'team.mcp-comm',
+      requestId: queued.request.request_id,
+      messageId: message.message_id,
+      toWorker: recipient.workerName,
+      dispatchKind: 'mailbox',
+      outcome,
+      intent: params.intentFor?.(recipient.workerName),
+      transportPreference: params.transportPreference,
+    });
   }
 
   return outcomes;

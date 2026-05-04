@@ -1,11 +1,19 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
+  RALPH_HELP,
+  assertRequiredRalphPrdJson,
   buildRalphAppendInstructions,
   buildRalphChangedFilesSeedContents,
   extractRalphTaskDescription,
-  normalizeRalphCliArgs,
   filterRalphCodexArgs,
+  isRalphPrdMode,
+  normalizeRalphCliArgs,
+  readMatchedApprovedRalphExecutionHint,
+  resolveApprovedRalphExecutionHint,
 } from '../ralph.js';
 import type { ApprovedExecutionLaunchHint } from '../../planning/artifacts.js';
 
@@ -24,6 +32,89 @@ describe('extractRalphTaskDescription', () => {
   });
   it('supports -- separator', () => {
     assert.equal(extractRalphTaskDescription(['--model', 'gpt-5', '--', 'fix', '--weird-name']), 'fix --weird-name');
+  });
+});
+
+describe('resolveApprovedRalphExecutionHint', () => {
+  it('reuses the approved hint for follow-up launches without explicit task text', () => {
+    assert.equal(resolveApprovedRalphExecutionHint(approvedHint, 'ralph-cli-launch'), approvedHint);
+  });
+
+  it('reuses the approved hint when the explicit task matches the approved handoff', () => {
+    assert.equal(resolveApprovedRalphExecutionHint(approvedHint, 'Execute approved issue 1072 plan'), approvedHint);
+  });
+
+  it('drops the approved hint for unrelated explicit Ralph tasks', () => {
+    assert.equal(resolveApprovedRalphExecutionHint(approvedHint, 'Refactor unrelated queue handling'), null);
+  });
+});
+
+describe('readMatchedApprovedRalphExecutionHint', () => {
+  it('selects the matching approved Ralph hint when a PRD lists multiple launch hints', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-approved-context-'));
+    try {
+      await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'plans', 'prd-issue-909.md'),
+        [
+          '# PRD',
+          '',
+          'Launch via omx ralph "Execute alpha"',
+          'Launch via omx ralph "Execute beta"',
+        ].join('\n'),
+      );
+      await writeFile(join(cwd, '.omx', 'plans', 'test-spec-issue-909.md'), '# Test Spec\n');
+
+      const hint = readMatchedApprovedRalphExecutionHint(cwd, 'Execute alpha');
+      assert.ok(hint);
+      assert.equal(hint?.task, 'Execute alpha');
+      assert.equal(hint?.command, 'omx ralph "Execute alpha"');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed for bare Ralph follow-up reuse when a PRD lists multiple Ralph launch hints', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-approved-context-'));
+    try {
+      await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+      await writeFile(
+        join(cwd, '.omx', 'plans', 'prd-issue-909-bare.md'),
+        [
+          '# PRD',
+          '',
+          'Launch via omx ralph "Execute alpha"',
+          'Launch via omx ralph "Execute beta"',
+        ].join('\n'),
+      );
+      await writeFile(join(cwd, '.omx', 'plans', 'test-spec-issue-909-bare.md'), '# Test Spec\n');
+
+      const hint = readMatchedApprovedRalphExecutionHint(cwd, 'ralph-cli-launch');
+      assert.equal(hint, null);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('isRalphPrdMode', () => {
+  it('detects --prd flag usage', () => {
+    assert.equal(isRalphPrdMode(['--prd', 'ship release checklist']), true);
+  });
+
+  it('detects --prd=value usage', () => {
+    assert.equal(isRalphPrdMode(['--prd=ship release checklist']), true);
+  });
+
+  it('ignores non-prd Ralph runs', () => {
+    assert.equal(isRalphPrdMode(['fix', 'the', 'bug']), false);
+  });
+});
+
+describe('RALPH_HELP', () => {
+  it('clarifies that prompt-side $ralph activation is separate from CLI --prd mode', () => {
+    assert.match(RALPH_HELP, /Prompt-side `\$ralph` activation is separate from this CLI entrypoint/i);
+    assert.match(RALPH_HELP, /does not imply `--prd` or the PRD\.json startup gate/i);
   });
 });
 
@@ -59,7 +150,107 @@ const approvedHint: ApprovedExecutionLaunchHint = {
   sourcePath: '.omx/plans/prd-issue-1072.md',
   testSpecPaths: ['.omx/plans/test-spec-issue-1072.md'],
   deepInterviewSpecPaths: ['.omx/specs/deep-interview-issue-1072.md'],
+  repositoryContextSummary: {
+    sourcePath: '.omx/plans/repo-context-issue-1072.md',
+    content: 'Key files: src/cli/ralph.ts and src/planning/artifacts.ts',
+    truncated: false,
+  },
 };
+
+describe('assertRequiredRalphPrdJson', () => {
+  it('throws when --prd mode starts without .omx/prd.json', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
+    try {
+      assert.throws(
+        () => assertRequiredRalphPrdJson(cwd, ['--prd', 'ship release checklist']),
+        /Missing required PRD\.json at \.omx\/prd\.json/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('still requires legacy .omx/prd.json even when canonical PRD markdown exists', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
+    try {
+      await mkdir(join(cwd, '.omx', 'plans'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'plans', 'prd-existing.md'), '# Existing canonical PRD\n');
+
+      assert.throws(
+        () => assertRequiredRalphPrdJson(cwd, ['--prd', 'ship release checklist']),
+        /Missing required PRD\.json at \.omx\/prd\.json/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects completed stories without architect approval', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'prd.json'), JSON.stringify({
+        project: 'Issue 1555',
+        userStories: [{
+          id: 'US-001',
+          title: 'Guard story completion',
+          passes: true,
+        }],
+      }, null, 2));
+
+      assert.throws(
+        () => assertRequiredRalphPrdJson(cwd, ['--prd', 'ship release checklist']),
+        /marked passed\/completed without architect approval/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows completed stories with architect approval recorded', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'prd.json'), JSON.stringify({
+        project: 'Issue 1555',
+        userStories: [{
+          id: 'US-001',
+          title: 'Guard story completion',
+          status: 'completed',
+          architect_review: { verdict: 'approve' },
+        }],
+      }, null, 2));
+
+      assert.doesNotThrow(() => assertRequiredRalphPrdJson(cwd, ['--prd', 'ship release checklist']));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows --prd mode when .omx/prd.json exists', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
+    try {
+      await mkdir(join(cwd, '.omx'), { recursive: true });
+      await writeFile(join(cwd, '.omx', 'prd.json'), JSON.stringify({
+        project: 'Issue 1555',
+        userStories: [],
+      }, null, 2));
+
+      assert.doesNotThrow(() => assertRequiredRalphPrdJson(cwd, ['--prd', 'ship release checklist']));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not gate non-prd Ralph runs', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-ralph-prd-gate-'));
+    try {
+      assert.doesNotThrow(() => assertRequiredRalphPrdJson(cwd, ['fix', 'the', 'bug']));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('ralph deslop launch wiring', () => {
   it('consumes --no-deslop so it is not forwarded to codex', () => {
@@ -103,6 +294,8 @@ describe('ralph deslop launch wiring', () => {
     assert.match(instructions, /test specs: \.omx\/plans\/test-spec-issue-1072\.md/i);
     assert.match(instructions, /deep-interview specs: \.omx\/specs\/deep-interview-issue-1072\.md/i);
     assert.match(instructions, /Carry forward the approved deep-interview requirements/i);
+    assert.match(instructions, /approved repository context summary: \.omx\/plans\/repo-context-issue-1072\.md/i);
+    assert.match(instructions, /Key files: src\/cli\/ralph\.ts and src\/planning\/artifacts\.ts/i);
   });
 
   it('seeds the changed-files artifact with bounded-scope guidance', () => {

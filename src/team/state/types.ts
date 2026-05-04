@@ -1,5 +1,6 @@
 import type { TeamPhase, TerminalPhase } from '../orchestrator.js';
-import type { TeamTaskStatus, TeamEventType } from '../contracts.js';
+import type { TeamDispatchRequestStatus, TeamEventType, TeamTaskStatus } from '../contracts.js';
+import type { TeamReminderIntent } from '../reminder-intents.js';
 import type { WorktreeMode } from '../worktree.js';
 
 export interface TeamConfig {
@@ -56,6 +57,28 @@ export interface WorkerStatus {
   updated_at: string;
 }
 
+export type TeamTaskDelegationMode = 'none' | 'optional' | 'auto' | 'required';
+export type TeamTaskChildModelPolicy = 'standard' | 'fast' | 'inherit' | 'frontier';
+
+export interface TeamTaskDelegationComplianceEvidence {
+  status: 'spawned' | 'skipped';
+  source: 'terminal_result';
+  detail: string;
+  recorded_at: string;
+}
+
+export interface TeamTaskDelegationPlan {
+  mode: TeamTaskDelegationMode;
+  max_parallel_subtasks?: number;
+  required_parallel_probe?: boolean;
+  spawn_before_serial_search_threshold?: number;
+  child_model_policy?: TeamTaskChildModelPolicy;
+  child_model?: string;
+  subtask_candidates?: string[];
+  child_report_format?: 'bullets' | 'json';
+  skip_allowed_reason_required?: boolean;
+}
+
 export interface TeamTask {
   id: string;
   subject: string;
@@ -72,6 +95,8 @@ export interface TeamTask {
   claim?: TeamTaskClaim;
   created_at: string;
   completed_at?: string;
+  delegation?: TeamTaskDelegationPlan;
+  delegation_compliance?: TeamTaskDelegationComplianceEvidence;
 }
 
 export interface TeamTaskClaim {
@@ -111,7 +136,6 @@ export interface TeamGovernance {
 }
 
 export type TeamDispatchRequestKind = 'inbox' | 'mailbox' | 'nudge';
-export type TeamDispatchRequestStatus = 'pending' | 'notified' | 'delivered' | 'failed';
 export type TeamDispatchTransportPreference = 'hook_preferred_with_fallback' | 'transport_direct' | 'prompt_stdin';
 
 export interface TeamDispatchRequest {
@@ -122,6 +146,7 @@ export interface TeamDispatchRequest {
   worker_index?: number;
   pane_id?: string;
   trigger_message: string;
+  intent?: TeamReminderIntent;
   message_id?: string;
   inbox_correlation_key?: string;
   transport_preference: TeamDispatchTransportPreference;
@@ -142,6 +167,7 @@ export interface TeamDispatchRequestInput {
   worker_index?: number;
   pane_id?: string;
   trigger_message: string;
+  intent?: TeamReminderIntent;
   message_id?: string;
   inbox_correlation_key?: string;
   transport_preference?: TeamDispatchTransportPreference;
@@ -164,6 +190,7 @@ export interface TeamManifestV2 {
   governance: TeamGovernance;
   lifecycle_profile: 'default';
   permissions_snapshot: PermissionsSnapshot;
+  team_decomposition?: Record<string, unknown>;
   tmux_session: string;
   worker_count: number;
   workers: WorkerInfo[];
@@ -195,6 +222,7 @@ export interface TeamEvent {
   task_id?: string;
   message_id?: string | null;
   reason?: string;
+  intent?: TeamReminderIntent;
   state?: WorkerStatus['state'];
   prev_state?: WorkerStatus['state'];
   worker_count?: number;
@@ -239,7 +267,7 @@ export type ClaimTaskResult =
 
 export type TransitionTaskResult =
   | { ok: true; task: TeamTaskV2 }
-  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' };
+  | { ok: false; error: 'claim_conflict' | 'invalid_transition' | 'task_not_found' | 'already_terminal' | 'lease_expired' | 'missing_delegation_compliance_evidence' };
 
 export type ReleaseTaskClaimResult =
   | { ok: true; task: TeamTaskV2 }

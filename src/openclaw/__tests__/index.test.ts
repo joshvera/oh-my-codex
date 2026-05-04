@@ -113,6 +113,51 @@ describe("wakeOpenClaw", () => {
     assert.ok(result!.error?.includes("OMX_OPENCLAW_COMMAND"));
   });
 
+  it("does not auto-capture tmux history for stop/session-end events without explicit tmuxTail", async () => {
+    process.env.OMX_OPENCLAW = "1";
+    process.env.TMUX = "/tmp/tmux-1000/default,12345,0";
+    process.env.TMUX_PANE = "%42";
+
+    for (const eventName of ["stop", "session-end"] as const) {
+      const { createServer } = await import("http");
+      let capturedBody = "";
+      const server = createServer((req, res) => {
+        let body = "";
+        req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+        req.on("end", () => {
+          capturedBody = body;
+          res.writeHead(200);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+
+      const configPath = join(tmpDir, `openclaw-${eventName}.json`);
+      writeFileSync(configPath, JSON.stringify({
+        enabled: true,
+        gateways: { gw: { type: "http", url: `http://127.0.0.1:${port}/hook` } },
+        hooks: {
+          [eventName]: { gateway: "gw", instruction: "Event", enabled: true },
+        },
+      }));
+      process.env.OMX_OPENCLAW_CONFIG = configPath;
+      const { wakeOpenClaw } = await import("../index.js");
+      const { resetOpenClawConfigCache } = await import("../config.js");
+      resetOpenClawConfigCache();
+
+      const result = await wakeOpenClaw(eventName, { projectPath: "/some/project" });
+      server.close();
+
+      assert.ok(result !== null);
+      assert.equal(result!.success, true);
+
+      const payload = JSON.parse(capturedBody) as { tmuxTail?: string };
+      assert.equal(payload.tmuxTail, undefined);
+    }
+  });
+
   it("includes channel/to/threadId in HTTP payload when OPENCLAW_REPLY_* env vars set", async () => {
     process.env.OMX_OPENCLAW = "1";
     process.env.OPENCLAW_REPLY_CHANNEL = "#general";
@@ -321,5 +366,55 @@ describe("wakeOpenClaw", () => {
     const result = await wakeOpenClaw("session-end", { projectPath: "/some/project" });
     assert.ok(result !== null);
     assert.equal(result!.success, true);
+  });
+
+  it("sanitizes metadata-only tmuxTail provided by callers while preserving failure text", async () => {
+    process.env.OMX_OPENCLAW = "1";
+    delete process.env.OPENCLAW_REPLY_CHANNEL;
+    delete process.env.OPENCLAW_REPLY_TARGET;
+    delete process.env.OPENCLAW_REPLY_THREAD;
+
+    const { createServer } = await import("http");
+    let capturedBody = "";
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      req.on("end", () => {
+        capturedBody = body;
+        res.writeHead(200);
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+
+    const configPath = join(tmpDir, "openclaw.json");
+    writeFileSync(configPath, JSON.stringify({
+      enabled: true,
+      gateways: { gw: { type: "http", url: `http://127.0.0.1:${port}/hook` } },
+      hooks: {
+        "session-end": { gateway: "gw", instruction: "Ended", enabled: true },
+      },
+    }));
+    process.env.OMX_OPENCLAW_CONFIG = configPath;
+    const { wakeOpenClaw } = await import("../index.js");
+    const { resetOpenClawConfigCache } = await import("../config.js");
+    resetOpenClawConfigCache();
+
+    const result = await wakeOpenClaw("session-end", {
+      sessionId: "s1",
+      tmuxTail: [
+        "fix/issue-1525-post-stop-keyword-replay | ralph:2/50 | turns:4 | session:1m | last:5s ago",
+        "stderr: Error: test suite failed",
+      ].join("\n"),
+    });
+    server.close();
+
+    assert.ok(result !== null);
+    assert.equal(result!.success, true);
+    const parsed = JSON.parse(capturedBody);
+    assert.equal(parsed.tmuxTail, "stderr: Error: test suite failed");
+    assert.equal(parsed.context.tmuxTail, "stderr: Error: test suite failed");
   });
 });

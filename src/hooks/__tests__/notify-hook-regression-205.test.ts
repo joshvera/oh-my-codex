@@ -2,9 +2,8 @@
  * Regression tests for issue #205:
  * - notify-hook.js must be the thin orchestrator (imports from sub-modules)
  * - resolveTeamStateDirForWorker must be exported from team-worker.js
- * - DEFAULT_STALL_PATTERNS must contain 'if you want'
- * - detectStallPattern must match 'if you want'
- * - notify-hook end-to-end keeps 'if you want' stall detection, but default injection now waits for a real stall window
+ * - legacy 'if you want' permission-seeking prompts must stay excluded from default stall detection after #1416
+ * - notify-hook end-to-end must not treat 'if you want' as a default auto-nudge stall candidate
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -15,7 +14,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { writeSessionStart } from '../session.js';
 import { tmpdir } from 'node:os';
+import { buildTmuxSessionName } from '../../cli/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPTS_DIR = join(__dirname, '..', '..', '..', 'dist', 'scripts');
@@ -69,12 +70,24 @@ if [[ "$cmd" == "display-message" ]]; then
     exit 0
   fi
   if [[ "$format" == "#S" ]]; then
-    echo "devsess"
+    echo "\${OMX_TEST_TMUX_SESSION_NAME:-devsess}"
     exit 0
   fi
   exit 0
 fi
 if [[ "$cmd" == "list-panes" ]]; then
+  target=""
+  while (($#)); do
+    case "$1" in
+      -t) target="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ -n "$target" ]]; then
+    printf "%%99	node	codex --model gpt-5
+"
+    exit 0
+  fi
   echo "%1 12345"
   exit 0
 fi
@@ -93,6 +106,7 @@ function runNotifyHook(
     type: 'agent-turn-complete',
     'thread-id': 'thread-test',
     'turn-id': `turn-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    'session-id': 'sess-managed-regression',
     'input-messages': ['test'],
     'last-assistant-message': 'done',
     ...payloadOverrides,
@@ -105,6 +119,8 @@ function runNotifyHook(
       ...process.env,
       PATH: `${fakeBinDir}:${process.env.PATH || ''}`,
       CODEX_HOME: codexHome,
+      OMX_SESSION_ID: 'sess-managed-regression',
+      OMX_TEST_TMUX_SESSION_NAME: buildTmuxSessionName(cwd, 'sess-managed-regression'),
       TMUX_PANE: '%99',
       TMUX: '1',
       OMX_TEAM_WORKER: '',
@@ -115,41 +131,38 @@ function runNotifyHook(
 }
 
 // ---------------------------------------------------------------------------
-// auto-nudge.js – DEFAULT_STALL_PATTERNS contains 'if you want'
+// auto-nudge.js – permission-seeking prompts stay excluded after #1416
 // ---------------------------------------------------------------------------
-describe('regression-205: DEFAULT_STALL_PATTERNS contains "if you want"', () => {
-  it('DEFAULT_STALL_PATTERNS array includes "if you want"', async () => {
+describe('regression-205: DEFAULT_STALL_PATTERNS excludes permission-seeking prompts after #1416', () => {
+  it('DEFAULT_STALL_PATTERNS array does not include "if you want"', async () => {
     const { DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
     assert.ok(
       Array.isArray(DEFAULT_STALL_PATTERNS),
       'DEFAULT_STALL_PATTERNS should be an array',
     );
-    assert.ok(
-      DEFAULT_STALL_PATTERNS.includes('if you want'),
-      `Expected DEFAULT_STALL_PATTERNS to contain "if you want", got: ${JSON.stringify(DEFAULT_STALL_PATTERNS)}`,
-    );
-    assert.ok(DEFAULT_STALL_PATTERNS.includes('i\'m ready to'));
     assert.ok(DEFAULT_STALL_PATTERNS.includes('keep going'));
+    assert.equal(DEFAULT_STALL_PATTERNS.includes('if you want'), false);
+    assert.equal(DEFAULT_STALL_PATTERNS.includes('i\'m ready to'), false);
   });
 });
 
 // ---------------------------------------------------------------------------
-// auto-nudge.js – detectStallPattern matches 'if you want'
+// auto-nudge.js – detectStallPattern no longer matches permission-seeking 'if you want'
 // ---------------------------------------------------------------------------
-describe('regression-205: detectStallPattern matches "if you want"', () => {
-  it('detects "if you want" pattern', async () => {
+describe('regression-205: detectStallPattern excludes "if you want" after #1416', () => {
+  it('does not detect "if you want" pattern', async () => {
     const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
     assert.equal(
       detectStallPattern('If you want, I can refactor the module.', DEFAULT_STALL_PATTERNS),
-      true,
+      false,
     );
   });
 
-  it('detects "if you want" case-insensitively', async () => {
+  it('does not detect "if you want" case-insensitively', async () => {
     const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
     assert.equal(
       detectStallPattern('IF YOU WANT I can do more.', DEFAULT_STALL_PATTERNS),
-      true,
+      false,
     );
   });
 
@@ -171,10 +184,9 @@ describe('regression-205: detectStallPattern matches "if you want"', () => {
 });
 
 // ---------------------------------------------------------------------------
-// notify-hook.js – "if you want" still marks a stall candidate, but default
-// injection now waits for the stall window instead of firing immediately.
+// notify-hook.js – "if you want" no longer marks a default stall candidate.
 // ---------------------------------------------------------------------------
-describe('regression-205: notify-hook records pending stall state on "if you want" by default', () => {
+describe('regression-205: notify-hook ignores "if you want" for default auto-nudge', () => {
   let originalTeamWorker: string | undefined;
   let originalTeamStateRoot: string | undefined;
 
@@ -192,7 +204,7 @@ describe('regression-205: notify-hook records pending stall state on "if you wan
     else process.env.OMX_TEAM_STATE_ROOT = originalTeamStateRoot;
   });
 
-  it('records pending stall state instead of injecting immediately', async () => {
+  it('does not record pending stall state for permission-seeking "if you want" text', async () => {
     await withTempWorkingDir(async (cwd) => {
       const stateDir = join(cwd, '.omx', 'state');
       const logsDir = join(cwd, '.omx', 'logs');
@@ -208,6 +220,7 @@ describe('regression-205: notify-hook records pending stall state on "if you wan
       await writeJson(join(codexHome, '.omx-config.json'), {
         autoNudge: { enabled: true, delaySec: 0 },
       });
+      await writeSessionStart(cwd, 'sess-managed-regression');
 
       await writeFile(join(fakeBinDir, 'tmux'), buildFakeTmux(tmuxLogPath));
       await chmod(join(fakeBinDir, 'tmux'), 0o755);
@@ -222,13 +235,9 @@ describe('regression-205: notify-hook records pending stall state on "if you wan
       assert.doesNotMatch(
         tmuxLog,
         /send-keys -t %99 -l yes, proceed \[OMX_TMUX_INJECT\]/,
-        'default notify-hook path should not inject before the real stall window elapses',
+        'default notify-hook path should not inject for permission-seeking prompts',
       );
-
-      const nudgeState = JSON.parse(await readFile(join(stateDir, 'auto-nudge-state.json'), 'utf-8'));
-      assert.equal(nudgeState.nudgeCount, 0);
-      assert.ok(nudgeState.pendingSignature, 'expected pending stall signature to be recorded');
-      assert.ok(nudgeState.pendingSince, 'expected pending stall timestamp to be recorded');
+      assert.equal(existsSync(join(stateDir, 'auto-nudge-state.json')), false);
     });
   });
 });
@@ -246,7 +255,7 @@ describe('regression-205: resolveTeamStateDirForWorker is exported from team-wor
     );
   });
 
-  it('uses OMX_TEAM_STATE_ROOT env var when set', async () => {
+  it('fails closed for OMX_TEAM_STATE_ROOT when worker identity is missing', async () => {
     const { resolveTeamStateDirForWorker } = await loadModule('notify-hook/team-worker.js');
     const saved = process.env.OMX_TEAM_STATE_ROOT;
     process.env.OMX_TEAM_STATE_ROOT = '/custom/state/root';
@@ -255,7 +264,7 @@ describe('regression-205: resolveTeamStateDirForWorker is exported from team-wor
         '/some/cwd',
         { teamName: 'fix-ts', workerName: 'worker-1' },
       );
-      assert.equal(result, '/custom/state/root');
+      assert.equal(result, null);
     } finally {
       if (saved === undefined) {
         delete process.env.OMX_TEAM_STATE_ROOT;
@@ -265,7 +274,7 @@ describe('regression-205: resolveTeamStateDirForWorker is exported from team-wor
     }
   });
 
-  it('falls back to {cwd}/.omx/state when no env var and no team dir exists', async () => {
+  it('does not guess {cwd}/.omx/state when no worker identity exists', async () => {
     const { resolveTeamStateDirForWorker } = await loadModule('notify-hook/team-worker.js');
     const savedRoot = process.env.OMX_TEAM_STATE_ROOT;
     const savedLeader = process.env.OMX_TEAM_LEADER_CWD;
@@ -277,7 +286,7 @@ describe('regression-205: resolveTeamStateDirForWorker is exported from team-wor
         cwd,
         { teamName: 'fix-ts', workerName: 'worker-1' },
       );
-      assert.equal(result, join(cwd, '.omx', 'state'));
+      assert.equal(result, null);
     } finally {
       if (savedRoot === undefined) {
         delete process.env.OMX_TEAM_STATE_ROOT;

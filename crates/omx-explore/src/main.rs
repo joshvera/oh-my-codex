@@ -12,6 +12,10 @@ const CODEX_BIN_ENV: &str = "OMX_EXPLORE_CODEX_BIN";
 const HARNESS_ROOT_ENV: &str = "OMX_EXPLORE_ROOT";
 const INTERNAL_DIRECT_WRAPPER_FLAG: &str = "--internal-allowlist-direct";
 const INTERNAL_SHELL_WRAPPER_FLAG: &str = "--internal-allowlist-shell";
+const TEMP_ALLOWLIST_DIR_PREFIX: &str = "omx-explore-allowlist-";
+const SHELL_STARTUP_ENV_VARS: &[&str] = &["BASH_ENV", "ENV", "PROMPT_COMMAND"];
+const WINDOWS_UNSUPPORTED_ALLOWLIST_MESSAGE: &str =
+    "omx explore built-in harness is not ready on Windows because its allowlist runtime relies on POSIX sh/bash wrappers. Set OMX_EXPLORE_BIN to a compatible custom harness, prefer `omx sparkshell` for shell-native read-only lookups, or run `omx doctor` for readiness details.";
 
 const ALLOWED_DIRECT_COMMANDS: &[&str] = &[
     "rg", "grep", "ls", "find", "wc", "cat", "head", "tail", "pwd", "printf",
@@ -22,6 +26,7 @@ struct Args {
     cwd: PathBuf,
     prompt: String,
     prompt_file: PathBuf,
+    instructions_file: PathBuf,
     spark_model: String,
     fallback_model: String,
 }
@@ -33,10 +38,19 @@ struct AttemptResult {
     output_markdown: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FallbackEvent {
+    from_model: String,
+    to_model: String,
+    exit_code: i32,
+    stderr: String,
+}
+
 #[derive(Debug)]
 struct AllowlistEnvironment {
     bin_dir: PathBuf,
     shell_path: PathBuf,
+    sandbox_bin_dir: Option<PathBuf>,
     _root: TempDirGuard,
 }
 
@@ -105,21 +119,18 @@ where
         return Ok(());
     }
 
-    eprintln!(
-        "[omx explore] spark model `{}` unavailable or failed (exit {}). Falling back to `{}`.",
-        args.spark_model, spark_attempt.status_code, args.fallback_model
-    );
-    if !spark_attempt.stderr.trim().is_empty() {
-        eprintln!(
-            "[omx explore] spark stderr: {}",
-            spark_attempt.stderr.trim()
-        );
-    }
+    let fallback_event = FallbackEvent {
+        from_model: args.spark_model.clone(),
+        to_model: args.fallback_model.clone(),
+        exit_code: spark_attempt.status_code,
+        stderr: spark_attempt.stderr.clone(),
+    };
+    emit_model_fallback_event(&fallback_event);
 
     let fallback_attempt = invoke_codex(&args, &args.fallback_model, &prompt_contract)
         .map_err(|err| format!("fallback attempt failed to launch: {err}"))?;
     if fallback_attempt.status_code == 0 {
-        print_attempt_output(fallback_attempt)?;
+        print_attempt_output_with_fallback(fallback_attempt, &fallback_event)?;
         return Ok(());
     }
 
@@ -134,13 +145,58 @@ where
 }
 
 fn print_attempt_output(attempt: AttemptResult) -> Result<(), String> {
+    print_attempt_output_with_optional_fallback(attempt, None)
+}
+
+fn print_attempt_output_with_fallback(
+    attempt: AttemptResult,
+    fallback: &FallbackEvent,
+) -> Result<(), String> {
+    print_attempt_output_with_optional_fallback(attempt, Some(fallback))
+}
+
+fn print_attempt_output_with_optional_fallback(
+    attempt: AttemptResult,
+    fallback: Option<&FallbackEvent>,
+) -> Result<(), String> {
     if let Some(markdown) = attempt.output_markdown {
+        if let Some(event) = fallback {
+            print!("{}", fallback_output_notice(event));
+            if !markdown.starts_with('\n') {
+                println!();
+            }
+        }
         print!("{}", markdown);
         return Ok(());
     }
     Err(
         "codex completed successfully but did not produce the expected markdown output artifact"
             .to_string(),
+    )
+}
+
+fn emit_model_fallback_event(event: &FallbackEvent) {
+    eprintln!("{}", fallback_attempt_event_message(event));
+    eprintln!(
+        "[omx explore] spark model `{}` unavailable or failed (exit {}). Falling back to `{}`.",
+        event.from_model, event.exit_code, event.to_model
+    );
+    if !event.stderr.trim().is_empty() {
+        eprintln!("[omx explore] spark stderr: {}", event.stderr.trim());
+    }
+}
+
+fn fallback_attempt_event_message(event: &FallbackEvent) -> String {
+    format!(
+        "[omx explore] fallback-attempt=model from=`{}` to=`{}` reason=spark_attempt_failed exit={}. Cost/behavior boundary changed if fallback succeeds; stdout fallback notice is emitted only after successful fallback output.",
+        event.from_model, event.to_model, event.exit_code
+    )
+}
+
+fn fallback_output_notice(event: &FallbackEvent) -> String {
+    format!(
+        "## OMX Explore fallback\n- fallback: model\n- from: `{}`\n- to: `{}`\n- reason: spark attempt failed with exit {}\n- boundary: cost/behavior may differ from the low-cost spark path\n",
+        event.from_model, event.to_model, event.exit_code
     )
 }
 
@@ -151,6 +207,7 @@ where
     let mut cwd: Option<PathBuf> = None;
     let mut prompt: Option<String> = None;
     let mut prompt_file: Option<PathBuf> = None;
+    let mut instructions_file: Option<PathBuf> = None;
     let mut spark_model: Option<String> = None;
     let mut fallback_model: Option<String> = None;
 
@@ -161,6 +218,12 @@ where
             "--prompt" => prompt = Some(next_required(&mut args, "--prompt")?),
             "--prompt-file" => {
                 prompt_file = Some(PathBuf::from(next_required(&mut args, "--prompt-file")?))
+            }
+            "--instructions-file" => {
+                instructions_file = Some(PathBuf::from(next_required(
+                    &mut args,
+                    "--instructions-file",
+                )?))
             }
             "--model-spark" => spark_model = Some(next_required(&mut args, "--model-spark")?),
             "--model-fallback" => {
@@ -175,6 +238,8 @@ where
         cwd: cwd.ok_or_else(|| format!("missing --cwd\n{}", usage()))?,
         prompt: prompt.ok_or_else(|| format!("missing --prompt\n{}", usage()))?,
         prompt_file: prompt_file.ok_or_else(|| format!("missing --prompt-file\n{}", usage()))?,
+        instructions_file: instructions_file
+            .ok_or_else(|| format!("missing --instructions-file\n{}", usage()))?,
         spark_model: spark_model.ok_or_else(|| format!("missing --model-spark\n{}", usage()))?,
         fallback_model: fallback_model
             .ok_or_else(|| format!("missing --model-fallback\n{}", usage()))?,
@@ -194,12 +259,14 @@ where
 }
 
 fn usage() -> &'static str {
-    "Usage: omx-explore --cwd <dir> --prompt <text> --prompt-file <explore-prompt.md> --model-spark <model> --model-fallback <model>"
+    "Usage: omx-explore --cwd <dir> --prompt <text> --prompt-file <explore-prompt.md> --instructions-file <AGENTS.md> --model-spark <model> --model-fallback <model>"
 }
 
+#[allow(unknown_lints, clippy::io_other_error)]
 fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<AttemptResult> {
     let codex_launch = resolve_codex_launch();
-    let allowlist = prepare_allowlist_environment().map_err(io::Error::other)?;
+    let allowlist =
+        prepare_allowlist_environment().map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
     let output_path = temp_output_path();
     let final_prompt = compose_exec_prompt(&args.prompt, prompt_contract);
     let mut command = Command::new(&codex_launch.program);
@@ -216,14 +283,24 @@ fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<A
         .arg("-c")
         .arg("model_reasoning_effort=\"low\"")
         .arg("-c")
+        .arg(format!(
+            "model_instructions_file=\"{}\"",
+            escape_toml_string(&args.instructions_file.display().to_string())
+        ))
+        .arg("-c")
         .arg("shell_environment_policy.inherit=all")
         .arg("--skip-git-repo-check")
         .arg("-o")
         .arg(&output_path)
         .arg(&final_prompt)
         .env(HARNESS_ROOT_ENV, &args.cwd)
-        .env("PATH", &allowlist.bin_dir)
+        .env(
+            "PATH",
+            build_codex_path(&allowlist.bin_dir, allowlist.sandbox_bin_dir.as_deref())
+                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?,
+        )
         .env("SHELL", &allowlist.shell_path);
+    sanitize_explore_subprocess_env(&mut command);
     let output = command.output()?;
 
     let markdown = read_to_string(&output_path).ok();
@@ -233,6 +310,10 @@ fn invoke_codex(args: &Args, model: &str, prompt_contract: &str) -> io::Result<A
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         output_markdown: markdown,
     })
+}
+
+fn escape_toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,12 +351,32 @@ fn resolve_codex_binary() -> String {
 }
 
 fn codex_launch_for_binary(codex_binary: &str) -> Option<CodexLaunch> {
-    let interpreter = read_shebang_interpreter(Path::new(codex_binary))?;
+    let codex_path = Path::new(codex_binary);
+    if let Some(launch) = codex_launch_for_posix_node_shim(codex_path) {
+        return Some(launch);
+    }
+
+    let interpreter = read_shebang_interpreter(codex_path)?;
     let (program, mut leading_args) = resolve_shebang_launch(&interpreter)?;
     leading_args.push(codex_binary.to_string());
     Some(CodexLaunch {
         program,
         leading_args,
+    })
+}
+
+fn codex_launch_for_posix_node_shim(codex_path: &Path) -> Option<CodexLaunch> {
+    let shebang = read_shebang_interpreter(codex_path)?;
+    if !is_posix_shell_shebang(&shebang) {
+        return None;
+    }
+
+    let script = read_to_string(codex_path).ok()?;
+    let entrypoint = resolve_posix_node_shim_entrypoint(codex_path, &script)?;
+    let program = resolve_posix_node_shim_program(codex_path, &script)?;
+    Some(CodexLaunch {
+        program: program.display().to_string(),
+        leading_args: vec![entrypoint.display().to_string()],
     })
 }
 
@@ -291,6 +392,85 @@ fn read_shebang_interpreter(path: &Path) -> Option<String> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn is_posix_shell_shebang(shebang: &str) -> bool {
+    let parts: Vec<&str> = shebang.split_whitespace().collect();
+    let interpreter = *parts.first().unwrap_or(&"");
+    if interpreter.ends_with("/env") {
+        return parts
+            .get(1)
+            .is_some_and(|target| is_posix_shell_name(target));
+    }
+    is_posix_shell_name(interpreter)
+}
+
+fn is_posix_shell_name(value: &str) -> bool {
+    matches!(
+        Path::new(value).file_name().and_then(|name| name.to_str()),
+        Some("sh" | "bash" | "dash" | "ash" | "ksh" | "zsh")
+    )
+}
+
+fn resolve_posix_node_shim_entrypoint(codex_path: &Path, script: &str) -> Option<PathBuf> {
+    let basedir = codex_path.parent()?;
+    quoted_shell_segments(script)
+        .into_iter()
+        .filter_map(|segment| strip_basedir_prefix(&segment).map(ToOwned::to_owned))
+        .map(|relative| normalize_path(basedir.join(relative)))
+        .find(|candidate| is_node_entrypoint(candidate))
+}
+
+fn resolve_posix_node_shim_program(codex_path: &Path, script: &str) -> Option<PathBuf> {
+    let basedir = codex_path.parent()?;
+    if quoted_shell_segments(script)
+        .into_iter()
+        .any(|segment| matches!(strip_basedir_prefix(&segment), Some("node")))
+    {
+        let sibling_node = basedir.join("node");
+        if is_usable_host_command(&sibling_node) {
+            return Some(sibling_node);
+        }
+    }
+    resolve_host_command("node")
+}
+
+fn quoted_shell_segments(script: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut active_quote: Option<char> = None;
+    let mut current = String::new();
+
+    for ch in script.chars() {
+        if let Some(quote) = active_quote {
+            if ch == quote {
+                segments.push(std::mem::take(&mut current));
+                active_quote = None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+
+        if ch == '\'' || ch == '"' {
+            active_quote = Some(ch);
+        }
+    }
+
+    segments
+}
+
+fn strip_basedir_prefix(segment: &str) -> Option<&str> {
+    segment
+        .strip_prefix("$basedir/")
+        .or_else(|| segment.strip_prefix("${basedir}/"))
+}
+
+fn is_node_entrypoint(path: &Path) -> bool {
+    path.is_file()
+        && matches!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("js" | "cjs" | "mjs")
+        )
 }
 
 fn resolve_shebang_launch(shebang: &str) -> Option<(String, Vec<String>)> {
@@ -366,6 +546,9 @@ fn compose_exec_prompt(user_prompt: &str, prompt_contract: &str) -> String {
 }
 
 fn prepare_allowlist_environment() -> Result<AllowlistEnvironment, String> {
+    if let Some(message) = allowlist_platform_diagnostic(env::consts::OS) {
+        return Err(message.to_string());
+    }
     let root = temp_allowlist_dir()?;
     let bin_dir = root.path.join("bin");
     create_dir_all(&bin_dir).map_err(|err| {
@@ -405,11 +588,54 @@ fn prepare_allowlist_environment() -> Result<AllowlistEnvironment, String> {
     write_executable(&shell_path, &bash_wrapper)?;
     write_executable(&bin_dir.join("sh"), &sh_wrapper)?;
 
+    let sandbox_bin_dir = prepare_sandbox_dependency_bin(&root.path)?;
+
     Ok(AllowlistEnvironment {
         bin_dir,
         shell_path,
+        sandbox_bin_dir,
         _root: root,
     })
+}
+
+fn build_codex_path(
+    allowlist_bin_dir: &Path,
+    sandbox_bin_dir: Option<&Path>,
+) -> Result<OsString, String> {
+    let mut entries = vec![allowlist_bin_dir.to_path_buf()];
+    if let Some(sandbox_bin_dir) = sandbox_bin_dir {
+        entries.push(sandbox_bin_dir.to_path_buf());
+    }
+    env::join_paths(entries).map_err(|err| format!("failed to construct restricted PATH: {err}"))
+}
+
+fn prepare_sandbox_dependency_bin(root: &Path) -> Result<Option<PathBuf>, String> {
+    let Some(bwrap_path) = resolve_host_command("bwrap") else {
+        return Ok(None);
+    };
+
+    let sandbox_bin_dir = root.join("sandbox-bin");
+    create_dir_all(&sandbox_bin_dir).map_err(|err| {
+        format!(
+            "failed to create sandbox dependency bin dir {}: {err}",
+            sandbox_bin_dir.display()
+        )
+    })?;
+    write_executable(
+        &sandbox_bin_dir.join("bwrap"),
+        &format!(
+            "#!/bin/sh\nexec {} \"$@\"\n",
+            shell_quote(&bwrap_path.display().to_string())
+        ),
+    )?;
+    Ok(Some(sandbox_bin_dir))
+}
+
+fn allowlist_platform_diagnostic(os: &str) -> Option<&'static str> {
+    if os.eq_ignore_ascii_case("windows") {
+        return Some(WINDOWS_UNSUPPORTED_ALLOWLIST_MESSAGE);
+    }
+    None
 }
 
 fn temp_allowlist_dir() -> Result<TempDirGuard, String> {
@@ -469,22 +695,73 @@ fn build_direct_wrapper(self_exe: &Path, command: &str) -> Result<String, String
 
 fn resolve_host_command(command: &str) -> Option<PathBuf> {
     let candidate = Path::new(command);
-    if candidate.is_absolute() && candidate.exists() {
+    if candidate.is_absolute()
+        && is_usable_host_command(candidate)
+        && !is_omx_explore_allowlist_path(candidate)
+    {
         return Some(candidate.to_path_buf());
     }
 
     let path = env::var_os("PATH")?;
     for entry in env::split_paths(&path) {
         let resolved = entry.join(command);
-        if resolved.exists() {
+        if is_usable_host_command(&resolved) && !is_omx_explore_allowlist_path(&resolved) {
             return Some(resolved);
         }
     }
     None
 }
 
+fn is_omx_explore_allowlist_path(path: &Path) -> bool {
+    fn is_under_allowlist_bin(path: &Path) -> bool {
+        path.ancestors().any(|ancestor| {
+            let is_allowlist_root = ancestor
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(TEMP_ALLOWLIST_DIR_PREFIX));
+            if !is_allowlist_root {
+                return false;
+            }
+            path.strip_prefix(ancestor)
+                .ok()
+                .and_then(|relative| relative.components().next())
+                .is_some_and(|component| component.as_os_str() == "bin")
+        })
+    }
+
+    is_under_allowlist_bin(path)
+        || canonicalize_existing_prefix(path)
+            .as_deref()
+            .is_some_and(is_under_allowlist_bin)
+}
+
+fn is_usable_host_command(path: &Path) -> bool {
+    let metadata = match path.metadata() {
+        Ok(metadata) => metadata,
+        Err(_) => return false,
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn sanitize_explore_subprocess_env(command: &mut Command) {
+    for key in SHELL_STARTUP_ENV_VARS {
+        command.env_remove(key);
+    }
 }
 
 fn run_internal_direct_wrapper<I>(mut args: I) -> Result<(), String>
@@ -523,6 +800,7 @@ where
     if real_shell.ends_with("bash") {
         child.arg("--noprofile").arg("--norc");
     }
+    sanitize_explore_subprocess_env(&mut child);
     let status = child
         .arg("-lc")
         .arg(&command)
@@ -560,7 +838,7 @@ fn validate_shell_invocation(args: &[String]) -> Result<String, String> {
 
     let tokens: Vec<String> = command
         .split_whitespace()
-        .map(|token| token.trim_matches(['"', '\'']).to_string())
+        .map(|token| token.trim_matches(|ch| ch == '"' || ch == '\'').to_string())
         .filter(|token| !token.is_empty())
         .collect();
     let first = tokens
@@ -605,7 +883,7 @@ fn validate_direct_command(command_name: &str, args: &[String]) -> Result<(), St
                 );
             }
         }
-        "find" => {
+        "find"
             if args.iter().any(|arg| {
                 matches!(
                     arg.as_str(),
@@ -619,13 +897,14 @@ fn validate_direct_command(command_name: &str, args: &[String]) -> Result<(), St
                         | "-fprintf"
                         | "-fls"
                 )
-            }) {
-                return Err(
-                    "find actions that execute, delete, or write files are not allowed in omx explore"
-                        .to_string(),
-                );
-            }
+            }) =>
+        {
+            return Err(
+                "find actions that execute, delete, or write files are not allowed in omx explore"
+                    .to_string(),
+            );
         }
+        "find" => {}
         "cat" => {
             let operands = non_option_operands(args);
             if operands.is_empty() {
@@ -698,19 +977,28 @@ fn validate_repo_paths(command_name: &str, args: &[String]) -> Result<(), String
     let candidate_paths = command_path_operands(command_name, args);
     for operand in candidate_paths {
         let normalized = normalize_candidate_path(&repo_root, operand);
-        if !normalized.starts_with(&repo_root) {
+        let canonical_candidate = canonicalize_existing_prefix(&normalized);
+        let is_textually_inside = normalized.starts_with(&repo_root);
+        let is_canonically_inside = match (&canonical_candidate, &canonical_repo_root) {
+            (Some(candidate), Some(root)) => candidate.starts_with(root),
+            _ => false,
+        };
+
+        if !is_textually_inside && !is_canonically_inside {
             return Err(format!(
                 "path `{operand}` escapes the omx explore repository root {}",
                 repo_root.display()
             ));
         }
-        if let Some(canonical_candidate) = canonicalize_existing_prefix(&normalized) {
-            if let Some(canonical_repo_root) = &canonical_repo_root {
-                if !canonical_candidate.starts_with(canonical_repo_root) {
-                    return Err(format!(
-                        "path `{operand}` resolves outside the omx explore repository root {}",
-                        canonical_repo_root.display()
-                    ));
+        if is_textually_inside {
+            if let Some(canonical_candidate) = canonical_candidate {
+                if let Some(canonical_repo_root) = &canonical_repo_root {
+                    if !canonical_candidate.starts_with(canonical_repo_root) {
+                        return Err(format!(
+                            "path `{operand}` resolves outside the omx explore repository root {}",
+                            canonical_repo_root.display()
+                        ));
+                    }
                 }
             }
         }
@@ -785,6 +1073,7 @@ fn canonicalize_existing_prefix(path: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(unused_unsafe)]
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
@@ -815,10 +1104,12 @@ mod tests {
                 "find auth",
                 "--prompt-file",
                 "/tmp/explore.md",
+                "--instructions-file",
+                "/tmp/explore-agents.md",
                 "--model-spark",
                 "gpt-5.3-codex-spark",
                 "--model-fallback",
-                "gpt-5.4",
+                "gpt-5.5",
             ]
             .into_iter()
             .map(OsString::from),
@@ -828,8 +1119,9 @@ mod tests {
         assert_eq!(args.cwd, Path::new("/tmp/repo"));
         assert_eq!(args.prompt, "find auth");
         assert_eq!(args.prompt_file, Path::new("/tmp/explore.md"));
+        assert_eq!(args.instructions_file, Path::new("/tmp/explore-agents.md"));
         assert_eq!(args.spark_model, "gpt-5.3-codex-spark");
-        assert_eq!(args.fallback_model, "gpt-5.4");
+        assert_eq!(args.fallback_model, "gpt-5.5");
     }
 
     #[test]
@@ -857,7 +1149,17 @@ mod tests {
     #[test]
     fn resolve_codex_binary_resolves_bare_env_override_from_path() {
         let _guard = env_lock();
-        let root = temp_allowlist_dir().expect("temp root");
+        let root = TempDirGuard {
+            path: env::temp_dir().join(format!(
+                "omx-explore-resolve-codex-binary-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            )),
+        };
+        create_dir_all(&root.path).expect("create temp root");
         let bin_dir = root.path.join("bin");
         create_dir_all(&bin_dir).expect("create bin");
         let fake_codex = bin_dir.join("codex-custom");
@@ -885,6 +1187,7 @@ mod tests {
 
     #[test]
     fn codex_launch_for_env_node_shebang_uses_host_node_absolute_path() {
+        let _guard = env_lock();
         let root = temp_allowlist_dir().expect("temp root");
         let script_path = root.path.join("codex-script");
         write(&script_path, b"#!/usr/bin/env node\nconsole.log(\"ok\");\n").expect("write script");
@@ -893,6 +1196,162 @@ mod tests {
             .expect("launch config");
         let expected_node = resolve_host_command("node").expect("host node path");
         assert_eq!(launch.program, expected_node.display().to_string());
+        assert_eq!(launch.leading_args, vec![script_path.display().to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_launch_for_posix_package_manager_shim_uses_host_node_and_entrypoint() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let host_bin = root.path.join("host-bin");
+        let shim_dir = root.path.join("node_modules").join(".bin");
+        let entrypoint = root
+            .path
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("bin")
+            .join("codex.js");
+        create_dir_all(&host_bin).expect("create host bin");
+        create_dir_all(&shim_dir).expect("create shim dir");
+        create_dir_all(entrypoint.parent().expect("entrypoint parent"))
+            .expect("create entrypoint dir");
+
+        let fake_node = host_bin.join("node");
+        write_executable(&fake_node, "#!/bin/sh\nexit 0\n").expect("write fake node");
+        write(&entrypoint, "console.log('ok');\n").expect("write entrypoint");
+
+        let shim_path = shim_dir.join("codex");
+        write_executable(
+            &shim_path,
+            r#"#!/bin/sh
+basedir=$(dirname "$0")
+if [ -x "$basedir/node" ]; then
+  exec "$basedir/node" "$basedir/../@openai/codex/bin/codex.js" "$@"
+fi
+exec node "$basedir/../@openai/codex/bin/codex.js" "$@"
+"#,
+        )
+        .expect("write shim");
+
+        let original_path = env::var_os("PATH");
+        unsafe {
+            env::set_var("PATH", &host_bin);
+        }
+
+        let launch =
+            codex_launch_for_binary(shim_path.to_str().expect("shim path")).expect("launch config");
+
+        match original_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+
+        assert_eq!(launch.program, fake_node.display().to_string());
+        assert_eq!(launch.leading_args, vec![entrypoint.display().to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_host_command_skips_directory_and_non_executable_path_entries() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let bad_bin = root.path.join("bad-bin");
+        let blocked_file_bin = root.path.join("blocked-file-bin");
+        let good_bin = root.path.join("good-bin");
+        create_dir_all(&bad_bin).expect("create bad bin");
+        create_dir_all(&blocked_file_bin).expect("create blocked file bin");
+        create_dir_all(&good_bin).expect("create good bin");
+
+        let blocked_directory = bad_bin.join("node");
+        create_dir_all(blocked_directory).expect("create blocked directory");
+
+        let blocked_node = blocked_file_bin.join("node");
+        write(&blocked_node, "#!/bin/sh\nexit 0\n").expect("write blocked file node");
+        let executable_node = good_bin.join("node");
+        write_executable(&executable_node, "#!/bin/sh\nexit 0\n").expect("write executable node");
+
+        #[cfg(unix)]
+        {
+            use std::fs;
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&blocked_node)
+                .expect("stat blocked node")
+                .permissions();
+            perms.set_mode(0o644);
+            fs::set_permissions(&blocked_node, perms).expect("chmod blocked node");
+        }
+
+        let original_path = env::var_os("PATH");
+        unsafe {
+            env::set_var(
+                "PATH",
+                env::join_paths([
+                    bad_bin.as_path(),
+                    blocked_file_bin.as_path(),
+                    good_bin.as_path(),
+                ])
+                .expect("join path"),
+            );
+        }
+
+        let resolved = resolve_host_command("node");
+
+        match original_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+
+        assert_eq!(resolved, Some(executable_node));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_launch_for_env_node_shebang_skips_non_executable_earlier_node_entry() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let bad_bin = root.path.join("bad-bin");
+        let good_bin = root.path.join("good-bin");
+        create_dir_all(&bad_bin).expect("create bad bin");
+        create_dir_all(&good_bin).expect("create good bin");
+
+        let blocked_node = bad_bin.join("node");
+        write(&blocked_node, "#!/bin/sh\nexit 0\n").expect("write blocked node");
+        let executable_node = good_bin.join("node");
+        write_executable(&executable_node, "#!/bin/sh\nexit 0\n").expect("write executable node");
+
+        #[cfg(unix)]
+        {
+            use std::fs;
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&blocked_node)
+                .expect("stat blocked node")
+                .permissions();
+            perms.set_mode(0o644);
+            fs::set_permissions(&blocked_node, perms).expect("chmod blocked node");
+        }
+
+        let script_path = root.path.join("codex-script");
+        write(&script_path, b"#!/usr/bin/env node\nconsole.log(\"ok\");\n").expect("write script");
+
+        let original_path = env::var_os("PATH");
+        unsafe {
+            env::set_var(
+                "PATH",
+                env::join_paths([bad_bin.as_path(), good_bin.as_path()]).expect("join path"),
+            );
+        }
+
+        let launch = codex_launch_for_binary(script_path.to_str().expect("script path"))
+            .expect("launch config");
+
+        match original_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+
+        assert_eq!(launch.program, executable_node.display().to_string());
         assert_eq!(launch.leading_args, vec![script_path.display().to_string()]);
     }
 
@@ -922,6 +1381,88 @@ mod tests {
             None => unsafe { env::remove_var("PATH") },
         }
         result
+    }
+
+    #[test]
+    fn build_codex_path_keeps_allowlist_first_and_only_adds_sandbox_bin() {
+        let allowlist_bin = Path::new("/tmp/omx-explore-allowlist/bin");
+        let sandbox_bin = Path::new("/tmp/omx-explore-sandbox-bin");
+
+        let path = build_codex_path(allowlist_bin, Some(sandbox_bin)).expect("restricted path");
+        let entries: Vec<PathBuf> = env::split_paths(&path).collect();
+
+        assert_eq!(
+            entries,
+            vec![allowlist_bin.to_path_buf(), sandbox_bin.to_path_buf()]
+        );
+    }
+
+    #[test]
+    fn build_codex_path_omits_sandbox_bin_when_bwrap_is_absent() {
+        let allowlist_bin = Path::new("/tmp/omx-explore-allowlist/bin");
+
+        let path = build_codex_path(allowlist_bin, None).expect("restricted path");
+        let entries: Vec<PathBuf> = env::split_paths(&path).collect();
+
+        assert_eq!(entries, vec![allowlist_bin.to_path_buf()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_allowlist_environment_adds_controlled_bwrap_without_host_path() {
+        let _guard = env_lock();
+        let mut commands = vec!["bash", "sh"];
+        commands.extend(
+            ALLOWED_DIRECT_COMMANDS
+                .iter()
+                .copied()
+                .filter(|command| *command != "rg"),
+        );
+        let (_root, host_bin) = create_host_bin_with_commands(&commands);
+        let fake_bwrap = host_bin.join("bwrap");
+        write_executable(&fake_bwrap, "#!/bin/sh\nexit 0\n").expect("write fake bwrap");
+
+        let allowlist =
+            with_path(&host_bin, prepare_allowlist_environment).expect("allowlist environment");
+        let sandbox_bin = allowlist
+            .sandbox_bin_dir
+            .as_ref()
+            .expect("sandbox bin when bwrap exists");
+        let path = build_codex_path(&allowlist.bin_dir, allowlist.sandbox_bin_dir.as_deref())
+            .expect("codex path");
+        let entries: Vec<PathBuf> = env::split_paths(&path).collect();
+
+        assert_eq!(
+            entries,
+            vec![allowlist.bin_dir.clone(), sandbox_bin.clone()]
+        );
+        assert!(!entries.contains(&host_bin));
+        let controlled_bwrap =
+            read_to_string(sandbox_bin.join("bwrap")).expect("read controlled bwrap");
+        assert!(controlled_bwrap.contains(&fake_bwrap.display().to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_allowlist_environment_leaves_path_allowlist_only_without_bwrap() {
+        let _guard = env_lock();
+        let mut commands = vec!["bash", "sh"];
+        commands.extend(
+            ALLOWED_DIRECT_COMMANDS
+                .iter()
+                .copied()
+                .filter(|command| *command != "rg"),
+        );
+        let (_root, host_bin) = create_host_bin_with_commands(&commands);
+
+        let allowlist =
+            with_path(&host_bin, prepare_allowlist_environment).expect("allowlist environment");
+        let path = build_codex_path(&allowlist.bin_dir, allowlist.sandbox_bin_dir.as_deref())
+            .expect("codex path");
+        let entries: Vec<PathBuf> = env::split_paths(&path).collect();
+
+        assert!(allowlist.sandbox_bin_dir.is_none());
+        assert_eq!(entries, vec![allowlist.bin_dir]);
     }
 
     #[cfg(unix)]
@@ -972,6 +1513,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn prepare_allowlist_environment_preserves_present_command_wrapper_execution() {
+        let _guard = env_lock();
         let self_exe = env::current_exe().expect("current exe");
         let pwd = resolve_host_command("pwd").expect("host pwd path");
 
@@ -981,6 +1523,72 @@ mod tests {
         assert!(wrapper.contains(&self_exe.display().to_string()));
         assert!(wrapper.contains(&format!("pwd:{}", pwd.display())));
         assert!(!wrapper.contains("exit 127"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_host_command_skips_omx_explore_allowlist_wrappers() {
+        let _guard = env_lock();
+        let allowlist_root = temp_allowlist_dir().expect("allowlist root");
+        let real_root = TempDirGuard {
+            path: env::temp_dir().join(format!(
+                "omx-explore-host-resolution-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            )),
+        };
+        create_dir_all(&real_root.path).expect("create real root");
+        let real_bin = real_root.path.join("real-bin");
+        let allowlist_bin = allowlist_root
+            .path
+            .join(format!("{TEMP_ALLOWLIST_DIR_PREFIX}fixture"))
+            .join("bin");
+        create_dir_all(&real_bin).expect("create real bin");
+        create_dir_all(&allowlist_bin).expect("create allowlist bin");
+
+        let real_grep = real_bin.join("grep");
+        write_executable(&real_grep, "#!/bin/sh\nexit 0\n").expect("write real grep");
+        let wrapper_grep = allowlist_bin.join("grep");
+        write_executable(&wrapper_grep, "#!/bin/sh\nexit 0\n").expect("write wrapper grep");
+
+        let original_path = env::var_os("PATH");
+        unsafe {
+            env::set_var(
+                "PATH",
+                env::join_paths([allowlist_bin.as_path(), real_bin.as_path()]).expect("join path"),
+            );
+        }
+
+        let resolved = resolve_host_command("grep");
+
+        match original_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+
+        assert_eq!(resolved, Some(real_grep));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_host_command_rejects_absolute_allowlist_wrapper_paths() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let wrapper_dir = root
+            .path
+            .join(format!("{TEMP_ALLOWLIST_DIR_PREFIX}fixture"))
+            .join("bin");
+        create_dir_all(&wrapper_dir).expect("create wrapper dir");
+        let wrapper = wrapper_dir.join("grep");
+        write_executable(&wrapper, "#!/bin/sh\nexit 0\n").expect("write wrapper");
+
+        assert_eq!(
+            resolve_host_command(wrapper.to_str().expect("wrapper path")),
+            None
+        );
     }
 
     #[test]
@@ -1045,6 +1653,15 @@ mod tests {
             validate_direct_command("sed", &["-n".into(), "1,20p".into(), "README.md".into()])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn allowlist_platform_diagnostic_blocks_windows_with_actionable_guidance() {
+        let diagnostic = allowlist_platform_diagnostic("windows").expect("windows diagnostic");
+
+        assert!(diagnostic.contains("not ready on Windows"));
+        assert!(diagnostic.contains("OMX_EXPLORE_BIN"));
+        assert!(allowlist_platform_diagnostic("linux").is_none());
     }
 
     #[test]
@@ -1208,6 +1825,8 @@ exit 17
                 "find tests",
                 "--prompt-file",
                 prompt_file.to_str().expect("prompt path"),
+                "--instructions-file",
+                prompt_file.to_str().expect("instructions path"),
                 "--model-spark",
                 "spark-model",
                 "--model-fallback",
@@ -1221,6 +1840,210 @@ exit 17
         }
 
         let _error = result.expect_err("both attempts should fail");
+    }
+
+    #[test]
+    fn invoke_codex_clears_shell_startup_env_before_launching_codex() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let repo = root.path.join("repo");
+        create_dir_all(&repo).expect("create repo");
+        let prompt_file = root.path.join("prompt.md");
+        write(&prompt_file, "contract").expect("write prompt");
+        let capture_path = root.path.join("capture.txt");
+        let fake_codex = root.path.join("codex-stub");
+        write_executable(
+            &fake_codex,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+output_path=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    output_path="$1"
+  fi
+  shift
+done
+printf 'BASH_ENV=%s\nENV=%s\nPROMPT_COMMAND=%s\n' "${{BASH_ENV:-}}" "${{ENV:-}}" "${{PROMPT_COMMAND:-}}" > {}
+printf '# Answer\nok\n' > "$output_path"
+"#,
+                shell_quote(&capture_path.display().to_string())
+            ),
+        )
+        .expect("write fake codex");
+
+        unsafe {
+            env::set_var(CODEX_BIN_ENV, &fake_codex);
+            env::set_var("BASH_ENV", "/tmp/bash-env-should-not-leak");
+            env::set_var("ENV", "/tmp/env-should-not-leak");
+            env::set_var("PROMPT_COMMAND", "printf should-not-run");
+        }
+        let attempt = invoke_codex(
+            &Args {
+                cwd: repo.clone(),
+                prompt: "find tests".to_string(),
+                prompt_file,
+                instructions_file: repo.join("AGENTS.md"),
+                spark_model: "spark-model".to_string(),
+                fallback_model: "fallback-model".to_string(),
+            },
+            "spark-model",
+            "contract",
+        )
+        .expect("invoke codex");
+        unsafe {
+            env::remove_var(CODEX_BIN_ENV);
+            env::remove_var("BASH_ENV");
+            env::remove_var("ENV");
+            env::remove_var("PROMPT_COMMAND");
+        }
+
+        assert_eq!(attempt.status_code, 0);
+        assert_eq!(
+            read_to_string(&capture_path).expect("read capture"),
+            "BASH_ENV=\nENV=\nPROMPT_COMMAND=\n"
+        );
+    }
+
+    #[test]
+    fn invoke_codex_injects_model_instructions_file_override() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let repo = root.path.join("repo");
+        create_dir_all(&repo).expect("create repo");
+        let prompt_file = root.path.join("prompt.md");
+        write(&prompt_file, "contract").expect("write prompt");
+        let capture_path = root.path.join("argv.txt");
+        let fake_codex = root.path.join("codex-stub");
+        write_executable(
+            &fake_codex,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+output_path=""
+capture={}
+printf '' > "$capture"
+while [ "$#" -gt 0 ]; do
+  printf '%s\n' "$1" >> "$capture"
+  if [ "$1" = "-o" ]; then
+    shift
+    output_path="$1"
+  fi
+  shift
+done
+printf '# Answer\nok\n' > "$output_path"
+"#,
+                shell_quote(&capture_path.display().to_string())
+            ),
+        )
+        .expect("write fake codex");
+
+        unsafe {
+            env::set_var(CODEX_BIN_ENV, &fake_codex);
+        }
+        let instructions_path = repo.join("custom instructions.md");
+        let attempt = invoke_codex(
+            &Args {
+                cwd: repo.clone(),
+                prompt: "find tests".to_string(),
+                prompt_file,
+                instructions_file: instructions_path.clone(),
+                spark_model: "spark-model".to_string(),
+                fallback_model: "fallback-model".to_string(),
+            },
+            "spark-model",
+            "contract",
+        )
+        .expect("invoke codex");
+        unsafe {
+            env::remove_var(CODEX_BIN_ENV);
+        }
+
+        assert_eq!(attempt.status_code, 0);
+        let captured = read_to_string(&capture_path).expect("read capture");
+        let expected = format!(
+            "model_instructions_file=\"{}\"",
+            escape_toml_string(&instructions_path.display().to_string())
+        );
+        assert!(
+            captured.contains(&expected),
+            "expected {:?} in {:?}",
+            expected,
+            captured
+        );
+    }
+
+    #[test]
+    fn sanitize_explore_subprocess_env_blocks_bash_env_startup_hooks() {
+        let _guard = env_lock();
+        let root = temp_allowlist_dir().expect("temp root");
+        let bash_env_log = root.path.join("bash-env.log");
+        let bash_env = root.path.join("bash-env.sh");
+        write(
+            &bash_env,
+            format!(
+                "printf 'startup:%s\\n' \"$BASH_ENV\" >> {}\n",
+                shell_quote(&bash_env_log.display().to_string())
+            ),
+        )
+        .expect("write bash env");
+        let bash_path = resolve_host_command("bash").expect("host bash path");
+
+        unsafe {
+            env::set_var("BASH_ENV", &bash_env);
+        }
+        let mut child = Command::new(bash_path);
+        child
+            .arg("--noprofile")
+            .arg("--norc")
+            .arg("-lc")
+            .arg("true");
+        sanitize_explore_subprocess_env(&mut child);
+        let status = child.status().expect("run bash");
+        unsafe {
+            env::remove_var("BASH_ENV");
+        }
+
+        assert!(status.success());
+        assert_eq!(read_to_string(&bash_env_log).unwrap_or_default(), "");
+    }
+
+    fn fallback_test_event() -> FallbackEvent {
+        FallbackEvent {
+            from_model: "spark-model".to_string(),
+            to_model: "fallback-model".to_string(),
+            exit_code: 17,
+            stderr: "spark timed out".to_string(),
+        }
+    }
+
+    #[test]
+    fn fallback_attempt_event_distinguishes_attempt_from_output_notice() {
+        let event = fallback_test_event();
+
+        let message = fallback_attempt_event_message(&event);
+        assert!(message.contains("fallback-attempt=model"));
+        assert!(message.contains("from=`spark-model`"));
+        assert!(message.contains("to=`fallback-model`"));
+        assert!(message.contains("spark_attempt_failed exit=17"));
+        assert!(message
+            .contains("stdout fallback notice is emitted only after successful fallback output"));
+        assert!(!message.contains("output includes a fallback notice"));
+        assert!(!message.contains("## OMX Explore fallback"));
+    }
+
+    #[test]
+    fn fallback_output_notice_records_model_boundary() {
+        let event = fallback_test_event();
+
+        let notice = fallback_output_notice(&event);
+        assert!(notice.contains("## OMX Explore fallback"));
+        assert!(notice.contains("fallback: model"));
+        assert!(notice.contains("from: `spark-model`"));
+        assert!(notice.contains("to: `fallback-model`"));
+        assert!(notice.contains("spark attempt failed with exit 17"));
+        assert!(notice.contains("cost/behavior may differ from the low-cost spark path"));
     }
 
     #[test]

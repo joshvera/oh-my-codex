@@ -1,18 +1,24 @@
 #!/usr/bin/env node
 
 import { existsSync } from 'fs';
-import { appendFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'fs/promises';
+import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'fs/promises';
 import { spawnSync } from 'child_process';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
+import { StringDecoder } from 'string_decoder';
+import { spawnPlatformCommandSync } from '../utils/platform-command.js';
 import { drainPendingTeamDispatch } from './notify-hook/team-dispatch.js';
 import {
   maybeAutoNudge,
+  isDeepInterviewInputLockActive,
   isDeepInterviewStateActive,
   loadAutoNudgeConfig,
   normalizeAutoNudgeSignatureText,
   resolveAutoNudgeSignature,
 } from './notify-hook/auto-nudge.js';
+import {
+  readScopedJsonIfExists,
+} from './notify-hook/state-io.js';
 import { checkPaneReadyForTeamSendKeys } from './notify-hook/team-tmux-guard.js';
 import {
   checkWorkerPanesAlive,
@@ -20,9 +26,19 @@ import {
   maybeNudgeTeamLeader,
   resolveLeaderStalenessThresholdMs,
 } from './notify-hook/team-leader-nudge.js';
+import { resolveManagedPaneFromAnchor, resolveManagedSessionPane } from './notify-hook/managed-tmux.js';
 import { DEFAULT_MARKER } from './tmux-hook-engine.js';
 import { isTerminalPhase } from './notify-hook/utils.js';
-import { isSessionStale, readSessionState } from '../hooks/session.js';
+import { isSessionStale, isSessionStateAuthoritativeForCwd, readSessionState } from '../hooks/session.js';
+import {
+  DEFAULT_SUBAGENT_ACTIVE_WINDOW_MS,
+  readSubagentSessionSummary,
+} from '../subagents/tracker.js';
+import { listNotifyCanonicalActiveTeams } from './notify-hook/active-team.js';
+import { sameFilePath } from '../utils/paths.js';
+import { validateSessionId } from '../mcp/state-paths.js';
+import { TEAM_NAME_SAFE_PATTERN } from '../team/contracts.js';
+import { shouldContinueRun } from '../runtime/run-loop.js';
 
 function argValue(name: string, fallback = ''): string {
   const idx = process.argv.indexOf(name);
@@ -37,6 +53,26 @@ function asNumber(value: string | number | undefined, fallback: number): number 
 
 function safeString(v: unknown): string {
   return typeof v === 'string' ? v : '';
+}
+
+function normalizeValidSessionId(value: unknown): string {
+  const trimmed = safeString(value).trim();
+  if (!trimmed) return '';
+  try {
+    return validateSessionId(trimmed) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizeValidTeamName(value: unknown): string {
+  const trimmed = safeString(value).trim();
+  return TEAM_NAME_SAFE_PATTERN.test(trimmed) ? trimmed : '';
+}
+
+function parsePositivePid(value: unknown): number | null {
+  const pid = Math.trunc(asNumber(value as string | number | undefined, 0));
+  return pid > 0 ? pid : null;
 }
 
 function parseIsoMillis(value: string | null | undefined): number | null {
@@ -58,6 +94,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+let atomicJsonWriteCounter = 0;
+
+async function writeJsonObjectAtomically(path: string, value: unknown): Promise<void> {
+  const tempPath = `${path}.${process.pid}.${Date.now()}.${++atomicJsonWriteCounter}.tmp`;
+  try {
+    await writeFile(tempPath, JSON.stringify(value, null, 2));
+    await rename(tempPath, path);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 async function waitForPidExit(pid: number, timeoutMs = 3000, stepMs = 50): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -70,10 +119,15 @@ async function waitForPidExit(pid: number, timeoutMs = 3000, stepMs = 50): Promi
 const cwd = resolve(argValue('--cwd', process.cwd()));
 const notifyScript = resolve(argValue('--notify-script', join(cwd, 'dist', 'scripts', 'notify-hook.js')));
 const runOnce = process.argv.includes('--once');
+const authorityOnly = process.argv.includes('--authority-only');
 // Keep fallback control-plane ticks comfortably below the default dispatch
 // ack budget so leaderless team dispatch + stale-alert recovery do not feel
 // laggy between native notify-hook turns.
 const pollMs = Math.max(50, asNumber(argValue('--poll-ms', '250'), 250));
+const idleMaxPollMs = Math.max(
+  pollMs,
+  asNumber(argValue('--idle-max-poll-ms', process.env.OMX_NOTIFY_FALLBACK_IDLE_MAX_POLL_MS || '1000'), 1000),
+);
 const parentPid = Math.trunc(asNumber(argValue('--parent-pid', String(process.ppid || 0)), process.ppid || 0));
 const startedAt = Date.now();
 const fileWindowMs = runOnce ? 15000 : 30000;
@@ -94,19 +148,29 @@ const stateDir = join(omxDir, 'state');
 const statePath = join(stateDir, 'notify-fallback-state.json');
 const pidFilePath = resolve(argValue('--pid-file', join(stateDir, 'notify-fallback.pid')));
 const logPath = join(logsDir, `notify-fallback-${new Date().toISOString().split('T')[0]}.jsonl`);
+const logRotatePath = `${logPath}.1`;
+const logLockPath = `${logPath}.lock`;
+const defaultMaxLogBytes = 10 * 1024 * 1024;
+const maxLogBytes = Math.max(
+  0,
+  asNumber(argValue('--log-max-bytes', process.env.OMX_NOTIFY_FALLBACK_LOG_MAX_BYTES || String(defaultMaxLogBytes)), defaultMaxLogBytes),
+);
 const ralphSteerTimestampPath = join(stateDir, 'ralph-last-steer-at');
 const ralphSteerLockPath = join(stateDir, 'ralph-continue-steer.lock');
 const watcherOwnerToken = `${process.pid}-${startedAt}-${Math.random().toString(36).slice(2, 10)}`;
 const RALPH_CONTINUE_TEXT = 'Ralph loop active continue';
 const RALPH_CONTINUE_CADENCE_MS = 60_000;
 const RALPH_STEER_LOCK_STALE_MS = 30_000;
-const RALPH_TERMINAL_PHASES = new Set(['complete', 'failed', 'cancelled']);
+const RALPH_TERMINAL_PHASES = new Set(['blocked_on_user', 'complete', 'failed', 'cancelled']);
+const RALPH_STARTING_PHASE_TIMEOUT_MS = RALPH_CONTINUE_CADENCE_MS * 2;
+const QUIET_ONCE_EVENT_TYPES = new Set(['watcher_start', 'watcher_once_complete']);
 
 interface WatcherFileMeta {
   threadId: string;
   offset: number;
   size: number;
   partial: string;
+  decoder: StringDecoder;
 }
 
 interface RalphContinueSteerState {
@@ -123,6 +187,8 @@ interface RalphContinueSteerState {
   pane_id: string;
   pane_current_command: string;
   current_phase: string;
+  subagent_session_id: string;
+  active_subagent_thread_ids: string[];
   shared_timestamp_path: string;
   shared_last_sent_at: string;
   singleton_lock_path: string;
@@ -166,6 +232,15 @@ interface ParentGuardState {
   pane_count?: number;
 }
 
+interface AuthorityBackoffState {
+  active: boolean;
+  reason: string;
+  primary_pid: number | null;
+  primary_last_tick_at: string;
+  freshness_ms: number | null;
+  threshold_ms: number | null;
+}
+
 interface ActiveTeamResult {
   active: boolean;
   reason: string;
@@ -186,6 +261,22 @@ interface FallbackAutoNudgeState {
   last_error: string | null;
   last_nudged_signature: string;
   last_nudged_at: string;
+}
+
+interface AdaptivePollState {
+  enabled: boolean;
+  base_ms: number;
+  max_ms: number;
+  current_ms: number;
+  idle_streak: number;
+  last_tick_at: string | null;
+  last_activity_at: string | null;
+  last_activity_reason: string;
+}
+
+interface CycleActivitySummary {
+  active: boolean;
+  reason: string;
 }
 
 const fileState = new Map<string, WatcherFileMeta>();
@@ -223,6 +314,8 @@ let lastRalphContinueSteer: RalphContinueSteerState = {
   pane_id: '',
   pane_current_command: '',
   current_phase: '',
+  subagent_session_id: '',
+  active_subagent_thread_ids: [],
   shared_timestamp_path: ralphSteerTimestampPath,
   shared_last_sent_at: '',
   singleton_lock_path: ralphSteerLockPath,
@@ -231,6 +324,14 @@ let lastParentGuard: ParentGuardState = {
   reason: '',
   state_path: '',
   current_phase: '',
+};
+let lastAuthorityBackoff: AuthorityBackoffState = {
+  active: false,
+  reason: '',
+  primary_pid: null,
+  primary_last_tick_at: '',
+  freshness_ms: null,
+  threshold_ms: null,
 };
 const AUTO_NUDGE_STALL_MS = Math.max(
   pollMs,
@@ -248,8 +349,117 @@ let lastFallbackAutoNudge: FallbackAutoNudgeState = {
   last_nudged_signature: '',
   last_nudged_at: '',
 };
-function eventLog(event: Record<string, unknown>): Promise<void> {
-  return appendFile(logPath, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`).catch(() => {});
+let adaptivePollState: AdaptivePollState = {
+  enabled: true,
+  base_ms: pollMs,
+  max_ms: idleMaxPollMs,
+  current_ms: pollMs,
+  idle_streak: 0,
+  last_tick_at: null,
+  last_activity_at: null,
+  last_activity_reason: 'init',
+};
+
+function shouldSuppressEventLog(event: Record<string, unknown>): boolean {
+  const eventType = safeString(event.type).trim();
+  return runOnce && QUIET_ONCE_EVENT_TYPES.has(eventType);
+}
+
+async function acquireLogLock(timeoutMs = 1000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await mkdir(logLockPath, { recursive: false });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code !== 'EEXIST') return false;
+      const lockStat = await stat(logLockPath).catch(() => null);
+      if (lockStat && Date.now() - lockStat.mtimeMs > 5000) {
+        await rm(logLockPath, { recursive: true, force: true }).catch(() => {});
+        continue;
+      }
+      await sleep(10);
+    }
+  }
+  return false;
+}
+
+async function releaseLogLock(): Promise<void> {
+  await rm(logLockPath, { recursive: true, force: true }).catch(() => {});
+}
+
+async function rotateLogIfNeeded(nextEntryBytes: number): Promise<void> {
+  if (maxLogBytes <= 0) return;
+  const currentStat = await stat(logPath).catch(() => null);
+  if (!currentStat || currentStat.size + nextEntryBytes <= maxLogBytes) return;
+  await unlink(logRotatePath).catch(() => {});
+  await rename(logPath, logRotatePath).catch(() => {});
+}
+
+async function eventLog(event: Record<string, unknown>): Promise<void> {
+  if (shouldSuppressEventLog(event)) return;
+  const line = `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`;
+  await mkdir(dirname(logPath), { recursive: true }).catch(() => {});
+  const locked = await acquireLogLock();
+  if (!locked) return;
+  try {
+    await rotateLogIfNeeded(Buffer.byteLength(line));
+    await appendFile(logPath, line);
+  } catch {
+    // best effort only
+  } finally {
+    await releaseLogLock();
+  }
+}
+
+function shouldLogLeaderNudgeTick(reason: string): boolean {
+  return reason === 'leader_nudge_checked' || reason === 'leader_nudge_failed';
+}
+
+function nextIdlePollMs(currentMs: number): number {
+  return Math.min(idleMaxPollMs, Math.max(pollMs, currentMs * 2));
+}
+
+function updateAdaptivePollState(summary: CycleActivitySummary): number {
+  const nowIso = new Date().toISOString();
+  if (summary.active) {
+    adaptivePollState = {
+      ...adaptivePollState,
+      enabled: true,
+      base_ms: pollMs,
+      max_ms: idleMaxPollMs,
+      current_ms: pollMs,
+      idle_streak: 0,
+      last_tick_at: nowIso,
+      last_activity_at: nowIso,
+      last_activity_reason: summary.reason,
+    };
+    return adaptivePollState.current_ms;
+  }
+
+  const nextMs = nextIdlePollMs(adaptivePollState.current_ms);
+  adaptivePollState = {
+    ...adaptivePollState,
+    enabled: true,
+    base_ms: pollMs,
+    max_ms: idleMaxPollMs,
+    current_ms: nextMs,
+    idle_streak: adaptivePollState.idle_streak + 1,
+    last_tick_at: nowIso,
+    last_activity_reason: summary.reason,
+  };
+  return adaptivePollState.current_ms;
+}
+
+function shouldLogDispatchDrainTick(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false;
+  const record = result as Record<string, unknown>;
+  const processed = asNumber(record.processed as string | number | undefined, 0);
+  const skipped = asNumber(record.skipped as string | number | undefined, 0);
+  const failed = asNumber(record.failed as string | number | undefined, 0);
+  if (processed > 0 || skipped > 0 || failed > 0) return true;
+  const reason = safeString(record.reason).trim();
+  return reason !== '' && reason !== 'worker_context';
 }
 
 function normalizeRalphContinueSteerState(raw: Record<string, unknown> | null | undefined): RalphContinueSteerState {
@@ -268,6 +478,10 @@ function normalizeRalphContinueSteerState(raw: Record<string, unknown> | null | 
     pane_id: safeString(raw.pane_id),
     pane_current_command: safeString(raw.pane_current_command),
     current_phase: safeString(raw.current_phase),
+    subagent_session_id: safeString(raw.subagent_session_id),
+    active_subagent_thread_ids: Array.isArray(raw.active_subagent_thread_ids)
+      ? raw.active_subagent_thread_ids.map((value) => safeString(value).trim()).filter(Boolean)
+      : [],
     shared_timestamp_path: safeString(raw.shared_timestamp_path) || ralphSteerTimestampPath,
     shared_last_sent_at: safeString(raw.shared_last_sent_at),
     singleton_lock_path: safeString(raw.singleton_lock_path) || ralphSteerLockPath,
@@ -277,10 +491,20 @@ function normalizeRalphContinueSteerState(raw: Record<string, unknown> | null | 
 function hasRalphTerminalState(raw: Record<string, unknown> | null | undefined): boolean {
   if (!raw || typeof raw !== 'object') return true;
   if (raw.active !== true) return true;
+  if (!shouldContinueRun(raw)) return true;
   const phase = safeString(raw.current_phase).trim().toLowerCase();
   if (phase && RALPH_TERMINAL_PHASES.has(phase)) return true;
+  if (isStaleRalphStartingPhase(raw)) return true;
   if (safeString(raw.completed_at).trim()) return true;
   return false;
+}
+
+function isStaleRalphStartingPhase(raw: Record<string, unknown>): boolean {
+  const phase = safeString(raw.current_phase).trim().toLowerCase();
+  if (phase !== 'starting') return false;
+  const reference = parseIsoMillis(safeString(raw.last_turn_at)) ?? parseIsoMillis(safeString(raw.started_at));
+  if (reference === null) return false;
+  return Date.now() - reference > RALPH_STARTING_PHASE_TIMEOUT_MS;
 }
 
 async function loadPersistedWatcherState(): Promise<void> {
@@ -305,6 +529,19 @@ async function loadPersistedWatcherState(): Promise<void> {
       last_nudged_at: safeString(persistedAutoNudge.last_nudged_at),
     };
   }
+  const persistedAdaptivePoll = persisted?.adaptive_poll as Record<string, unknown> | null | undefined;
+  if (persistedAdaptivePoll && typeof persistedAdaptivePoll === 'object') {
+    adaptivePollState = {
+      enabled: persistedAdaptivePoll.enabled !== false,
+      base_ms: pollMs,
+      max_ms: idleMaxPollMs,
+      current_ms: Math.min(idleMaxPollMs, Math.max(pollMs, asNumber(persistedAdaptivePoll.current_ms as string | number | undefined, pollMs))),
+      idle_streak: Math.max(0, Math.trunc(asNumber(persistedAdaptivePoll.idle_streak as string | number | undefined, 0))),
+      last_tick_at: safeString(persistedAdaptivePoll.last_tick_at) || null,
+      last_activity_at: safeString(persistedAdaptivePoll.last_activity_at) || null,
+      last_activity_reason: safeString(persistedAdaptivePoll.last_activity_reason) || 'init',
+    };
+  }
 }
 
 interface ActiveModeResult {
@@ -320,8 +557,10 @@ async function resolveActiveModeState(mode: string): Promise<ActiveModeResult> {
   let currentSessionIsLive = false;
   const session = await readSessionState(cwd);
   if (session?.session_id) {
-    currentSessionId = safeString(session.session_id).trim();
-    currentSessionIsLive = !isSessionStale(session);
+    if (isSessionStateAuthoritativeForCwd(session, cwd)) {
+      currentSessionId = normalizeValidSessionId(session.session_id);
+      currentSessionIsLive = currentSessionId !== '' && !isSessionStale(session);
+    }
     if (currentSessionId && currentSessionIsLive) {
       candidateDirs.push(join(stateDir, 'sessions', currentSessionId));
     }
@@ -344,6 +583,14 @@ async function resolveActiveModeState(mode: string): Promise<ActiveModeResult> {
       .then((content) => JSON.parse(content) as Record<string, unknown>)
       .catch(() => null);
     if (!parsed || typeof parsed !== 'object') continue;
+    if (mode === 'ralph' && dir !== stateDir && isStaleRalphStartingPhase(parsed)) {
+      return {
+        active: false,
+        reason: 'starting_stale',
+        path,
+        state: parsed,
+      };
+    }
     if (hasRalphTerminalState(parsed)) {
       return {
         active: false,
@@ -374,19 +621,23 @@ async function resolveActiveRalphState(): Promise<ActiveModeResult> {
 
 async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
   const candidateDirs: string[] = [];
-  const sessionPath = join(stateDir, 'session.json');
-  try {
-    const session = JSON.parse(await readFile(sessionPath, 'utf-8')) as Record<string, unknown>;
-    const sessionId = safeString(session?.session_id).trim();
-    if (sessionId) {
-      candidateDirs.push(join(stateDir, 'sessions', sessionId));
+  let currentSessionId = '';
+  let currentSessionIsLive = false;
+  const session = await readSessionState(cwd);
+  if (session?.session_id) {
+    currentSessionId = normalizeValidSessionId(session.session_id);
+    currentSessionIsLive = currentSessionId !== '' && !isSessionStale(session);
+    if (currentSessionId && currentSessionIsLive) {
+      candidateDirs.push(join(stateDir, 'sessions', currentSessionId));
     }
-  } catch {
-    // No active session file; fall back to root state only.
   }
   if (!candidateDirs.includes(stateDir)) candidateDirs.push(stateDir);
 
   for (const dir of candidateDirs) {
+    if (dir === stateDir && currentSessionId) {
+      continue;
+    }
+
     const path = join(dir, 'team-state.json');
     if (!existsSync(path)) continue;
     const parsed = await readFile(path, 'utf-8')
@@ -394,7 +645,7 @@ async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
       .catch(() => null);
     if (!parsed || typeof parsed !== 'object' || parsed.active !== true) continue;
 
-    const teamName = safeString(parsed.team_name).trim();
+    const teamName = normalizeValidTeamName(parsed.team_name);
     if (!teamName) continue;
 
     const teamConfigDir = join(stateDir, 'team', teamName);
@@ -435,6 +686,54 @@ async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
     };
   }
 
+  const canonicalFallbackTeams = await listNotifyCanonicalActiveTeams(cwd, currentSessionId).catch(() => []);
+  for (const team of canonicalFallbackTeams) {
+    const teamName = normalizeValidTeamName(team.teamName);
+    if (!teamName) continue;
+    const teamConfigDir = join(stateDir, 'team', teamName);
+    const manifestPath = join(teamConfigDir, 'manifest.v2.json');
+    const configPath = join(teamConfigDir, 'config.json');
+    const teamConfigPath = existsSync(manifestPath) ? manifestPath : configPath;
+    const teamConfig = existsSync(teamConfigPath)
+      ? await readFile(teamConfigPath, 'utf-8')
+        .then((content) => JSON.parse(content) as Record<string, unknown>)
+        .catch(() => null)
+      : null;
+    const tmuxSession = safeString(teamConfig?.tmux_session).trim();
+    if (!tmuxSession) continue;
+
+    const workers = Array.isArray(teamConfig?.workers) ? teamConfig.workers as Array<Record<string, unknown>> : [];
+    const workerPaneIds: string[] = workers
+      .map((worker) => safeString(worker?.pane_id).trim())
+      .filter(Boolean);
+    const paneStatus = await checkWorkerPanesAlive(tmuxSession, workerPaneIds as any);
+    if (!paneStatus.alive) continue;
+
+    return {
+      active: true,
+      reason: team.source,
+      path: team.path,
+      state: {
+        active: true,
+        team_name: teamName,
+        current_phase: team.phase,
+      },
+      team_name: teamName,
+      pane_count: paneStatus.paneCount,
+    };
+  }
+
+  if (currentSessionId) {
+    return {
+      active: false,
+      reason: currentSessionIsLive ? 'blocked_by_current_session' : 'stale_current_session',
+      path: '',
+      state: null,
+      team_name: '',
+      pane_count: 0,
+    };
+  }
+
   return {
     active: false,
     reason: 'cleared',
@@ -448,16 +747,19 @@ async function resolveActiveTeamState(): Promise<ActiveTeamResult> {
 async function emitRalphContinueSteer(paneId: string, message: string): Promise<void> {
   const markedText = `${message} ${DEFAULT_MARKER}`;
   await new Promise<void>((resolve) => {
-    const typed = spawnSync('tmux', ['send-keys', '-t', paneId, '-l', markedText], { encoding: 'utf-8' });
+    const { result: typed } = spawnPlatformCommandSync('tmux', ['send-keys', '-t', paneId, '-l', markedText], { encoding: 'utf-8' });
+    if (typed.error) throw new Error(typed.error.message);
     if (typed.status !== 0) throw new Error((typed.stderr || typed.stdout || '').trim() || 'tmux send-keys failed');
     setTimeout(resolve, 100);
   });
   await new Promise<void>((resolve) => {
-    const submitA = spawnSync('tmux', ['send-keys', '-t', paneId, 'C-m'], { encoding: 'utf-8' });
+    const { result: submitA } = spawnPlatformCommandSync('tmux', ['send-keys', '-t', paneId, 'C-m'], { encoding: 'utf-8' });
+    if (submitA.error) throw new Error(submitA.error.message);
     if (submitA.status !== 0) throw new Error((submitA.stderr || submitA.stdout || '').trim() || 'tmux send-keys C-m failed');
     setTimeout(resolve, 100);
   });
-  const submitB = spawnSync('tmux', ['send-keys', '-t', paneId, 'C-m'], { encoding: 'utf-8' });
+  const { result: submitB } = spawnPlatformCommandSync('tmux', ['send-keys', '-t', paneId, 'C-m'], { encoding: 'utf-8' });
+  if (submitB.error) throw new Error(submitB.error.message);
   if (submitB.status !== 0) {
     throw new Error((submitB.stderr || submitB.stdout || '').trim() || 'tmux send-keys C-m failed');
   }
@@ -481,19 +783,22 @@ async function readRalphSteerLock(path: string): Promise<RalphSteerLockRecord | 
   if (!raw.trim()) return null;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const pid = Math.trunc(asNumber(parsed.pid as string | number | undefined, 0));
+    const pid = parsePositivePid(parsed.pid);
     const acquiredAt = safeString(parsed.acquired_at).trim();
-    if (!pid || !acquiredAt) return null;
+    if (pid === null || !acquiredAt) return null;
     return { pid, acquired_at: acquiredAt };
   } catch {
     return null;
   }
 }
 
+const RALPH_STEER_LOCK_MAX_RETRIES = 5;
+
 async function withRalphSteerLock<T>(task: () => Promise<T>): Promise<T | null> {
   await mkdir(dirname(ralphSteerLockPath), { recursive: true }).catch(() => {});
 
-  while (true) {
+  let acquired = false;
+  for (let attempt = 0; attempt < RALPH_STEER_LOCK_MAX_RETRIES; attempt++) {
     let handle;
     try {
       handle = await open(ralphSteerLockPath, 'wx');
@@ -502,13 +807,15 @@ async function withRalphSteerLock<T>(task: () => Promise<T>): Promise<T | null> 
         acquired_at: new Date().toISOString(),
       };
       await handle.writeFile(JSON.stringify(payload, null, 2));
+      acquired = true;
       break;
     } catch (error) {
       const code = error !== null && typeof error === 'object' ? (error as NodeJS.ErrnoException).code : '';
       if (code !== 'EEXIST') throw error;
       const existing = await readRalphSteerLock(ralphSteerLockPath);
       const lockAgeMs = parseIsoMillis(existing?.acquired_at) ?? 0;
-      const stale = !existing || !isPidAlive(existing.pid) || (lockAgeMs > 0 && Date.now() - lockAgeMs > RALPH_STEER_LOCK_STALE_MS);
+      const stale = existing !== null
+        && (!isPidAlive(existing.pid) || (lockAgeMs > 0 && Date.now() - lockAgeMs > RALPH_STEER_LOCK_STALE_MS));
       if (stale) {
         await unlink(ralphSteerLockPath).catch(() => {});
         continue;
@@ -518,6 +825,11 @@ async function withRalphSteerLock<T>(task: () => Promise<T>): Promise<T | null> 
     } finally {
       await handle?.close().catch(() => {});
     }
+  }
+
+  if (!acquired) {
+    lastRalphContinueSteer.last_reason = 'global_lock_exhausted';
+    return null;
   }
 
   try {
@@ -534,43 +846,65 @@ interface RalphProgressGateResult {
   allow: boolean;
   reason: string;
   progress_at: string;
+  subagent_session_id?: string;
+  active_subagent_thread_ids?: string[];
 }
 
-async function readRalphProgressGate(now: number): Promise<RalphProgressGateResult> {
-  const hudState = await readJsonObject(join(stateDir, 'hud-state.json'));
+async function readRalphProgressGate(
+  activeRalphState: Record<string, unknown> | null,
+  now: number,
+): Promise<RalphProgressGateResult> {
+  const subagentSessionId = safeString(activeRalphState?.owner_codex_session_id).trim();
+  if (subagentSessionId) {
+    const summary = await readSubagentSessionSummary(cwd, subagentSessionId, {
+      now: new Date(now),
+      activeWindowMs: DEFAULT_SUBAGENT_ACTIVE_WINDOW_MS,
+    });
+    if ((summary?.activeSubagentThreadIds.length ?? 0) > 0) {
+      return {
+        allow: false,
+        reason: 'subagents_active',
+        progress_at: '',
+        subagent_session_id: subagentSessionId,
+        active_subagent_thread_ids: summary?.activeSubagentThreadIds ?? [],
+      };
+    }
+  }
+
+  const hudState = await readScopedJsonIfExists(stateDir, 'hud-state.json', undefined, null);
   if (!hudState || typeof hudState !== 'object') {
-    return { allow: false, reason: 'progress_missing', progress_at: '' };
+    return { allow: false, reason: 'progress_missing', progress_at: '', subagent_session_id: subagentSessionId };
   }
 
   const progressAt = safeString(hudState.last_progress_at).trim();
   if (!progressAt) {
-    return { allow: false, reason: 'progress_missing', progress_at: '' };
+    return { allow: false, reason: 'progress_missing', progress_at: '', subagent_session_id: subagentSessionId };
   }
 
   const progressMs = parseIsoMillis(progressAt);
   if (progressMs === null) {
-    return { allow: false, reason: 'progress_invalid', progress_at: progressAt };
+    return { allow: false, reason: 'progress_invalid', progress_at: progressAt, subagent_session_id: subagentSessionId };
   }
 
   if (now - progressMs < RALPH_CONTINUE_CADENCE_MS) {
-    return { allow: false, reason: 'progress_fresh', progress_at: progressAt };
+    return { allow: false, reason: 'progress_fresh', progress_at: progressAt, subagent_session_id: subagentSessionId };
   }
 
-  return { allow: true, reason: 'progress_stale', progress_at: progressAt };
+  return { allow: true, reason: 'progress_stale', progress_at: progressAt, subagent_session_id: subagentSessionId };
 }
 
-function shouldSkipRalphContinue(now: number, candidateIso: string, startupIso: string): { skip: boolean; reason: string; anchorMs: number; anchorIso: string } {
+function shouldSkipRalphContinue(now: number, candidateIso: string): { skip: boolean; reason: string; anchorMs: number; anchorIso: string } {
   const sharedMs = parseIsoMillis(candidateIso);
   const localMs = parseIsoMillis(lastRalphContinueSteer.last_sent_at);
-  const startupAnchorIso = lastRalphContinueSteer.cooldown_anchor_at || startupIso;
+  const startupAnchorIso = lastRalphContinueSteer.cooldown_anchor_at;
   const startupAnchorMs = parseIsoMillis(startupAnchorIso);
-  const startupCooldown = sharedMs === null && localMs === null;
-  const anchorMs = sharedMs ?? localMs ?? startupAnchorMs ?? startedAt;
+  const startupCooldown = sharedMs === null && localMs === null && startupAnchorMs !== null;
+  const anchorMs = sharedMs ?? localMs ?? startupAnchorMs ?? 0;
   const anchorIso = sharedMs !== null
     ? candidateIso
     : (localMs !== null ? lastRalphContinueSteer.last_sent_at : startupAnchorIso);
   return {
-    skip: now - anchorMs < RALPH_CONTINUE_CADENCE_MS,
+    skip: anchorMs > 0 && now - anchorMs < RALPH_CONTINUE_CADENCE_MS,
     reason: startupCooldown ? 'startup_cooldown' : (sharedMs !== null ? 'global_cooldown' : 'cooldown'),
     anchorMs,
     anchorIso,
@@ -583,20 +917,122 @@ async function readPidFileRecord(path: string): Promise<PidFileRecord | null> {
   if (!trimmed) return null;
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    const pid = Math.trunc(asNumber(parsed.pid as string | number | undefined, 0));
-    if (pid <= 0) return null;
+    const pid = parsePositivePid(parsed.pid);
+    if (pid === null) return null;
     return {
       pid,
-      parent_pid: Math.trunc(asNumber(parsed.parent_pid as string | number | undefined, 0)) || undefined,
+      parent_pid: parsePositivePid(parsed.parent_pid) ?? undefined,
       cwd: safeString(parsed.cwd) || undefined,
       started_at: safeString(parsed.started_at) || undefined,
       max_lifetime_ms: asNumber(parsed.max_lifetime_ms as string | number | undefined, 0) || undefined,
       owner_token: safeString(parsed.owner_token) || undefined,
     };
   } catch {
-    const pid = Number.parseInt(trimmed, 10);
-    return Number.isFinite(pid) && pid > 0 ? { pid } : null;
+    const pid = parsePositivePid(trimmed);
+    return pid === null ? null : { pid };
   }
+}
+
+function createAuthorityBackoffState(
+  reason: string,
+  overrides: Partial<AuthorityBackoffState> = {},
+): AuthorityBackoffState {
+  return {
+    active: false,
+    reason,
+    primary_pid: null,
+    primary_last_tick_at: '',
+    freshness_ms: null,
+    threshold_ms: null,
+    ...overrides,
+  };
+}
+
+function latestWatcherTickIso(state: Record<string, unknown> | null): string {
+  if (!state || typeof state !== 'object') return '';
+  const candidates = [
+    safeString((state.dispatch_drain as Record<string, unknown> | undefined)?.last_tick_at),
+    safeString((state.leader_nudge as Record<string, unknown> | undefined)?.last_tick_at),
+    safeString((state.fallback_auto_nudge as Record<string, unknown> | undefined)?.last_tick_at),
+    safeString((state.ralph_continue_steer as Record<string, unknown> | undefined)?.last_state_check_at),
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  let latestIso = '';
+  let latestMs = -1;
+  for (const candidate of candidates) {
+    const parsed = parseIsoMillis(candidate);
+    if (parsed === null || parsed <= latestMs) continue;
+    latestMs = parsed;
+    latestIso = candidate;
+  }
+  return latestIso;
+}
+
+async function resolveAuthorityPrimaryWatcherHealth(now = Date.now()): Promise<AuthorityBackoffState> {
+  if (!authorityOnly) return createAuthorityBackoffState('not_authority');
+
+  const existingRecord = await readPidFileRecord(pidFilePath).catch(() => null);
+  if (!existingRecord) return createAuthorityBackoffState('pid_missing');
+  if (existingRecord.cwd && !sameFilePath(existingRecord.cwd, cwd)) return createAuthorityBackoffState('cwd_mismatch');
+  if (!isPidAlive(existingRecord.pid)) {
+    return createAuthorityBackoffState('pid_stale', {
+      primary_pid: existingRecord.pid,
+    });
+  }
+
+  const persistedState = await readJsonObject(statePath);
+  if (!persistedState) {
+    return createAuthorityBackoffState('state_missing', {
+      primary_pid: existingRecord.pid,
+    });
+  }
+
+  const persistedPid = Math.trunc(asNumber(persistedState.pid as string | number | undefined, 0));
+  if (persistedPid > 0 && persistedPid !== existingRecord.pid) {
+    return createAuthorityBackoffState('state_pid_mismatch', {
+      primary_pid: existingRecord.pid,
+    });
+  }
+
+  const lastTickAt = latestWatcherTickIso(persistedState);
+  if (!lastTickAt) {
+    return createAuthorityBackoffState('tick_missing', {
+      primary_pid: existingRecord.pid,
+    });
+  }
+
+  const lastTickMs = parseIsoMillis(lastTickAt);
+  const primaryPollMs = Math.max(50, asNumber(persistedState.poll_ms as string | number | undefined, 250));
+  const thresholdMs = Math.max(1_000, primaryPollMs * 4);
+  if (lastTickMs === null) {
+    return createAuthorityBackoffState('tick_invalid', {
+      primary_pid: existingRecord.pid,
+      primary_last_tick_at: lastTickAt,
+      threshold_ms: thresholdMs,
+    });
+  }
+
+  const freshnessMs = now - lastTickMs;
+  if (freshnessMs > thresholdMs) {
+    return {
+      active: false,
+      reason: 'tick_stale',
+      primary_pid: existingRecord.pid,
+      primary_last_tick_at: lastTickAt,
+      freshness_ms: freshnessMs,
+      threshold_ms: thresholdMs,
+    };
+  }
+
+  return {
+    active: true,
+    reason: 'primary_watcher_healthy',
+    primary_pid: existingRecord.pid,
+    primary_last_tick_at: lastTickAt,
+    freshness_ms: freshnessMs,
+    threshold_ms: thresholdMs,
+  };
 }
 
 async function writePidFileRecord(): Promise<void> {
@@ -611,11 +1047,95 @@ async function writePidFileRecord(): Promise<void> {
   await writeFile(pidFilePath, JSON.stringify(nextRecord, null, 2)).catch(() => {});
 }
 
+async function buildWatcherManagedPayload(): Promise<Record<string, string> | null> {
+  const session = await readSessionState(cwd).catch(() => null);
+  const sessionId = safeString(session?.session_id).trim();
+  if (!sessionId || !session || isSessionStale(session)) return null;
+  return { session_id: sessionId };
+}
+
+async function persistReboundRalphPaneState(
+  statePath: string,
+  state: Record<string, unknown> | null,
+  paneId: string,
+  nowIso: string,
+): Promise<Record<string, unknown>> {
+  const latestState = await readFile(statePath, 'utf-8')
+    .then((content) => JSON.parse(content) as Record<string, unknown>)
+    .catch(() => null);
+  const nextState = {
+    ...((latestState && typeof latestState === 'object') ? latestState : (state || {})),
+    tmux_pane_id: paneId,
+    tmux_pane_set_at: nowIso,
+  };
+  const tmpPath = `${statePath}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  await writeFile(tmpPath, JSON.stringify(nextState, null, 2));
+  try {
+    await rename(tmpPath, statePath);
+  } catch (error) {
+    await unlink(tmpPath).catch(() => {});
+    throw error;
+  }
+  return nextState;
+}
+
+async function resolveRalphContinuePaneTarget(
+  activeRalph: ActiveModeResult,
+  nowIso: string,
+): Promise<{ paneId: string; state: Record<string, unknown> | null; reboundFrom: string }> {
+  const currentState = activeRalph.state && typeof activeRalph.state === 'object'
+    ? activeRalph.state as Record<string, unknown>
+    : null;
+  const anchorPaneId = safeString(currentState?.tmux_pane_id).trim();
+  if (!anchorPaneId) {
+    return {
+      paneId: '',
+      state: currentState,
+      reboundFrom: '',
+    };
+  }
+
+  const managedPayload = await buildWatcherManagedPayload();
+  if (!managedPayload) {
+    return {
+      paneId: anchorPaneId,
+      state: currentState,
+      reboundFrom: '',
+    };
+  }
+
+  let resolvedPaneId = await resolveManagedPaneFromAnchor(anchorPaneId, cwd, managedPayload, { allowTeamWorker: false });
+  if (!resolvedPaneId) {
+    resolvedPaneId = await resolveManagedSessionPane(cwd, managedPayload);
+  }
+  if (!resolvedPaneId) {
+    return {
+      paneId: '',
+      state: currentState,
+      reboundFrom: '',
+    };
+  }
+  if (resolvedPaneId === anchorPaneId) {
+    return {
+      paneId: resolvedPaneId,
+      state: currentState,
+      reboundFrom: '',
+    };
+  }
+
+  const updatedState = await persistReboundRalphPaneState(activeRalph.path, currentState, resolvedPaneId, nowIso);
+  return {
+    paneId: resolvedPaneId,
+    state: updatedState,
+    reboundFrom: anchorPaneId,
+  };
+}
+
 async function runRalphContinueSteerTick(): Promise<void> {
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
-  const startupIso = new Date(startedAt).toISOString();
   const activeRalph = await resolveActiveRalphState();
+  const activePaneId = safeString(activeRalph.state?.tmux_pane_id).trim();
   lastRalphContinueSteer = {
     ...lastRalphContinueSteer,
     active: activeRalph.active,
@@ -624,20 +1144,24 @@ async function runRalphContinueSteerTick(): Promise<void> {
     last_reason: activeRalph.reason,
     last_error: null,
     state_path: activeRalph.path,
+    pane_id: activePaneId,
     pane_current_command: '',
+    subagent_session_id: safeString(activeRalph.state?.owner_codex_session_id).trim(),
+    active_subagent_thread_ids: [],
     shared_timestamp_path: ralphSteerTimestampPath,
     singleton_lock_path: ralphSteerLockPath,
   };
 
-  if (!activeRalph.active) return;
-
-  if (parseIsoMillis(lastRalphContinueSteer.last_sent_at) === null && parseIsoMillis(lastRalphContinueSteer.cooldown_anchor_at) === null) {
-    lastRalphContinueSteer.cooldown_anchor_at = startupIso;
+  if (!activeRalph.active) {
+    if (activeRalph.reason === 'starting_stale') {
+      lastRalphContinueSteer.last_reason = 'starting_stale';
+    }
+    return;
   }
 
   const sharedBeforeLock = await readRalphSteerTimestamp();
   lastRalphContinueSteer.shared_last_sent_at = sharedBeforeLock;
-  const initialCooldown = shouldSkipRalphContinue(now, sharedBeforeLock, startupIso);
+  const initialCooldown = shouldSkipRalphContinue(now, sharedBeforeLock);
   if (initialCooldown.skip) {
     lastRalphContinueSteer.last_reason = initialCooldown.reason;
     if (!sharedBeforeLock && initialCooldown.reason === 'startup_cooldown') {
@@ -649,7 +1173,7 @@ async function runRalphContinueSteerTick(): Promise<void> {
   const outcome = await withRalphSteerLock(async () => {
     const sharedLastSentAt = await readRalphSteerTimestamp();
     lastRalphContinueSteer.shared_last_sent_at = sharedLastSentAt;
-    const cooldown = shouldSkipRalphContinue(Date.now(), sharedLastSentAt, startupIso);
+    const cooldown = shouldSkipRalphContinue(Date.now(), sharedLastSentAt);
     if (cooldown.skip) {
       lastRalphContinueSteer.last_reason = cooldown.reason;
       if (!sharedLastSentAt && cooldown.reason === 'startup_cooldown') {
@@ -658,13 +1182,17 @@ async function runRalphContinueSteerTick(): Promise<void> {
       return { sent: false, skipped: true };
     }
 
-    const progressGate = await readRalphProgressGate(Date.now());
+    const progressGate = await readRalphProgressGate(activeRalph.state, Date.now());
     if (!progressGate.allow) {
       lastRalphContinueSteer.last_reason = progressGate.reason;
+      lastRalphContinueSteer.subagent_session_id = progressGate.subagent_session_id ?? lastRalphContinueSteer.subagent_session_id;
+      lastRalphContinueSteer.active_subagent_thread_ids = progressGate.active_subagent_thread_ids ?? [];
       return { sent: false, skipped: true };
     }
 
-    const paneId = safeString(activeRalph.state?.tmux_pane_id).trim();
+    const resolvedPane = await resolveRalphContinuePaneTarget(activeRalph, nowIso);
+    activeRalph.state = resolvedPane.state;
+    const paneId = resolvedPane.paneId;
     if (!paneId) {
       lastRalphContinueSteer.last_reason = 'pane_missing';
       lastRalphContinueSteer.pane_id = '';
@@ -689,6 +1217,7 @@ async function runRalphContinueSteerTick(): Promise<void> {
       type: 'ralph_continue_steer',
       reason: 'sent',
       pane_id: paneId,
+      rebound_from: resolvedPane.reboundFrom || null,
       state_path: activeRalph.path,
       current_phase: safeString(activeRalph.state?.current_phase) || null,
       cadence_ms: RALPH_CONTINUE_CADENCE_MS,
@@ -781,7 +1310,10 @@ async function writeState(extra: Record<string, unknown> = {}): Promise<void> {
     started_at: new Date(startedAt).toISOString(),
     cwd,
     notify_script: notifyScript,
+    authority_only: authorityOnly,
     poll_ms: pollMs,
+    effective_poll_ms: adaptivePollState.current_ms,
+    idle_max_poll_ms: idleMaxPollMs,
     pid_file: runOnce ? null : pidFilePath,
     max_lifetime_ms: maxLifetimeMs,
     tracked_files: fileState.size,
@@ -808,9 +1340,25 @@ async function writeState(extra: Record<string, unknown> = {}): Promise<void> {
       enabled: true,
       stall_ms: AUTO_NUDGE_STALL_MS,
     },
+    authority_backoff: lastAuthorityBackoff,
+    adaptive_poll: {
+      ...adaptivePollState,
+      enabled: true,
+      base_ms: pollMs,
+      max_ms: idleMaxPollMs,
+    },
     ...extra,
   };
-  await writeFile(statePath, JSON.stringify(state, null, 2)).catch(() => {});
+  await writeJsonObjectAtomically(statePath, state).catch(() => {});
+}
+
+async function writeAuthorityBackoffState(): Promise<void> {
+  await mkdir(stateDir, { recursive: true }).catch(() => {});
+  const existing = await readJsonObject(statePath);
+  const state = existing && typeof existing === 'object'
+    ? { ...existing, authority_backoff: lastAuthorityBackoff }
+    : { authority_backoff: lastAuthorityBackoff };
+  await writeJsonObjectAtomically(statePath, state).catch(() => {});
 }
 
 async function readJsonObject(path: string): Promise<Record<string, unknown> | null> {
@@ -820,19 +1368,18 @@ async function readJsonObject(path: string): Promise<Record<string, unknown> | n
 }
 
 async function readAutoNudgeCount(): Promise<number> {
-  const parsed = await readJsonObject(join(stateDir, 'auto-nudge-state.json'));
+  const parsed = await readScopedJsonIfExists(stateDir, 'auto-nudge-state.json', undefined, null);
   return Math.max(0, Math.trunc(asNumber(parsed?.nudgeCount as string | number | undefined, 0)));
 }
 
 async function readAutoNudgeState(): Promise<Record<string, unknown> | null> {
-  return readJsonObject(join(stateDir, 'auto-nudge-state.json'));
+  return readScopedJsonIfExists(stateDir, 'auto-nudge-state.json', undefined, null);
 }
 
 async function runFallbackAutoNudgeTick(): Promise<void> {
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
-  const hudStatePath = join(stateDir, 'hud-state.json');
-  const hudState = await readJsonObject(hudStatePath);
+  const hudState = await readScopedJsonIfExists(stateDir, 'hud-state.json', undefined, null);
 
   lastFallbackAutoNudge = {
     ...lastFallbackAutoNudge,
@@ -881,6 +1428,11 @@ async function runFallbackAutoNudgeTick(): Promise<void> {
   const persistedAutoNudgeState = await readAutoNudgeState();
   const autoNudgeConfig = await loadAutoNudgeConfig();
   const semanticSignature = normalizeAutoNudgeSignatureText(lastMessage);
+  if (signature && safeString(persistedAutoNudgeState?.lastSignature) === signature) {
+    lastFallbackAutoNudge.last_reason = 'already_nudged_for_signature';
+    lastFallbackAutoNudge.last_nudged_signature = signature;
+    return;
+  }
   const lastNudgeAtMs = parseIsoMillis(safeString(persistedAutoNudgeState?.lastNudgeAt));
   if (
     semanticSignature
@@ -1096,7 +1648,8 @@ async function invokeNotifyHook(payload: Record<string, unknown>, filePath: stri
   const result = spawnSync(process.execPath, [notifyScript, JSON.stringify(payload)], {
     cwd,
     encoding: 'utf-8',
-  });
+      windowsHide: true,
+    });
   const ok = result.status === 0;
   await eventLog({
     type: 'fallback_notify',
@@ -1145,9 +1698,11 @@ async function ensureTrackedFiles(): Promise<void> {
     const line = await readFirstLine(path).catch(() => '');
     const threadId = shouldTrackSessionMeta(line);
     if (!threadId) continue;
-    const size = (await stat(path).catch(() => ({ size: 0 }))).size || 0;
+    const fileStat = await stat(path).catch(() => null);
+    if (!fileStat) continue;
+    const size = fileStat.size || 0;
     const offset = runOnce ? 0 : size;
-    fileState.set(path, { threadId, offset, size, partial: '' });
+    fileState.set(path, { threadId, offset, size, partial: '', decoder: new StringDecoder('utf8') });
   }
 }
 
@@ -1160,25 +1715,67 @@ function splitBufferedLines(partial: string, delta: string): { lines: string[]; 
   };
 }
 
-async function pollFiles(): Promise<void> {
+async function readFileDelta(
+  path: string,
+  offset: number,
+  currentSize: number,
+): Promise<{ bytes: Buffer; nextOffset: number }> {
+  const length = currentSize - offset;
+  if (length <= 0) return { bytes: Buffer.alloc(0), nextOffset: offset };
+  const handle = await open(path, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(length);
+    let totalBytesRead = 0;
+    while (totalBytesRead < length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        totalBytesRead,
+        length - totalBytesRead,
+        offset + totalBytesRead,
+      );
+      if (bytesRead === 0) break;
+      totalBytesRead += bytesRead;
+    }
+    return {
+      bytes: buffer.subarray(0, totalBytesRead),
+      nextOffset: offset + totalBytesRead,
+    };
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
+async function pollFiles(): Promise<number> {
+  let processedCount = 0;
   for (const [path, meta] of fileState.entries()) {
-    const currentSize = (await stat(path).catch(() => ({ size: 0 }))).size || 0;
+    const fileStat = await stat(path).catch(() => null);
+    if (!fileStat) continue;
+    const currentSize = fileStat.size || 0;
+    if (currentSize < meta.offset) {
+      meta.offset = 0;
+      meta.partial = '';
+      meta.decoder = new StringDecoder('utf8');
+    }
     if (currentSize <= meta.offset) continue;
-    const content = await readFile(path, 'utf-8').catch(() => '');
-    if (!content) continue;
-    const delta = content.slice(meta.offset);
-    meta.offset = currentSize;
+    const read = await readFileDelta(path, meta.offset, currentSize).catch(() => null);
+    if (!read || read.bytes.length === 0) continue;
+    const { bytes, nextOffset } = read;
+    meta.offset = nextOffset;
+    const delta = meta.decoder.write(bytes);
+    if (!delta) continue;
     const buffered = splitBufferedLines(meta.partial, delta);
     const lines = buffered.lines;
     meta.partial = buffered.partial;
     for (const line of lines) {
       if (!line.trim()) continue;
       await processLine(meta, line, path);
+      processedCount += 1;
     }
   }
+  return processedCount;
 }
 
-async function runLeaderNudgeTick(): Promise<void> {
+async function runLeaderNudgeTick(): Promise<boolean> {
   const startedIso = new Date().toISOString();
   const leaderOnly = safeString(process.env.OMX_TEAM_WORKER || '').trim() === '';
   const staleThresholdMs = resolveLeaderStalenessThresholdMs();
@@ -1193,21 +1790,19 @@ async function runLeaderNudgeTick(): Promise<void> {
       last_tick_at: startedIso,
       last_error: 'worker_context',
     };
-    await eventLog({
-      type: 'leader_nudge_tick',
-      leader_only: false,
-      run_count: leaderNudgeRuns,
-      reason: 'worker_context',
-      stale_threshold_ms: staleThresholdMs,
-    });
-    return;
+    return false;
   }
 
   try {
     const preComputedLeaderStale = await isLeaderStale(stateDir, staleThresholdMs, Date.now());
-    if (preComputedLeaderStale) {
-      await maybeNudgeTeamLeader({ cwd, stateDir, logsDir, preComputedLeaderStale });
-    }
+    await maybeNudgeTeamLeader({
+      cwd,
+      stateDir,
+      logsDir,
+      preComputedLeaderStale,
+      allowFreshMailboxNudges: false,
+      source: 'notify_fallback_watcher',
+    });
     leaderNudgeRuns += 1;
     lastLeaderNudge = {
       enabled: true,
@@ -1217,14 +1812,18 @@ async function runLeaderNudgeTick(): Promise<void> {
       last_tick_at: startedIso,
       last_error: null,
     };
-    await eventLog({
-      type: 'leader_nudge_tick',
-      leader_only: true,
-      run_count: leaderNudgeRuns,
-      stale_threshold_ms: staleThresholdMs,
-      precomputed_leader_stale: preComputedLeaderStale,
-      reason: preComputedLeaderStale ? 'leader_nudge_checked' : 'leader_nudge_skipped_not_stale',
-    });
+    const reason = preComputedLeaderStale ? 'leader_nudge_checked' : 'leader_nudge_skipped_not_stale';
+    if (shouldLogLeaderNudgeTick(reason)) {
+      await eventLog({
+        type: 'leader_nudge_tick',
+        leader_only: true,
+        run_count: leaderNudgeRuns,
+        stale_threshold_ms: staleThresholdMs,
+        precomputed_leader_stale: preComputedLeaderStale,
+        reason,
+      });
+    }
+    return preComputedLeaderStale;
   } catch (err) {
     leaderNudgeRuns += 1;
     lastLeaderNudge = {
@@ -1243,10 +1842,11 @@ async function runLeaderNudgeTick(): Promise<void> {
       reason: 'leader_nudge_failed',
       error: lastLeaderNudge.last_error,
     });
+    return true;
   }
 }
 
-async function runDispatchDrainTick(): Promise<void> {
+async function runDispatchDrainTick(): Promise<boolean> {
   const startedIso = new Date().toISOString();
   try {
     const result = await drainPendingTeamDispatch({ cwd, stateDir, logsDir, maxPerTick: dispatchTickMax } as any);
@@ -1257,13 +1857,16 @@ async function runDispatchDrainTick(): Promise<void> {
       last_result: result,
       last_error: null,
     };
-    await eventLog({
-      type: 'dispatch_drain_tick',
-      leader_only: lastDispatchDrain.leader_only,
-      dispatch_max_per_tick: dispatchTickMax,
-      run_count: dispatchDrainRuns,
-      ...(result && typeof result === 'object' ? result as Record<string, unknown> : {}),
-    });
+    if (shouldLogDispatchDrainTick(result)) {
+      await eventLog({
+        type: 'dispatch_drain_tick',
+        leader_only: lastDispatchDrain.leader_only,
+        dispatch_max_per_tick: dispatchTickMax,
+        run_count: dispatchDrainRuns,
+        ...(result && typeof result === 'object' ? result as Record<string, unknown> : {}),
+      });
+    }
+    return shouldLogDispatchDrainTick(result);
   } catch (err) {
     dispatchDrainRuns += 1;
     lastDispatchDrain = {
@@ -1280,37 +1883,74 @@ async function runDispatchDrainTick(): Promise<void> {
       reason: 'dispatch_drain_failed',
       error: lastDispatchDrain.last_error,
     });
+    return true;
   }
 }
 
-async function pumpTeamControlPlaneTick(): Promise<void> {
-  await runDispatchDrainTick();
-  const deepInterviewStateActive = await isDeepInterviewStateActive(stateDir);
-  if (deepInterviewStateActive) return;
-  await runLeaderNudgeTick();
+async function shouldSuppressInteractiveFallbackTicks(): Promise<boolean> {
+  const [deepInterviewStateActive, deepInterviewInputLockActive] = await Promise.all([
+    isDeepInterviewStateActive(stateDir, undefined),
+    isDeepInterviewInputLockActive(stateDir, undefined),
+  ]);
+  return deepInterviewStateActive || deepInterviewInputLockActive;
+}
+
+async function pumpTeamControlPlaneTick(): Promise<CycleActivitySummary> {
+  const dispatchActive = await runDispatchDrainTick();
+  if (await shouldSuppressInteractiveFallbackTicks()) {
+    return { active: dispatchActive, reason: dispatchActive ? 'dispatch_drain' : 'deep_interview_locked' };
+  }
+  const leaderActive = await runLeaderNudgeTick();
   await runFallbackAutoNudgeTick();
+  const autoNudgeActive = lastFallbackAutoNudge.last_reason === 'sent';
+  if (dispatchActive) return { active: true, reason: 'dispatch_drain' };
+  if (leaderActive) return { active: true, reason: 'leader_nudge' };
+  if (autoNudgeActive) return { active: true, reason: 'fallback_auto_nudge' };
+  return { active: false, reason: lastFallbackAutoNudge.last_reason || 'control_plane_idle' };
 }
 
 
-async function runWatcherCycle(): Promise<void> {
-  await ensureTrackedFiles();
-  await pollFiles();
-  await pumpTeamControlPlaneTick();
-  const deepInterviewStateActive = await isDeepInterviewStateActive(stateDir);
-  if (!deepInterviewStateActive) {
+async function runWatcherCycle(): Promise<number> {
+  let processedRolloutCount = 0;
+  if (authorityOnly) {
+    const authorityBackoff = await resolveAuthorityPrimaryWatcherHealth();
+    lastAuthorityBackoff = authorityBackoff;
+    if (authorityBackoff.active) {
+      await writeAuthorityBackoffState();
+      return processedRolloutCount;
+    }
+  } else {
+    lastAuthorityBackoff = createAuthorityBackoffState('');
+  }
+  if (!authorityOnly) {
+    await ensureTrackedFiles();
+    processedRolloutCount = await pollFiles();
+  }
+  const controlPlaneSummary = await pumpTeamControlPlaneTick();
+  if (!authorityOnly && !(await shouldSuppressInteractiveFallbackTicks())) {
     await runRalphWatcherBehaviorTick();
   }
-  await writeState();
+  const ralphActive = lastRalphContinueSteer.last_reason === 'sent';
+  const summary: CycleActivitySummary = processedRolloutCount > 0
+    ? { active: true, reason: 'rollout_event' }
+    : controlPlaneSummary.active
+      ? controlPlaneSummary
+      : ralphActive
+        ? { active: true, reason: 'ralph_continue_steer' }
+        : { active: false, reason: controlPlaneSummary.reason || lastRalphContinueSteer.last_reason || 'idle' };
+  const nextDelayMs = updateAdaptivePollState(summary);
+  await writeState({ last_cycle_activity: summary.reason });
+  return nextDelayMs;
 }
 
 async function tick(): Promise<void> {
   if (stopping) return;
   if (await enforceLifecycleGuards()) return;
-  await runWatcherCycle();
+  const nextDelayMs = await runWatcherCycle();
   if (await enforceLifecycleGuards()) return;
   setTimeout(() => {
     void tick();
-  }, pollMs);
+  }, nextDelayMs);
 }
 
 function shutdown(signal: string): void {
@@ -1327,16 +1967,21 @@ async function main(): Promise<void> {
 
   await registerPidFile();
   await loadPersistedWatcherState();
-  await eventLog({
-    type: 'watcher_start',
-    cwd,
-    notify_script: notifyScript,
-    poll_ms: pollMs,
-    once: runOnce,
-    parent_pid: parentPid,
-    pid_file: runOnce ? null : pidFilePath,
-    max_lifetime_ms: maxLifetimeMs,
-  });
+  if (!(runOnce && authorityOnly)) {
+    await eventLog({
+      type: 'watcher_start',
+      cwd,
+      notify_script: notifyScript,
+      authority_only: authorityOnly,
+      poll_ms: pollMs,
+      effective_poll_ms: adaptivePollState.current_ms,
+      idle_max_poll_ms: idleMaxPollMs,
+      once: runOnce,
+      parent_pid: parentPid,
+      pid_file: runOnce ? null : pidFilePath,
+      max_lifetime_ms: maxLifetimeMs,
+    });
+  }
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGHUP', () => shutdown('SIGHUP'));
@@ -1345,7 +1990,9 @@ async function main(): Promise<void> {
 
   if (runOnce) {
     await runWatcherCycle();
-    await eventLog({ type: 'watcher_once_complete', seen_turns: seenTurnKeys.size });
+    if (!authorityOnly) {
+      await eventLog({ type: 'watcher_once_complete', authority_only: authorityOnly, seen_turns: seenTurnKeys.size });
+    }
     process.exit(0);
   }
 

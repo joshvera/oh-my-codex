@@ -116,7 +116,7 @@ async function sendDesktopNotification(payload: NotificationPayload): Promise<vo
   if (!result) return;
   const [cmd, args] = result;
   try {
-    await execFileAsync(cmd, args);
+    await execFileAsync(cmd, args, { windowsHide: true });
   } catch {
     // Desktop notification is best-effort
   }

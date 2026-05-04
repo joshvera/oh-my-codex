@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import type { SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from 'node:child_process';
 import { mkdtemp, rm, mkdir, writeFile, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -97,6 +98,28 @@ describe('star-prompt state path', () => {
 });
 
 describe('starRepo', () => {
+  it('hides the Windows console window for gh star invocations', async () => {
+    const { starRepo } = await import('../star-prompt.js');
+    let seenOptions: Record<string, unknown> | undefined;
+    starRepo(((
+      _command: string,
+      _args: readonly string[],
+      options?: SpawnSyncOptionsWithStringEncoding,
+    ): SpawnSyncReturns<string> => {
+      seenOptions = options as unknown as Record<string, unknown>;
+      return {
+        status: 0,
+        stdout: '',
+        stderr: '',
+        pid: 1,
+        output: [],
+        signal: null,
+      } as SpawnSyncReturns<string>;
+    }) as any);
+
+    assert.equal(seenOptions?.windowsHide, true);
+  });
+
   it('returns ok when gh api exits successfully', async () => {
     const { starRepo } = await import('../star-prompt.js');
     assert.deepEqual(starRepo((() => ({

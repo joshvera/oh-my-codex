@@ -1,4 +1,4 @@
-import { execFileSync } from 'child_process';
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'child_process';
 import { readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,9 +16,20 @@ const HELP = [
 const PROCESS_EXIT_POLL_MS = 100;
 const SIGTERM_GRACE_MS = 5_000;
 const STALE_TMP_MAX_AGE_MS = 60 * 60 * 1000;
-const OMX_MCP_SERVER_PATTERN = /(?:^|[\\/])dist[\\/]mcp[\\/](?:state|memory|code-intel|trace|team)-server\.(?:[cm]?js|ts)\b/i;
+const OMX_MCP_SERVER_PATTERN = /(?:^|[\\/])dist[\\/]mcp[\\/](?:state|memory|code-intel|trace|wiki)-server\.(?:[cm]?js|ts)\b/i;
 const CODEX_PROCESS_PATTERN = /(?:^|[\\/\s])codex(?:\.js)?(?:\s|$)|@openai[\\/]codex/i;
+const OMX_LAUNCH_PROCESS_PATTERN = /(?:^|[\\/\s])omx(?:\.js)?(?:\s|$)|(?:^|[\\/])(?:bin|dist[\\/]cli)[\\/]omx\.js(?:\s|$)|oh-my-codex[\\/]dist[\\/]cli[\\/]omx\.js/i;
 const OMX_TMP_DIRECTORY_PATTERN = /^(omc|omx|oh-my-codex)-/;
+const PROCESS_LIST_COMMAND_OPTIONS: ExecFileSyncOptionsWithStringEncoding = {
+  encoding: 'utf-8',
+  windowsHide: true,
+};
+const WINDOWS_PROCESS_DISCOVERY_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  'Get-CimInstance Win32_Process | ForEach-Object {',
+  '  [PSCustomObject]@{ pid = $_.ProcessId; ppid = $_.ParentProcessId; command = $_.CommandLine } | ConvertTo-Json -Compress',
+  '}',
+].join('; ');
 
 export interface ProcessEntry {
   pid: number;
@@ -41,6 +52,10 @@ export interface CleanupResult {
 export interface CleanupDependencies {
   currentPid?: number;
   listProcesses?: () => ProcessEntry[];
+  selectCandidates?: (
+    processes: readonly ProcessEntry[],
+    currentPid: number,
+  ) => CleanupCandidate[];
   isPidAlive?: (pid: number) => boolean;
   sendSignal?: (pid: number, signal: NodeJS.Signals) => void;
   sleep?: (ms: number) => Promise<void>;
@@ -67,6 +82,15 @@ export interface CleanupCommandDependencies {
   cleanupTmpDirectories?: (args: readonly string[]) => Promise<number>;
 }
 
+type ProcessListCommandRunner = (
+  file: string,
+  args: readonly string[],
+  options: ExecFileSyncOptionsWithStringEncoding,
+) => string;
+
+const defaultProcessListCommandRunner: ProcessListCommandRunner = (file, args, options) =>
+  execFileSync(file, [...args], options);
+
 function normalizeCommand(command: string): string {
   return command.replace(/\\+/g, '/').trim();
 }
@@ -77,7 +101,7 @@ function formatPlural(count: number, singular: string, plural = `${singular}s`):
 
 export function isOmxMcpProcess(command: string): boolean {
   const normalized = normalizeCommand(command);
-  return normalized.includes('oh-my-codex/dist/mcp') || OMX_MCP_SERVER_PATTERN.test(normalized);
+  return OMX_MCP_SERVER_PATTERN.test(normalized);
 }
 
 export function parsePsOutput(output: string): ProcessEntry[] {
@@ -99,15 +123,101 @@ export function parsePsOutput(output: string): ProcessEntry[] {
     .filter((entry): entry is ProcessEntry => entry !== null);
 }
 
-export function listOmxProcesses(): ProcessEntry[] {
-  const output = execFileSync('ps', ['axww', '-o', 'pid=,ppid=,command='], {
-    encoding: 'utf-8',
-  });
-  return parsePsOutput(output);
+function parseIntegerField(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value)) return value;
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    return Number.parseInt(value, 10);
+  }
+  return null;
+}
+
+function parseWindowsProcessOutput(output: string): ProcessEntry[] {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        return null;
+      }
+
+      if (typeof parsed !== 'object' || parsed === null) return null;
+      const record = parsed as Record<string, unknown>;
+      const pid = parseIntegerField(record.pid);
+      const ppid = parseIntegerField(record.ppid);
+      const command = typeof record.command === 'string'
+        ? record.command.trim()
+        : '';
+      if (!Number.isInteger(pid) || pid === null || pid <= 0) return null;
+      if (!Number.isInteger(ppid) || ppid === null || ppid < 0) return null;
+      if (!command) return null;
+      return { pid, ppid, command } satisfies ProcessEntry;
+    })
+    .filter((entry): entry is ProcessEntry => entry !== null);
+}
+
+function listWindowsOmxProcesses(
+  runCommand: ProcessListCommandRunner,
+): ProcessEntry[] {
+  const output = runCommand(
+    'powershell.exe',
+    ['-NoLogo', '-NoProfile', '-Command', WINDOWS_PROCESS_DISCOVERY_SCRIPT],
+    PROCESS_LIST_COMMAND_OPTIONS,
+  );
+  return parseWindowsProcessOutput(output);
+}
+
+function isBusyBoxPsCommandFieldError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /bad -o argument ['"]command['"]|unsupported arguments:.*\bargs\b/i.test(error.message);
+}
+
+export function listOmxProcesses(
+  runCommand: ProcessListCommandRunner = defaultProcessListCommandRunner,
+): ProcessEntry[] {
+  if (process.platform === 'win32') return listWindowsOmxProcesses(runCommand);
+
+  try {
+    const output = runCommand('ps', ['axww', '-o', 'pid=,ppid=,command='], PROCESS_LIST_COMMAND_OPTIONS);
+    return parsePsOutput(output);
+  } catch (err) {
+    if (!isBusyBoxPsCommandFieldError(err)) throw err;
+    // BusyBox ps (Alpine's default) rejects the procps `command` field name
+    // but accepts the equivalent `args` field. Retry only that exact
+    // incompatibility so unrelated ps failures still surface normally.
+    const output = runCommand('ps', ['axww', '-o', 'pid=,ppid=,args='], PROCESS_LIST_COMMAND_OPTIONS);
+    return parsePsOutput(output);
+  }
 }
 
 function isCodexSessionProcess(command: string): boolean {
   return CODEX_PROCESS_PATTERN.test(normalizeCommand(command));
+}
+
+function isOmxLaunchProcess(command: string): boolean {
+  return OMX_LAUNCH_PROCESS_PATTERN.test(normalizeCommand(command));
+}
+
+function hasAncestorMatching(
+  processByPid: ReadonlyMap<number, ProcessEntry>,
+  pid: number,
+  predicate: (command: string) => boolean,
+): boolean {
+  const seen = new Set<number>();
+  let currentPid = processByPid.get(pid)?.ppid;
+
+  while (typeof currentPid === 'number' && currentPid > 0 && !seen.has(currentPid)) {
+    seen.add(currentPid);
+    const parent = processByPid.get(currentPid);
+    if (!parent) return false;
+    if (predicate(parent.command)) return true;
+    currentPid = parent.ppid;
+  }
+
+  return false;
 }
 
 function resolveProtectedRootPid(
@@ -179,6 +289,23 @@ export function findCleanupCandidates(
     }));
 }
 
+export function findLaunchSafeCleanupCandidates(
+  processes: readonly ProcessEntry[],
+  currentPid: number,
+): CleanupCandidate[] {
+  const processByPid = new Map(
+    processes.map((processEntry) => [processEntry.pid, processEntry] as const),
+  );
+
+  return findCleanupCandidates(processes, currentPid).filter((candidate) => {
+    if (candidate.ppid <= 1) return true;
+    return (
+      !hasAncestorMatching(processByPid, candidate.pid, isCodexSessionProcess) &&
+      !hasAncestorMatching(processByPid, candidate.pid, isOmxLaunchProcess)
+    );
+  });
+}
+
 function defaultIsPidAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
@@ -240,12 +367,13 @@ export async function cleanupOmxMcpProcesses(
   const writeLine = dependencies.writeLine ?? ((line: string) => console.log(line));
   const currentPid = dependencies.currentPid ?? process.pid;
   const listProcessesImpl = dependencies.listProcesses ?? listOmxProcesses;
+  const selectCandidates = dependencies.selectCandidates ?? findCleanupCandidates;
   const isPidAlive = dependencies.isPidAlive ?? defaultIsPidAlive;
   const sendSignal = dependencies.sendSignal ?? ((pid: number, signal: NodeJS.Signals) => process.kill(pid, signal));
   const sleep = dependencies.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const now = dependencies.now ?? Date.now;
 
-  const candidates = findCleanupCandidates(listProcessesImpl(), currentPid);
+  const candidates = selectCandidates(listProcessesImpl(), currentPid);
   if (candidates.length === 0) {
     writeLine(dryRun
       ? 'Dry run: no orphaned OMX MCP server processes found.'

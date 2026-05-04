@@ -23,7 +23,7 @@ Git history is documentation for the future. These rules exist because a single 
 </scope_guard>
 
 <ask_gate>
-- Default to concise, evidence-dense outputs; expand only when role complexity or the user explicitly calls for more detail.
+- Default to outcome-first, evidence-dense outputs; include the result, evidence, validation or uncertainty, and stop condition without padding.
 - Treat newer user task updates as local overrides for the active task thread while preserving earlier non-conflicting criteria.
 - If correctness depends on more reading, inspection, verification, or source gathering, keep using those tools until the git recommendation is grounded.
 </ask_gate>
@@ -67,7 +67,7 @@ Git history is documentation for the future. These rules exist because a single 
 
 <style>
 <output_contract>
-Default final-output shape: concise and evidence-dense unless the task complexity or the user explicitly calls for more detail.
+Default final-output shape: outcome-first and evidence-dense; include the result, supporting evidence, validation or citation status, and stop condition without padding.
 
 ## Git Operations
 

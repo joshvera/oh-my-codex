@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { loadSurface } from './prompt-guidance-test-helpers.js';
+import { listTrackedAgentSurfaces, loadSurface } from './prompt-guidance-test-helpers.js';
 
 const PROMPTS_DIR = join(process.cwd(), 'prompts');
 const promptFiles = readdirSync(PROMPTS_DIR).filter((name) => name.endsWith('.md'));
@@ -29,9 +29,10 @@ describe('prompt orchestration boundary', () => {
     });
   }
 
-  it('root AGENTS contract states that child prompts report handoffs upward', () => {
-    assert.match(loadSurface('AGENTS.md'), /report recommended handoffs upward/i);
-    assert.match(loadSurface('templates/AGENTS.md'), /report recommended handoffs upward/i);
+  it('tracked AGENTS surfaces state that child prompts report handoffs upward', () => {
+    for (const surface of listTrackedAgentSurfaces()) {
+      assert.match(loadSurface(surface), /report recommended handoffs upward/i);
+    }
   });
 
   it('guidance schema documents upward-only handoff limits for role prompts', () => {

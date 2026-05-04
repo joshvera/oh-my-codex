@@ -1,26 +1,68 @@
 /**
  * CLI entry point for team runtime.
- * Reads JSON config from stdin, runs startTeam/monitorTeam/shutdownTeam,
- * writes structured JSON result to stdout.
+ * Reads JSON config from --input-json, --input-json-base64, or stdin,
+ * runs startTeam/monitorTeam/shutdownTeam, writes structured JSON result
+ * to stdout.
  *
- * Spawned by omx_run_team_start in state-server.ts.
+ * Spawned by OMX team orchestration entrypoints when a background team run starts.
  */
 
+import { createInterface } from 'readline';
 import { readdirSync, readFileSync } from 'fs';
 import { writeFile, rename } from 'fs/promises';
 import { join } from 'path';
 import { startTeam, monitorTeam, shutdownTeam } from './runtime.js';
-import type { TeamRuntime } from './runtime.js';
+import type { TeamRuntime, TeamShutdownSummary, StaleTeamSummary } from './runtime.js';
+import type { TeamDecompositionMetadata } from './repo-aware-decomposition.js';
 import { teamReadConfig as readTeamConfig } from './team-ops.js';
+import { resolveCanonicalTeamStateRoot } from './state-root.js';
+
+async function promptStaleCleanup(summary: StaleTeamSummary): Promise<boolean> {
+  process.stderr.write(
+    `\n[omx] Stale artifacts from previous team "${summary.teamName}":\n` +
+    `  Worktrees: ${summary.worktreePaths.join(', ')}\n` +
+    `  State dir: ${summary.statePath}\n` +
+    (summary.hasDirtyWorktrees
+      ? '  ⚠ Some worktrees have uncommitted changes that will be lost.\n'
+      : '') +
+    '  Clean up and continue? [y/N] ',
+  );
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise<boolean>((res) => {
+    rl.question('', (answer) => {
+      rl.close();
+      res(answer.trim().toLowerCase() === 'y');
+    });
+  });
+}
 
 interface CliInput {
   teamName: string;
   workerCount?: number;
-  agentTypes: string[];
-  tasks: Array<{ subject: string; description: string }>;
+  agentType?: string;
+  agentTypes?: string[];
+  tasks: Array<{
+    subject: string;
+    description: string;
+    owner?: string;
+    blocked_by?: string[];
+    depends_on?: string[];
+    symbolic_depends_on?: string[];
+    role?: string;
+    requires_code_change?: boolean;
+    filePaths?: string[];
+    domains?: string[];
+    lane?: string;
+    allocation_reason?: string;
+    symbolic_id?: string;
+  }>;
   cwd: string;
   pollIntervalMs?: number;
+  decompositionMetadata?: TeamDecompositionMetadata;
 }
+
+const RUNTIME_CLI_INPUT_JSON_FLAG = '--input-json';
+const RUNTIME_CLI_INPUT_JSON_BASE64_FLAG = '--input-json-base64';
 
 type TeamWorkerProvider = 'codex' | 'claude' | 'gemini';
 
@@ -36,6 +78,14 @@ interface CliOutput {
   taskResults: TaskResult[];
   duration: number;
   workerCount: number;
+}
+
+export type TerminalPhaseResult = 'complete' | 'failed' | 'cancelled';
+
+export interface TerminalCliResult {
+  output: CliOutput;
+  exitCode: number;
+  notice: string;
 }
 
 export interface LivePaneState {
@@ -70,15 +120,15 @@ export async function loadLivePaneState(teamName: string, cwd: string): Promise<
   };
 }
 
-export async function shutdownWithForceFallback(teamName: string, cwd: string): Promise<void> {
+export async function shutdownWithForceFallback(teamName: string, cwd: string): Promise<TeamShutdownSummary> {
   try {
-    await shutdownTeam(teamName, cwd);
+    return await shutdownTeam(teamName, cwd);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes('shutdown_gate_blocked') && !message.includes('shutdown_rejected')) {
       throw error;
     }
-    await shutdownTeam(teamName, cwd, { force: true });
+    return await shutdownTeam(teamName, cwd, { force: true });
   }
 }
 
@@ -95,7 +145,11 @@ export function detectDeadWorkerFailure(
   };
 }
 
-function collectTaskResults(stateRoot: string, teamName: string): TaskResult[] {
+export function resolveRuntimeCliStateRoot(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  return resolveCanonicalTeamStateRoot(cwd, env);
+}
+
+export function collectTaskResults(stateRoot: string, teamName: string): TaskResult[] {
   const tasksDir = join(stateRoot, 'team', teamName, 'tasks');
   try {
     const files = readdirSync(tasksDir).filter(f => f.endsWith('.json'));
@@ -117,6 +171,42 @@ function collectTaskResults(stateRoot: string, teamName: string): TaskResult[] {
   }
 }
 
+export function buildCliOutput(
+  stateRoot: string,
+  teamName: string,
+  status: 'completed' | 'failed',
+  workerCount: number,
+  startTimeMs: number,
+): CliOutput {
+  const taskResults = collectTaskResults(stateRoot, teamName);
+  const duration = (Date.now() - startTimeMs) / 1000;
+  return {
+    status,
+    teamName,
+    taskResults,
+    duration,
+    workerCount,
+  };
+}
+
+export function buildTerminalCliResult(
+  stateRoot: string,
+  teamName: string,
+  phase: TerminalPhaseResult,
+  workerCount: number,
+  startTimeMs: number,
+): TerminalCliResult {
+  const status = phase === 'complete' ? 'completed' : 'failed';
+  return {
+    output: buildCliOutput(stateRoot, teamName, status, workerCount, startTimeMs),
+    exitCode: status === 'completed' ? 0 : 1,
+    notice:
+      `[runtime-cli] phase=${phase} reached terminal state; preserving team state for inspection. `
+      + `Inspect with "omx team status ${teamName} --json" or "omx team api read-stall-state --input '{\"team_name\":\"${teamName}\"}' --json". `
+      + `Run "omx team shutdown ${teamName}" (or --force after state capture) when explicit cleanup is desired.\n`,
+  };
+}
+
 export function normalizeAgentTypes(raw: string[], workerCount: number): TeamWorkerProvider[] {
   const providers = raw.map((entry) => String(entry || '').trim().toLowerCase());
   const invalid = providers.filter((entry) => entry !== 'codex' && entry !== 'claude' && entry !== 'gemini');
@@ -129,30 +219,83 @@ export function normalizeAgentTypes(raw: string[], workerCount: number): TeamWor
   return providers as TeamWorkerProvider[];
 }
 
-async function main(): Promise<void> {
-  const startTime = Date.now();
+export function resolveRuntimeCliProviderMap(
+  raw: string[] | undefined,
+  workerCount: number,
+): string | null {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return null;
+  }
+  return normalizeAgentTypes(raw, workerCount).join(',');
+}
 
-  // Read stdin
+export function resolveRuntimeCliAgentType(raw: string | undefined): string {
+  const normalized = typeof raw === 'string' ? raw.trim() : '';
+  return normalized || 'executor';
+}
+
+export function resolveRuntimeCliMissingFields(input: Partial<CliInput>): string[] {
+  const missing: string[] = [];
+  if (!input.teamName) missing.push('teamName');
+  const hasAgentTypes = Array.isArray(input.agentTypes) && input.agentTypes.length > 0;
+  const hasWorkerCount = Number.isInteger(input.workerCount) && Number(input.workerCount) > 0;
+  if (!hasAgentTypes && !hasWorkerCount) {
+    missing.push('workerCount or agentTypes');
+  }
+  if (!input.tasks || !Array.isArray(input.tasks) || input.tasks.length === 0) missing.push('tasks');
+  if (!input.cwd) missing.push('cwd');
+  return missing;
+}
+
+export function resolveRuntimeCliInlineInput(argv: readonly string[]): string | null {
+  const index = argv.indexOf(RUNTIME_CLI_INPUT_JSON_FLAG);
+  if (index !== -1) {
+    const payload = argv[index + 1];
+    if (typeof payload !== 'string' || payload.trim() === '') {
+      throw new Error(`Missing JSON payload for ${RUNTIME_CLI_INPUT_JSON_FLAG}`);
+    }
+    return payload;
+  }
+
+  const base64Index = argv.indexOf(RUNTIME_CLI_INPUT_JSON_BASE64_FLAG);
+  if (base64Index === -1) {
+    return null;
+  }
+  const payload = argv[base64Index + 1];
+  if (typeof payload !== 'string' || payload.trim() === '') {
+    throw new Error(`Missing JSON payload for ${RUNTIME_CLI_INPUT_JSON_BASE64_FLAG}`);
+  }
+  return Buffer.from(payload.trim(), 'base64url').toString('utf-8');
+}
+
+async function readRuntimeCliRawInput(argv: readonly string[]): Promise<string> {
+  const inlineInput = resolveRuntimeCliInlineInput(argv);
+  if (inlineInput != null) {
+    return inlineInput.trim();
+  }
+
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
     chunks.push(chunk as Buffer);
   }
-  const rawInput = Buffer.concat(chunks).toString('utf-8').trim();
+  return Buffer.concat(chunks).toString('utf-8').trim();
+}
+
+async function main(): Promise<void> {
+  const startTime = Date.now();
+
+  const rawInput = await readRuntimeCliRawInput(process.argv.slice(2));
 
   let input: CliInput;
   try {
     input = JSON.parse(rawInput) as CliInput;
   } catch (err) {
-    process.stderr.write(`[runtime-cli] Failed to parse stdin JSON: ${err}\n`);
+    process.stderr.write(`[runtime-cli] Failed to parse JSON input: ${err}\n`);
     process.exit(1);
   }
 
   // Validate required fields
-  const missing: string[] = [];
-  if (!input.teamName) missing.push('teamName');
-  if (!input.agentTypes || !Array.isArray(input.agentTypes) || input.agentTypes.length === 0) missing.push('agentTypes');
-  if (!input.tasks || !Array.isArray(input.tasks) || input.tasks.length === 0) missing.push('tasks');
-  if (!input.cwd) missing.push('cwd');
+  const missing = resolveRuntimeCliMissingFields(input);
   if (missing.length > 0) {
     process.stderr.write(`[runtime-cli] Missing required fields: ${missing.join(', ')}\n`);
     process.exit(1);
@@ -160,58 +303,61 @@ async function main(): Promise<void> {
 
   const {
     teamName,
+    agentType: rawAgentType,
     agentTypes,
     tasks,
     cwd,
     pollIntervalMs = 5000,
+    decompositionMetadata,
   } = input;
 
-  const workerCount = input.workerCount ?? agentTypes.length;
-  const stateRoot = join(cwd, '.omx', 'state');
+  const workerCount = input.workerCount ?? agentTypes?.length ?? 0;
+  const stateRoot = resolveRuntimeCliStateRoot(cwd);
 
   let runtime: TeamRuntime | null = null;
   let finalStatus: 'completed' | 'failed' = 'failed';
   let pollActive = true;
 
-  function exitCodeFor(status: 'completed' | 'failed'): number {
-    return status === 'completed' ? 0 : 1;
-  }
-
   async function doShutdown(status: 'completed' | 'failed'): Promise<void> {
     pollActive = false;
     finalStatus = status;
 
-    // 1. Collect task results
-    const taskResults = collectTaskResults(stateRoot, teamName);
-
-    // 2. Shutdown team
+    // 1. Shutdown team
+    let shutdownSummary: TeamShutdownSummary | null = null;
     if (runtime) {
       try {
         if (status === 'failed') {
           // Failure/cancellation path must force cleanup to bypass shutdown gate.
-          await shutdownTeam(runtime.teamName, runtime.cwd, { force: true });
+          shutdownSummary = await shutdownTeam(runtime.teamName, runtime.cwd, { force: true });
         } else {
-          await shutdownWithForceFallback(runtime.teamName, runtime.cwd);
+          shutdownSummary = await shutdownWithForceFallback(runtime.teamName, runtime.cwd);
         }
       } catch (err) {
         process.stderr.write(`[runtime-cli] shutdownTeam error: ${err}\n`);
       }
     }
 
-    const duration = (Date.now() - startTime) / 1000;
-    const output: CliOutput = {
-      status: finalStatus,
-      teamName,
-      taskResults,
-      duration,
-      workerCount,
-    };
+    if (shutdownSummary?.commitHygieneArtifacts) {
+      process.stderr.write(`[runtime-cli] commit_hygiene_context_json=${shutdownSummary.commitHygieneArtifacts.jsonPath}\n`);
+      process.stderr.write(`[runtime-cli] commit_hygiene_context_md=${shutdownSummary.commitHygieneArtifacts.markdownPath}\n`);
+    }
 
-    // 3. Write result to stdout
+    const output = buildCliOutput(stateRoot, teamName, finalStatus, workerCount, startTime);
+
+    // 2. Write result to stdout
     process.stdout.write(JSON.stringify(output) + '\n');
 
-    // 4. Exit
-    process.exit(exitCodeFor(status));
+    // 3. Exit
+    process.exit(status === 'completed' ? 0 : 1);
+  }
+
+  function exitWithoutShutdown(phase: TerminalPhaseResult): void {
+    pollActive = false;
+    finalStatus = phase === 'complete' ? 'completed' : 'failed';
+    const result = buildTerminalCliResult(stateRoot, teamName, phase, workerCount, startTime);
+    process.stderr.write(result.notice);
+    process.stdout.write(JSON.stringify(result.output) + '\n');
+    process.exit(result.exitCode);
   }
 
   // Register signal handlers before poll loop
@@ -231,12 +377,14 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => handleShutdown('SIGTERM'));
 
   // Start the team — OMX's startTeam takes individual parameters
-  const agentType = 'executor';
+  const agentType = resolveRuntimeCliAgentType(rawAgentType);
   try {
-    const providers = normalizeAgentTypes(agentTypes, workerCount);
+    const providerMap = resolveRuntimeCliProviderMap(agentTypes, workerCount);
     const previousCliMap = process.env.OMX_TEAM_WORKER_CLI_MAP;
     try {
-      process.env.OMX_TEAM_WORKER_CLI_MAP = providers.join(',');
+      if (providerMap) {
+        process.env.OMX_TEAM_WORKER_CLI_MAP = providerMap;
+      }
       runtime = await startTeam(
         teamName,
         tasks.map(t => t.subject).join('; '),
@@ -244,17 +392,23 @@ async function main(): Promise<void> {
         workerCount,
         tasks,
         cwd,
+        {
+          confirmStaleCleanup: promptStaleCleanup,
+          ...(decompositionMetadata ? { decompositionMetadata } : {}),
+        },
       );
     } finally {
-      if (typeof previousCliMap === 'string') process.env.OMX_TEAM_WORKER_CLI_MAP = previousCliMap;
-      else delete process.env.OMX_TEAM_WORKER_CLI_MAP;
+      if (providerMap) {
+        if (typeof previousCliMap === 'string') process.env.OMX_TEAM_WORKER_CLI_MAP = previousCliMap;
+        else delete process.env.OMX_TEAM_WORKER_CLI_MAP;
+      }
     }
   } catch (err) {
     process.stderr.write(`[runtime-cli] startTeam failed: ${err}\n`);
     process.exit(1);
   }
 
-  // Persist pane IDs so MCP server can clean up explicitly via omx_run_team_cleanup.
+  // Persist pane IDs when a background launcher provides an OMX job ID.
   const jobId = process.env.OMX_JOB_ID;
   try {
     const livePanes = await loadLivePaneState(teamName, cwd);
@@ -307,11 +461,11 @@ async function main(): Promise<void> {
 
     // Check completion
     if (snap.phase === 'complete') {
-      await doShutdown('completed');
+      exitWithoutShutdown('complete');
       return;
     }
     if (snap.phase === 'failed' || snap.phase === 'cancelled') {
-      await doShutdown('failed');
+      exitWithoutShutdown(snap.phase);
       return;
     }
 
@@ -327,7 +481,9 @@ async function main(): Promise<void> {
 
     if (deadWorkerFailure || fixingWithNoWorkers) {
       process.stderr.write(`[runtime-cli] Failure detected: deadWorkerFailure=${deadWorkerFailure} fixingWithNoWorkers=${fixingWithNoWorkers}\n`);
-      await doShutdown('failed');
+      // Monitor-detected failure is still not an explicit shutdown request.
+      // Preserve team state for inspection and let the leader decide when to clean up.
+      exitWithoutShutdown('failed');
       return;
     }
   }

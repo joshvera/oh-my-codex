@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
+import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 
 export const DEFAULT_ALLOWED_MODES = ['ralph', 'ultrawork', 'team'];
 export const DEFAULT_MARKER = '[OMX_TMUX_INJECT]';
@@ -78,6 +79,10 @@ export function normalizeTmuxHookConfig(raw: any): any {
     // Skip injection when the target pane is in copy-mode / scrollback (default: true).
     skip_if_scrolling: raw.skip_if_scrolling === false ? false : true,
   };
+}
+
+export function tmuxHookExplicitlyDisablesInjection(raw: any): boolean {
+  return Boolean(raw && typeof raw === 'object' && raw.enabled === false);
 }
 
 export function pickActiveMode(activeModes: any, allowedModes: any): string | null {
@@ -199,14 +204,15 @@ function isHudStartCommand(startCommand: string): boolean {
  */
 export function resolveCodexPane(): string {
   const envPane = (process.env.TMUX_PANE || '').trim();
+  const tmuxCommand = resolveTmuxBinaryForPlatform() || 'tmux';
   if (!envPane) return '';
 
   try {
-    const cmd = execFileSync('tmux', ['display-message', '-t', envPane, '-p', '#{pane_current_command}'], {
-      encoding: 'utf-8', timeout: 2000,
+    const cmd = execFileSync(tmuxCommand, ['display-message', '-t', envPane, '-p', '#{pane_current_command}'], {
+      encoding: 'utf-8', timeout: 2000, windowsHide: process.platform === 'win32',
     }).trim().toLowerCase();
-    const startCmd = execFileSync('tmux', ['display-message', '-t', envPane, '-p', '#{pane_start_command}'], {
-      encoding: 'utf-8', timeout: 2000,
+    const startCmd = execFileSync(tmuxCommand, ['display-message', '-t', envPane, '-p', '#{pane_start_command}'], {
+      encoding: 'utf-8', timeout: 2000, windowsHide: process.platform === 'win32',
     }).trim().toLowerCase();
     const base = cmd.split('/').pop()?.replace(/^-/, '') || '';
     if (AGENT_COMMANDS.has(base) && !isHudStartCommand(startCmd)) {
@@ -221,15 +227,16 @@ export function resolveCodexPane(): string {
   }
 
   try {
-    const sessionName = execFileSync('tmux', ['display-message', '-t', envPane, '-p', '#S'], {
+    const sessionName = execFileSync(tmuxCommand, ['display-message', '-t', envPane, '-p', '#S'], {
       encoding: 'utf-8', timeout: 2000,
+      windowsHide: true,
     }).trim();
     if (!sessionName) return '';
 
-    const panes = execFileSync('tmux', [
+    const panes = execFileSync(tmuxCommand, [
       'list-panes', '-s', '-t', sessionName,
       '-F', '#{pane_id}\t#{pane_current_command}\t#{pane_start_command}',
-    ], { encoding: 'utf-8', timeout: 2000 }).trim().split('\n');
+    ], { encoding: 'utf-8', timeout: 2000, windowsHide: process.platform === 'win32' }).trim().split('\n');
 
     for (const line of panes) {
       const parts = line.split('\t');
@@ -295,6 +302,17 @@ export function paneLooksReady(captured: any): boolean {
   if (hasCodexWelcomePrompt) return true;
 
   return lines.some((line) => /^\s*(?:[›>❯]\s*)?[A-Z][A-Z0-9]+-\d+\s+only(?:\s*(?:…|\.{3}))?\s*$/iu.test(line));
+}
+
+export function paneShowsCodexViewport(captured: any): boolean {
+  const lines = normalizePaneLines(captured);
+  if (lines.length === 0) return false;
+  if (paneIsBootstrapping(lines)) return false;
+
+  const hasCodexBanner = lines.some((line) => /\bOpenAI Codex\b/i.test(line));
+  if (!hasCodexBanner) return false;
+
+  return lines.some((line) => /(?:^|\s)(?:model|directory):/i.test(line));
 }
 
 export function paneHasActiveTask(captured: any): boolean {

@@ -8,6 +8,7 @@ import type {
   HookPluginSdk,
 } from '../types.js';
 import { omxRootStateFilePath } from './paths.js';
+import { getReadScopedStateFilePaths } from '../../../mcp/state-paths.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -42,9 +43,12 @@ export function createHookPluginOmxApi(cwd: string): HookPluginSdk['omx'] {
       ),
     },
     hud: {
-      read: () => readOmxStateFile<HookPluginOmxHudState>(
-        omxRootStateFilePath(cwd, 'hud-state.json'),
-      ),
+      read: async () => {
+        const [hudStatePath] = await getReadScopedStateFilePaths('hud-state.json', cwd, undefined, {
+          rootFallback: false,
+        });
+        return readOmxStateFile<HookPluginOmxHudState>(hudStatePath);
+      },
     },
     notifyFallback: {
       read: () => readOmxStateFile<HookPluginOmxNotifyFallbackState>(

@@ -87,6 +87,7 @@ export function getModifiedFiles(
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 5000,
+      windowsHide: true,
     });
     const trimmedOutput = output.trimEnd();
     if (trimmedOutput.length === 0) {

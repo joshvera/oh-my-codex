@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { addGeneratedAgentsMarker, isOmxGeneratedAgentsMd, OMX_GENERATED_AGENTS_MARKER } from '../agents-md.js';
+import {
+  addGeneratedAgentsMarker,
+  hasOmxManagedAgentsSections,
+  isOmxGeneratedAgentsMd,
+  OMX_GENERATED_AGENTS_MARKER,
+} from '../agents-md.js';
 
 describe('agents-md helpers', () => {
   it('inserts the generated marker after the autonomy directive block', () => {
@@ -36,5 +41,29 @@ describe('agents-md helpers', () => {
     ].join('\n');
 
     assert.equal(isOmxGeneratedAgentsMd(content), true);
+  });
+
+  it('does not treat title-only user AGENTS.md content as OMX-generated', () => {
+    const content = [
+      '# oh-my-codex - Intelligent Multi-Agent Orchestration',
+      '',
+      'User-authored guidance without any OMX ownership markers.',
+    ].join('\n');
+
+    assert.equal(isOmxGeneratedAgentsMd(content), false);
+    assert.equal(hasOmxManagedAgentsSections(content), false);
+  });
+
+  it('recognizes explicit OMX-owned model table blocks as managed sections', () => {
+    const content = [
+      '# Shared ownership AGENTS',
+      '',
+      '<!-- OMX:MODELS:START -->',
+      'managed table',
+      '<!-- OMX:MODELS:END -->',
+    ].join('\n');
+
+    assert.equal(isOmxGeneratedAgentsMd(content), false);
+    assert.equal(hasOmxManagedAgentsSections(content), true);
   });
 });

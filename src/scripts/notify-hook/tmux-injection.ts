@@ -8,22 +8,25 @@ import { readFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, resolve as resolvePath } from 'path';
 import { safeString, asNumber } from './utils.js';
+import { sameFilePath } from '../../utils/paths.js';
 import {
   readJsonIfExists,
   normalizeTmuxState,
   pruneRecentKeys,
   getScopedStateDirsForCurrentSession,
+  readCurrentSessionId,
   readdir,
 } from './state-io.js';
 import { runProcess } from './process-runner.js';
 import { logTmuxHookEvent } from './log.js';
+import { resolveInvocationSessionId, resolveManagedCurrentPane, resolveManagedSessionContext, verifyManagedPaneTarget } from './managed-tmux.js';
 import { evaluatePaneInjectionReadiness, mapPaneInjectionReadinessReason, sendPaneInput } from './team-tmux-guard.js';
+import { listActiveSkills, readVisibleSkillActiveState } from '../../state/skill-active.js';
 import {
   normalizeTmuxHookConfig,
   pickActiveMode,
   evaluateInjectionGuards,
   buildSendKeysArgv,
-  resolveCodexPane,
 } from '../tmux-hook-engine.js';
 
 function isHudPaneStartCommand(startCommand: any): boolean {
@@ -35,7 +38,7 @@ async function resolvePaneCwdMismatch(paneId: string, expectedCwd: any): Promise
   try {
     const paneCwdResult = await runProcess('tmux', ['display-message', '-p', '-t', paneId, '#{pane_current_path}']);
     const paneCwd = safeString(paneCwdResult.stdout).trim();
-    if (paneCwd && resolvePath(paneCwd) !== resolvePath(expectedCwd)) {
+    if (paneCwd && !sameFilePath(paneCwd, expectedCwd)) {
       return {
         paneTarget: null,
         reason: 'pane_cwd_mismatch',
@@ -96,6 +99,77 @@ async function resolveCanonicalPaneFromPaneTarget(paneTarget: any, expectedCwd: 
   return finalizeResolvedPane(healedPaneId, 'healed_hud_pane_target', expectedCwd);
 }
 
+async function resolvePreferredModePane(stateDir: string, allowedModes: string[]): Promise<{ mode: string; state: any; pane: string } | null> {
+  const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir).catch(() => [stateDir]);
+  const dirs = [...scopedDirs];
+  if (!dirs.map((dir) => resolvePath(dir)).includes(resolvePath(stateDir))) {
+    dirs.push(stateDir);
+  }
+  for (const dir of dirs) {
+    for (const mode of allowedModes || []) {
+      const path = join(dir, `${mode}-state.json`);
+      const parsed = await readJsonIfExists(path, null);
+      const pane = safeString(parsed?.tmux_pane_id || '').trim();
+      if (parsed?.active && pane) {
+        return { mode, state: parsed, pane };
+      }
+    }
+  }
+  return null;
+}
+
+async function readVisibleAllowedModes(
+  cwd: string,
+  stateDir: string,
+  payload: any,
+  allowedModes: string[],
+): Promise<{ canonicalPresent: boolean; allowedSet: Set<string> | null; preferredMode: string | null }> {
+  const candidateSessionIds = [
+    await readCurrentSessionId(stateDir).catch(() => undefined),
+    resolveInvocationSessionId(payload),
+  ]
+    .map((value) => safeString(value).trim())
+    .filter(Boolean);
+
+  for (const sessionId of candidateSessionIds) {
+    const canonicalState = await readVisibleSkillActiveState(cwd, sessionId);
+    if (!canonicalState) continue;
+
+    const allowedSet = new Set(
+      listActiveSkills(canonicalState)
+        .map((entry) => entry.skill)
+        .filter((skill) => allowedModes.includes(skill)),
+    );
+    return {
+      canonicalPresent: true,
+      allowedSet,
+      preferredMode: pickActiveMode([...allowedSet], allowedModes),
+    };
+  }
+
+  if (candidateSessionIds.length === 0) {
+    const rootCanonicalState = await readVisibleSkillActiveState(cwd).catch(() => null);
+    if (rootCanonicalState) {
+      const allowedSet = new Set(
+        listActiveSkills(rootCanonicalState)
+          .map((entry) => entry.skill)
+          .filter((skill) => allowedModes.includes(skill)),
+      );
+      return {
+        canonicalPresent: true,
+        allowedSet,
+        preferredMode: pickActiveMode([...allowedSet], allowedModes),
+      };
+    }
+  }
+
+  return {
+    canonicalPresent: false,
+    allowedSet: null,
+    preferredMode: null,
+  };
+}
+
 export async function resolveSessionToPane(sessionName: any): Promise<string | null> {
   const result = await runProcess('tmux', ['list-panes', '-t', sessionName, '-F', '#{pane_id}\t#{pane_active}\t#{pane_current_command}\t#{pane_start_command}']);
   const rows = result.stdout
@@ -128,27 +202,57 @@ export async function resolveSessionToPane(sessionName: any): Promise<string | n
   return nonHudRows[0]?.paneId || null;
 }
 
-export async function resolvePaneTarget(target: any, fallbackPane: any, expectedCwd: any, modePane: any): Promise<any> {
-  const canonicalFallbackPane = safeString(fallbackPane).trim();
-  if (canonicalFallbackPane) {
+export async function resolvePaneTarget(target: any, expectedCwd: any, modePane: any, cwd: string, payload: any): Promise<any> {
+  const requiresManagedOwnership = safeString(cwd).trim() !== '' && safeString(payload?.session_id || payload?.['session-id'] || process.env.OMX_SESSION_ID || '').trim() !== '';
+  const managedContext = requiresManagedOwnership
+    ? await resolveManagedSessionContext(cwd, payload, { allowTeamWorker: false })
+    : { managed: false, reason: 'not_required', invocationSessionId: '', sessionState: null, expectedTmuxSessionName: '', currentTmuxSessionName: '' };
+  if (requiresManagedOwnership && !managedContext.managed) {
+    return { paneTarget: null, reason: managedContext.reason || 'unmanaged_session' };
+  }
+
+  const taggedSessionTarget = safeString(managedContext.taggedTmuxSessionName).trim();
+  if (taggedSessionTarget) {
     try {
-      return await finalizeResolvedPane(canonicalFallbackPane, 'fallback_current_pane', expectedCwd);
+      const paneId = await resolveSessionToPane(taggedSessionTarget);
+      if (paneId) {
+        const resolved = await finalizeResolvedPane(paneId, 'managed_instance_target', expectedCwd);
+        if (!resolved.paneTarget) return resolved;
+        const ownership = await verifyManagedPaneTarget(resolved.paneTarget, cwd, payload, { allowTeamWorker: false });
+        if (ownership.ok) {
+          return {
+            ...resolved,
+            source: 'managed_instance',
+            healTarget: true,
+          };
+        }
+        return { paneTarget: null, reason: ownership.reason || 'pane_not_managed_session' };
+      }
     } catch {
-      // Fall through to mode/config probes
+      // Fall through to legacy pane/session targets.
     }
   }
 
-  if (modePane) {
+  const canonicalModePane = safeString(modePane).trim();
+  if (canonicalModePane) {
     try {
-      const resolved = await resolveCanonicalPaneFromPaneTarget(modePane, expectedCwd);
+      const resolved = await resolveCanonicalPaneFromPaneTarget(canonicalModePane, expectedCwd);
       if (resolved.paneTarget) {
-        return {
-          ...resolved,
-          reason: resolved.reason === 'ok' ? 'fallback_mode_state_pane' : resolved.reason,
-        };
+        const ownership = requiresManagedOwnership
+          ? await verifyManagedPaneTarget(resolved.paneTarget, cwd, payload, { allowTeamWorker: false })
+          : { ok: true };
+        if (ownership.ok) {
+          return {
+            ...resolved,
+            reason: resolved.reason === 'ok' ? 'fallback_mode_state_pane' : resolved.reason,
+            source: 'mode_state',
+            healTarget: true,
+          };
+        }
+        return { paneTarget: null, reason: ownership.reason || 'pane_not_managed_session' };
       }
     } catch {
-      // Fall through to config probes
+      // Fall through to explicit config target
     }
   }
 
@@ -157,20 +261,60 @@ export async function resolvePaneTarget(target: any, fallbackPane: any, expected
   if (target.type === 'pane') {
     try {
       const resolved = await resolveCanonicalPaneFromPaneTarget(target.value, expectedCwd);
-      if (resolved.paneTarget) return resolved;
+      if (resolved.paneTarget) {
+        const ownership = requiresManagedOwnership
+          ? await verifyManagedPaneTarget(resolved.paneTarget, cwd, payload, { allowTeamWorker: false })
+          : { ok: true };
+        if (ownership.ok) {
+          return {
+            ...resolved,
+            reason: resolved.reason === 'ok' ? 'explicit_pane_target' : resolved.reason,
+            source: 'explicit_target',
+            healTarget: true,
+          };
+        }
+        return { paneTarget: null, reason: ownership.reason || 'pane_not_managed_session' };
+      }
     } catch {
       // Fall through
     }
-  } else {
-    try {
-      const paneId = await resolveSessionToPane(target.value);
-      if (paneId) return await finalizeResolvedPane(paneId, 'ok', expectedCwd);
-    } catch {
-      // Fall through
-    }
+    return { paneTarget: null, reason: 'target_not_found' };
   }
 
-  return { paneTarget: null, reason: 'target_not_found' };
+  try {
+    if (!requiresManagedOwnership) return { paneTarget: null, reason: 'target_session_requires_managed_context' };
+    const explicitSessionTarget = safeString(target.value).trim();
+    const expectedSessionTarget = safeString(managedContext.taggedTmuxSessionName || managedContext.expectedTmuxSessionName).trim();
+    const sessionIdTarget = safeString(managedContext.invocationSessionId).trim();
+    const stateSessionTarget = safeString(managedContext.sessionState?.session_id).trim();
+    const nativeSessionTarget = safeString(managedContext.nativeSessionId).trim();
+    const canonicalSessionTarget = safeString(managedContext.canonicalSessionId).trim();
+    const allowedSessionTargets = new Set([
+      expectedSessionTarget,
+      sessionIdTarget,
+      stateSessionTarget,
+      nativeSessionTarget,
+      canonicalSessionTarget,
+    ].filter(Boolean));
+    if (!allowedSessionTargets.has(explicitSessionTarget)) {
+      return { paneTarget: null, reason: 'target_session_not_managed' };
+    }
+    const paneId = await resolveSessionToPane(expectedSessionTarget);
+    if (!paneId) return { paneTarget: null, reason: 'target_not_found' };
+    const resolved = await finalizeResolvedPane(paneId, 'managed_session_target', expectedCwd);
+    if (!resolved.paneTarget) return resolved;
+    const ownership = await verifyManagedPaneTarget(resolved.paneTarget, cwd, payload, { allowTeamWorker: false });
+    if (!ownership.ok) {
+      return { paneTarget: null, reason: ownership.reason || 'pane_not_managed_session' };
+    }
+    return {
+      ...resolved,
+      source: 'explicit_target',
+      healTarget: true,
+    };
+  } catch {
+    return { paneTarget: null, reason: 'target_not_found' };
+  }
 }
 
 export async function handleTmuxInjection({
@@ -198,11 +342,38 @@ export async function handleTmuxInjection({
   const sourceText = inputMessages.join('\n');
   const state = normalizeTmuxState(await readJsonIfExists(hookStatePath, null));
   state.recent_keys = pruneRecentKeys(state.recent_keys, now);
+  const canonicalModeState = await readVisibleAllowedModes(cwd, stateDir, payload, config.allowed_modes).catch(() => ({
+    canonicalPresent: false,
+    allowedSet: null,
+    preferredMode: null,
+  }));
+  if (canonicalModeState.canonicalPresent && !canonicalModeState.preferredMode) {
+    const nextState = {
+      ...state,
+      last_reason: 'mode_not_allowed',
+      last_event_at: nowIso,
+    };
+    await writeFile(hookStatePath, JSON.stringify(nextState, null, 2)).catch(() => {});
+    if (config.enabled || config.log_level === 'debug') {
+      await logTmuxHookEvent(logsDir, {
+        timestamp: nowIso,
+        type: 'tmux_hook',
+        mode: null,
+        reason: 'mode_not_allowed',
+        turn_id: turnId,
+        thread_id: threadId,
+        target: config.target,
+        dry_run: config.dry_run,
+        sent: false,
+        event: 'injection_skipped',
+      });
+    }
+    return;
+  }
 
   const activeModes: string[] = [];
   const activeModeStates: Record<string, any> = {};
   const scannedStateDirs = new Set<string>();
-  const payloadSessionId = safeString(payload.session_id || payload['session-id'] || '');
   const scanActiveModeStateDirs = async (dirs: string[], preserveExisting = false) => {
     for (const scopedDir of dirs) {
       const resolvedScopedDir = resolvePath(scopedDir);
@@ -216,6 +387,7 @@ export async function handleTmuxInjection({
         const parsed = JSON.parse(await readFile(path, 'utf-8'));
         if (parsed && parsed.active) {
           const modeName = file.replace('-state.json', '');
+          if (canonicalModeState.allowedSet && !canonicalModeState.allowedSet.has(modeName)) continue;
           activeModes.push(modeName);
           if (!preserveExisting || !activeModeStates[modeName]) {
             activeModeStates[modeName] = parsed;
@@ -225,7 +397,7 @@ export async function handleTmuxInjection({
     }
   };
   try {
-    const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir, payloadSessionId);
+    const scopedDirs = await getScopedStateDirsForCurrentSession(stateDir);
     await scanActiveModeStateDirs(scopedDirs);
 
     if (!pickActiveMode(activeModes, config.allowed_modes) && !scannedStateDirs.has(resolvePath(stateDir))) {
@@ -235,9 +407,17 @@ export async function handleTmuxInjection({
     // Non-fatal
   }
 
-  const mode = pickActiveMode(activeModes, config.allowed_modes);
-  const modeState = mode ? (activeModeStates[mode] || {}) : {};
-  const modePane = safeString(modeState.tmux_pane_id || '');
+  const preferredModePane = await resolvePreferredModePane(
+    stateDir,
+    canonicalModeState.canonicalPresent
+      ? (canonicalModeState.preferredMode ? [canonicalModeState.preferredMode] : [])
+      : config.allowed_modes,
+  ).catch(() => null);
+  const mode = canonicalModeState.canonicalPresent
+    ? canonicalModeState.preferredMode
+    : (preferredModePane?.mode || pickActiveMode(activeModes, config.allowed_modes));
+  const modeState = preferredModePane?.state || (mode ? (activeModeStates[mode] || {}) : {});
+  const modePane = preferredModePane?.pane || safeString(modeState.tmux_pane_id || '');
   const preGuard = evaluateInjectionGuards({
     config,
     mode,
@@ -280,8 +460,15 @@ export async function handleTmuxInjection({
     turnId,
     timestamp: nowIso,
   }), sourceText);
-  const fallbackPane = resolveCodexPane();
-  const resolution = await resolvePaneTarget(config.target, fallbackPane, cwd, modePane);
+  const preferredPaneTarget = modePane || await resolveManagedCurrentPane(cwd, payload, { allowTeamWorker: false });
+  let resolution = preferredModePane
+    ? await resolvePaneTarget({ type: 'pane', value: preferredModePane.pane }, cwd, preferredModePane.pane, cwd, payload)
+    : preferredPaneTarget
+      ? await resolvePaneTarget({ type: 'pane', value: preferredPaneTarget }, cwd, '', cwd, payload)
+      : await resolvePaneTarget(config.target, cwd, modePane, cwd, payload);
+  if (!resolution.paneTarget && preferredPaneTarget) {
+    resolution = await resolvePaneTarget(config.target, cwd, modePane, cwd, payload);
+  }
   if (!resolution.paneTarget) {
     state.last_reason = resolution.reason;
     state.last_event_at = nowIso;
@@ -319,7 +506,7 @@ export async function handleTmuxInjection({
   }
 
   // Pane-canonical healing: persist resolved pane target so routing stops depending on session names or stale pane ids.
-  if (config.target && (config.target.type !== 'pane' || safeString(config.target.value).trim() !== paneTarget)) {
+  if (resolution.healTarget && config.target && (config.target.type !== 'pane' || safeString(config.target.value).trim() !== paneTarget)) {
     try {
       const healed = {
         ...(rawConfig && typeof rawConfig === 'object' ? rawConfig : {}),

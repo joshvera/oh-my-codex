@@ -162,6 +162,7 @@ function readGit(repoPath: string, args: string[]): string {
       cwd: repoPath,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     }).trim();
   } catch (error) {
     const err = error as NodeJS.ErrnoException & { stderr?: string | Buffer };
@@ -223,7 +224,8 @@ function requireGitSuccess(worktreePath: string, args: string[]): void {
   const result = spawnSync('git', args, {
     cwd: worktreePath,
     encoding: 'utf-8',
-  });
+      windowsHide: true,
+    });
   if (result.status === 0) return;
   throw new Error((result.stderr || '').trim() || `git ${args.join(' ')} failed`);
 }
@@ -232,7 +234,8 @@ function gitStatusLines(worktreePath: string): string[] {
   const result = spawnSync('git', ['status', '--porcelain', '--untracked-files=all'], {
     cwd: worktreePath,
     encoding: 'utf-8',
-  });
+      windowsHide: true,
+    });
   if (result.status !== 0) {
     throw new Error((result.stderr || '').trim() || `git status failed for ${worktreePath}`);
   }
@@ -474,7 +477,8 @@ export async function runAutoresearchEvaluator(
     encoding: 'utf-8',
     shell: true,
     maxBuffer: 1024 * 1024,
-  });
+      windowsHide: true,
+    });
   const stdout = result.stdout?.trim() || '';
   const stderr = result.stderr?.trim() || '';
 
@@ -724,7 +728,9 @@ export async function materializeAutoresearchMissionToWorktree(
   // Commit materialized mission files so the worktree is clean for
   // assertResetSafeWorktree, which runs immediately after this step.
   try {
-    execFileSync('git', ['add', '--', missionFile, sandboxFile], { cwd: worktreePath, stdio: 'ignore' });
+    execFileSync('git', ['add', '--', missionFile, sandboxFile], { cwd: worktreePath, stdio: 'ignore',
+      windowsHide: true,
+    });
     execFileSync('git', ['commit', '-m', `autoresearch: materialize mission ${contract.missionSlug}`], {
       cwd: worktreePath,
       stdio: 'ignore',

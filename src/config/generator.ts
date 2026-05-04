@@ -7,15 +7,18 @@
  * [table] header.  This generator therefore splits its output into:
  *   1. Top-level keys  (notify, model_reasoning_effort, developer_instructions)
  *   2. [features] flags
- *   3. [table] sections (env, mcp_servers, tui)
+ *   3. [table] sections (shell_environment_policy.set, mcp_servers, tui)
  */
 
 import { readFile, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { join } from "path";
+import TOML from "@iarna/toml";
 import { AGENT_DEFINITIONS } from "../agents/definitions.js";
 import { DEFAULT_FRONTIER_MODEL } from "./models.js";
 import type { UnifiedMcpRegistryServer } from "./mcp-registry.js";
+import { getOmxFirstPartySetupMcpServers } from "./omx-first-party-mcp.js";
+import type { HudPreset } from "../hud/types.js";
 
 interface MergeOptions {
   includeTui?: boolean;
@@ -23,6 +26,8 @@ interface MergeOptions {
   sharedMcpServers?: UnifiedMcpRegistryServer[];
   sharedMcpRegistrySource?: string;
   verbose?: boolean;
+  statusLinePreset?: HudPreset;
+  forceStatusLinePreset?: boolean;
 }
 
 function escapeTomlString(value: string): string {
@@ -40,18 +45,142 @@ const OMX_TOP_LEVEL_KEYS = [
   "developer_instructions",
 ] as const;
 
-const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
-const DEFAULT_SETUP_MODEL_CONTEXT_WINDOW = 1000000;
-const DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT = 900000;
+export interface ModelContextRecommendation {
+  model: string;
+  modelContextWindow: number;
+  modelAutoCompactTokenLimit: number;
+}
+
+export const DEFAULT_SETUP_MODEL = DEFAULT_FRONTIER_MODEL;
+export const DEFAULT_SETUP_MODEL_CONTEXT_WINDOW = 250000;
+export const DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT = 200000;
+
+export function getModelContextRecommendation(
+  model: string,
+): ModelContextRecommendation | null {
+  if (model !== DEFAULT_SETUP_MODEL) return null;
+
+  return {
+    model,
+    modelContextWindow: DEFAULT_SETUP_MODEL_CONTEXT_WINDOW,
+    modelAutoCompactTokenLimit: DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT,
+  };
+}
+const OMX_SEEDED_BEHAVIORAL_DEFAULTS_START_MARKER =
+  "# oh-my-codex seeded behavioral defaults (uninstall removes unchanged defaults)";
+const OMX_SEEDED_BEHAVIORAL_DEFAULTS_END_MARKER =
+  "# End oh-my-codex seeded behavioral defaults";
+
+export const OMX_DEVELOPER_INSTRUCTIONS =
+  "You have oh-my-codex installed. AGENTS.md is the orchestration brain and main control surface. Follow AGENTS.md for skill/keyword routing, $name workflow invocation, and role-specialized subagents. Use outcome-first, concise progress updates: state the target result, constraints, validation evidence, and stop condition before adding process detail. Native subagents live in .codex/agents and may handle independent parallel subtasks within one Codex session or team pane. Skills load from .codex/skills, not native-agent TOMLs. Treat installed prompts as narrower execution surfaces under AGENTS.md authority.";
 const SHARED_MCP_REGISTRY_MARKER = "oh-my-codex (OMX) Shared MCP Registry Sync";
 const SHARED_MCP_REGISTRY_END_MARKER =
   "# End oh-my-codex shared MCP registry sync";
 const OMX_AGENTS_MAX_THREADS = 6;
 const OMX_AGENTS_MAX_DEPTH = 2;
-const OMX_EXPLORE_ROUTING_DEFAULT = '1';
-const OMX_EXPLORE_CMD_ENV = 'USE_OMX_EXPLORE_CMD';
-const OMX_TUI_STATUS_LINE =
-  'status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]';
+const OMX_EXPLORE_ROUTING_DEFAULT = "1";
+const OMX_EXPLORE_CMD_ENV = "USE_OMX_EXPLORE_CMD";
+const DEFAULT_LAUNCHER_MCP_STARTUP_TIMEOUT_SEC = 15;
+const STATUS_LINE_FOCUSED_FIELDS: readonly string[] = [
+  "model-with-reasoning",
+  "git-branch",
+  "context-remaining",
+  "total-input-tokens",
+  "total-output-tokens",
+  "five-hour-limit",
+  "weekly-limit",
+];
+
+// `full` is currently identical to `focused`. It is reserved for future
+// expansion as Codex CLI adds support for additional status_line fields.
+export const STATUS_LINE_PRESETS: Record<HudPreset, readonly string[]> = {
+  minimal: ["model-with-reasoning", "git-branch"],
+  focused: STATUS_LINE_FOCUSED_FIELDS,
+  full: STATUS_LINE_FOCUSED_FIELDS,
+};
+
+export const DEFAULT_STATUS_LINE_PRESET: HudPreset = "focused";
+
+export function statusLineForPreset(
+  preset: HudPreset = DEFAULT_STATUS_LINE_PRESET,
+): string {
+  const fields =
+    STATUS_LINE_PRESETS[preset] ??
+    STATUS_LINE_PRESETS[DEFAULT_STATUS_LINE_PRESET];
+  return `status_line = [${fields.map((field) => `"${field}"`).join(", ")}]`;
+}
+
+// Marker comment OMX emits immediately above any status_line it owns. New writes
+// always include it; the customized-section detector keys on this marker so a
+// user-edited status_line that happens to byte-match a preset literal (e.g.
+// `["model-with-reasoning", "git-branch"]` matching the `minimal` preset) is
+// still recognized as a user customization and preserved.
+const OMX_MANAGED_STATUS_LINE_MARKER = "# omx:managed-status-line";
+
+// Pre-marker installs only ever shipped the seven-field `focused` array.
+// Treat that exact value as OMX-managed for backward compatibility so
+// upgrades/preset switches still strip the legacy line. Any other preset
+// literal without the marker is assumed user-written.
+const LEGACY_OMX_STATUS_LINE = statusLineForPreset(
+  DEFAULT_STATUS_LINE_PRESET,
+);
+
+// Set of every status_line literal OMX itself can emit today. Used together
+// with the marker comment: if a status_line is preceded by the marker AND
+// its value is a known OMX preset, it is OMX-managed. If the marker is
+// present but the value is something else, the user edited the value (and
+// left the marker untouched) — treat as a user customization and preserve.
+const OMX_PRESET_STATUS_LINE_VALUES: ReadonlySet<string> = new Set(
+  (Object.keys(STATUS_LINE_PRESETS) as HudPreset[]).map((preset) =>
+    statusLineForPreset(preset),
+  ),
+);
+const LEGACY_OMX_TEAM_RUN_TABLE_PATTERN =
+  /^\s*\[mcp_servers\.(?:"omx_team_run"|omx_team_run)\]\s*$/m;
+const OMX_CONFIG_MARKER = "oh-my-codex (OMX) Configuration";
+const OMX_CONFIG_END_MARKER = "# End oh-my-codex";
+
+const CODEX_MODEL_AVAILABILITY_NUX_TABLE_PATTERN = /^\s*\[tui\.model_availability_nux\]\s*(?:#.*)?$/;
+const TOML_TABLE_HEADER_PATTERN = /^\s*\[\[?[^\]]+\]?\]\s*(?:#.*)?$/;
+
+export function stripCodexModelAvailabilityNux(config: string): string {
+  const lines = config.split(/\r?\n/);
+  const result: string[] = [];
+  let removed = false;
+
+  for (let i = 0; i < lines.length;) {
+    if (CODEX_MODEL_AVAILABILITY_NUX_TABLE_PATTERN.test(lines[i])) {
+      removed = true;
+      i += 1;
+      while (i < lines.length && !TOML_TABLE_HEADER_PATTERN.test(lines[i])) {
+        i += 1;
+      }
+      continue;
+    }
+
+    result.push(lines[i]);
+    i += 1;
+  }
+
+  return removed ? result.join("\n") : config;
+}
+
+export async function cleanCodexModelAvailabilityNuxIfNeeded(
+  configPath: string,
+): Promise<boolean> {
+  if (!existsSync(configPath)) return false;
+
+  const content = await readFile(configPath, "utf-8");
+  const cleaned = stripCodexModelAvailabilityNux(content);
+  if (cleaned === content) return false;
+
+  await writeFile(configPath, cleaned);
+  return true;
+}
+
+export function hasLegacyOmxTeamRunTable(config: string): boolean {
+  return LEGACY_OMX_TEAM_RUN_TABLE_PATTERN.test(config);
+}
 
 function unwrapTomlString(value: string | undefined): string | undefined {
   return value?.match(/^"(.*)"$/)?.[1];
@@ -61,15 +190,70 @@ export function getRootModelName(config: string): string | undefined {
   return unwrapTomlString(parseRootKeyValues(config).get("model"));
 }
 
+const ROOT_TABLE_HEADER_PATTERN = /^\s*\[\[?[^\]]+\]?\]\s*$/;
+const ROOT_KEY_ASSIGNMENT_PATTERN = /^\s*([A-Za-z0-9_-]+)\s*=\s*(.*)$/;
+
+type RootLevelEntry = {
+  key?: string;
+  lines: string[];
+};
+
+function parseStandaloneToml(snippet: string): boolean {
+  try {
+    TOML.parse(snippet);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function splitRootLevelEntries(config: string): {
+  entries: RootLevelEntry[];
+  remainder: string[];
+} {
+  const lines = config.split(/\r?\n/);
+  const entries: RootLevelEntry[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (ROOT_TABLE_HEADER_PATTERN.test(line)) break;
+
+    const match = line.match(ROOT_KEY_ASSIGNMENT_PATTERN);
+    if (!match) {
+      entries.push({ lines: [line] });
+      index += 1;
+      continue;
+    }
+
+    const entryLines = [line];
+    while (
+      !parseStandaloneToml(entryLines.join("\n")) &&
+      index + entryLines.length < lines.length
+    ) {
+      entryLines.push(lines[index + entryLines.length]);
+    }
+
+    entries.push({ key: match[1], lines: entryLines });
+    index += entryLines.length;
+  }
+
+  return { entries, remainder: lines.slice(index) };
+}
+
 function parseRootKeyValues(config: string): Map<string, string> {
   const values = new Map<string, string>();
-  const lines = config.split(/\r?\n/);
-  for (const line of lines) {
-    if (/^\s*\[/.test(line)) break;
-    const match = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*(.+?)\s*$/);
+  const { entries } = splitRootLevelEntries(config);
+
+  for (const entry of entries) {
+    if (!entry.key) continue;
+    const [firstLine, ...rest] = entry.lines;
+    const match = firstLine.match(ROOT_KEY_ASSIGNMENT_PATTERN);
     if (!match) continue;
-    values.set(match[1], match[2]);
+    const value = [match[2], ...rest].join("\n").trim();
+    values.set(entry.key, value);
   }
+
   return values;
 }
 
@@ -85,8 +269,8 @@ function getOmxTopLevelLines(
   const lines = [
     "# oh-my-codex top-level settings (must be before any [table])",
     `notify = ["node", "${escapedPath}"]`,
-    'model_reasoning_effort = "high"',
-    `developer_instructions = "You have oh-my-codex installed. AGENTS.md is your orchestration brain and the main orchestration surface. Use skill/keyword routing like $name plus spawned role-specialized subagents for specialized work. Codex native subagents are available via .codex/agents and may be used for independent parallel subtasks within a single session or team pane. Skills are loaded from installed SKILL.md files under .codex/skills, not from native agent TOMLs. Use workflow skills via $name when explicitly invoked or clearly routed by AGENTS.md. Treat installed prompts as narrower internal execution surfaces under AGENTS.md authority, even when user-facing docs prefer $name keywords."`,
+    'model_reasoning_effort = "medium"',
+    `developer_instructions = "${escapeTomlString(OMX_DEVELOPER_INSTRUCTIONS)}"`,
   ];
 
   const existingModel = rootValues.get("model");
@@ -99,47 +283,115 @@ function getOmxTopLevelLines(
     lines.push(`model = "${selectedModel}"`);
   }
 
-  if (
-    selectedModel === DEFAULT_SETUP_MODEL &&
-    !existingContextWindow &&
-    !existingAutoCompact
-  ) {
-    lines.push(`model_context_window = ${DEFAULT_SETUP_MODEL_CONTEXT_WINDOW}`);
-    lines.push(
-      `model_auto_compact_token_limit = ${DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT}`,
-    );
+  if (selectedModel === DEFAULT_SETUP_MODEL) {
+    const seededBehavioralDefaults: string[] = [];
+    if (!existingContextWindow) {
+      seededBehavioralDefaults.push(
+        `model_context_window = ${DEFAULT_SETUP_MODEL_CONTEXT_WINDOW}`,
+      );
+    }
+    if (!existingAutoCompact) {
+      seededBehavioralDefaults.push(
+        `model_auto_compact_token_limit = ${DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT}`,
+      );
+    }
+    if (seededBehavioralDefaults.length > 0) {
+      lines.push(OMX_SEEDED_BEHAVIORAL_DEFAULTS_START_MARKER);
+      lines.push(...seededBehavioralDefaults);
+      lines.push(OMX_SEEDED_BEHAVIORAL_DEFAULTS_END_MARKER);
+    }
   }
 
   return lines;
 }
 
-function stripRootLevelKeys(config: string, keys: readonly string[]): string {
-  let lines = config.split(/\r?\n/);
+function isUnchangedOmxSeededBehavioralDefaultsBlock(lines: string[]): boolean {
+  const relevant = lines.filter((line) => {
+    const trimmed = line.trim();
+    return trimmed.length > 0 && !trimmed.startsWith("#");
+  });
+  if (relevant.length !== 2) return false;
 
-  if (
-    keys.some((key) =>
-      OMX_TOP_LEVEL_KEYS.includes(key as (typeof OMX_TOP_LEVEL_KEYS)[number]),
-    )
-  ) {
-    lines = lines.filter(
-      (l) =>
-        l.trim() !==
-        "# oh-my-codex top-level settings (must be before any [table])",
-    );
+  const parsed = parseRootKeyValues(relevant.join("\n"));
+  return (
+    parsed.size === 2 &&
+    parsed.get("model_context_window") ===
+      String(DEFAULT_SETUP_MODEL_CONTEXT_WINDOW) &&
+    parsed.get("model_auto_compact_token_limit") ===
+      String(DEFAULT_SETUP_MODEL_AUTO_COMPACT_TOKEN_LIMIT)
+  );
+}
+
+export function stripOmxSeededBehavioralDefaults(config: string): string {
+  const lines = config.split(/\r?\n/);
+  const firstTable = lines.findIndex((line) => /^\s*\[/.test(line));
+  const boundary = firstTable >= 0 ? firstTable : lines.length;
+  const result: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+
+    if (
+      index < boundary &&
+      trimmed === OMX_SEEDED_BEHAVIORAL_DEFAULTS_START_MARKER
+    ) {
+      const endIndex = lines.findIndex(
+        (line, candidateIndex) =>
+          candidateIndex > index &&
+          candidateIndex < boundary &&
+          line.trim() === OMX_SEEDED_BEHAVIORAL_DEFAULTS_END_MARKER,
+      );
+
+      if (endIndex < 0) {
+        continue;
+      }
+
+      const blockLines = lines.slice(index + 1, endIndex);
+      if (!isUnchangedOmxSeededBehavioralDefaultsBlock(blockLines)) {
+        result.push(...blockLines);
+      }
+      index = endIndex;
+      continue;
+    }
+
+    if (
+      index < boundary &&
+      trimmed === OMX_SEEDED_BEHAVIORAL_DEFAULTS_END_MARKER
+    ) {
+      continue;
+    }
+
+    result.push(lines[index]);
   }
 
-  const firstTable = lines.findIndex((l) => /^\s*\[/.test(l));
-  const boundary = firstTable >= 0 ? firstTable : lines.length;
+  return result.join("\n");
+}
 
-  const result: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (i < boundary) {
-      const isManagedKey = keys.some((key) =>
-        new RegExp(`^\\s*${key}\\s*=`).test(lines[i]),
-      );
-      if (isManagedKey) continue;
+function stripRootLevelKeys(config: string, keys: readonly string[]): string {
+  const { entries, remainder } = splitRootLevelEntries(config);
+
+  const filteredEntries = entries.filter((entry) => {
+    if (
+      keys.some((key) =>
+        OMX_TOP_LEVEL_KEYS.includes(key as (typeof OMX_TOP_LEVEL_KEYS)[number]),
+      ) &&
+      entry.lines.length === 1 &&
+      entry.lines[0].trim() ===
+        "# oh-my-codex top-level settings (must be before any [table])"
+    ) {
+      return false;
     }
-    result.push(lines[i]);
+
+    return !entry.key || !keys.includes(entry.key);
+  });
+
+  const result = [
+    ...filteredEntries.flatMap((entry) => entry.lines),
+    ...remainder,
+  ];
+
+  if (result.length === 0) {
+    return "";
   }
 
   return result.join("\n");
@@ -181,6 +433,7 @@ function upsertFeatureFlags(config: string): string {
       "[features]",
       "multi_agent = true",
       "child_agents_md = true",
+      "codex_hooks = true",
       "",
     ].join("\n");
     if (base.length === 0) {
@@ -207,11 +460,14 @@ function upsertFeatureFlags(config: string): string {
 
   let multiAgentIdx = -1;
   let childAgentsIdx = -1;
+  let codexHooksIdx = -1;
   for (let i = featuresStart + 1; i < sectionEnd; i++) {
     if (/^\s*multi_agent\s*=/.test(lines[i])) {
       multiAgentIdx = i;
     } else if (/^\s*child_agents_md\s*=/.test(lines[i])) {
       childAgentsIdx = i;
+    } else if (/^\s*codex_hooks\s*=/.test(lines[i])) {
+      codexHooksIdx = i;
     }
   }
 
@@ -226,48 +482,233 @@ function upsertFeatureFlags(config: string): string {
     lines[childAgentsIdx] = "child_agents_md = true";
   } else {
     lines.splice(sectionEnd, 0, "child_agents_md = true");
+    sectionEnd += 1;
+  }
+
+  if (codexHooksIdx >= 0) {
+    lines[codexHooksIdx] = "codex_hooks = true";
+  } else {
+    lines.splice(sectionEnd, 0, "codex_hooks = true");
   }
 
   return lines.join("\n");
 }
 
-function upsertEnvSettings(config: string): string {
+export function upsertCodexHooksFeatureFlag(config: string): string {
   const lines = config.split(/\r?\n/);
-  const envStart = lines.findIndex((line) => /^\s*\[env\]\s*$/.test(line));
+  const featuresStart = lines.findIndex((line) =>
+    /^\s*\[features\]\s*$/.test(line),
+  );
 
-  if (envStart < 0) {
+  if (featuresStart < 0) {
     const base = config.trimEnd();
-    const envBlock = [
-      "[env]",
-      `${OMX_EXPLORE_CMD_ENV} = "${OMX_EXPLORE_ROUTING_DEFAULT}"`,
-      "",
-    ].join("\n");
-    if (base.length === 0) return envBlock;
-    return `${base}\n\n${envBlock}`;
+    const featureBlock = ["[features]", "codex_hooks = true", ""].join("\n");
+    if (base.length === 0) {
+      return featureBlock;
+    }
+    return `${base}\n${featureBlock}`;
   }
 
   let sectionEnd = lines.length;
-  for (let i = envStart + 1; i < lines.length; i++) {
+  for (let i = featuresStart + 1; i < lines.length; i++) {
     if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[i])) {
       sectionEnd = i;
       break;
     }
   }
 
-  let exploreRoutingIdx = -1;
-  for (let i = envStart + 1; i < sectionEnd; i++) {
-    if (new RegExp(`^\\s*${OMX_EXPLORE_CMD_ENV}\\s*=`).test(lines[i])) {
-      exploreRoutingIdx = i;
+  let codexHooksIdx = -1;
+  for (let i = featuresStart + 1; i < sectionEnd; i++) {
+    if (/^\s*codex_hooks\s*=/.test(lines[i])) {
+      codexHooksIdx = i;
       break;
     }
   }
 
-  if (exploreRoutingIdx < 0) {
+  if (codexHooksIdx >= 0) {
+    lines[codexHooksIdx] = "codex_hooks = true";
+  } else {
+    lines.splice(sectionEnd, 0, "codex_hooks = true");
+  }
+
+  return lines.join("\n");
+}
+
+interface TomlTableRange {
+  start: number;
+  end: number;
+}
+
+function findTomlTableRange(
+  lines: string[],
+  headerPattern: RegExp,
+): TomlTableRange | undefined {
+  const start = lines.findIndex((line) => headerPattern.test(line));
+  if (start < 0) return undefined;
+
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+
+  return { start, end };
+}
+
+function tomlAssignmentKey(line: string): string | undefined {
+  return line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/)?.[1];
+}
+
+interface TomlTableEntryRange {
+  key?: string;
+  start: number;
+  end: number;
+}
+
+function findTomlTableEntryRanges(
+  lines: string[],
+  start: number,
+  end: number,
+): TomlTableEntryRange[] {
+  const ranges: TomlTableEntryRange[] = [];
+  let index = start;
+
+  while (index < end) {
+    const key = tomlAssignmentKey(lines[index]);
+    if (key === undefined) {
+      ranges.push({ start: index, end: index + 1 });
+      index += 1;
+      continue;
+    }
+
+    let entryEnd = index + 1;
+    while (
+      !parseStandaloneToml(lines.slice(index, entryEnd).join("\n")) &&
+      entryEnd < end
+    ) {
+      entryEnd += 1;
+    }
+
+    ranges.push({ key, start: index, end: entryEnd });
+    index = entryEnd;
+  }
+
+  return ranges;
+}
+
+function collectTomlTableKeyEntries(
+  lines: string[],
+  range: TomlTableRange,
+): { key: string; lines: string[] }[] {
+  return findTomlTableEntryRanges(lines, range.start + 1, range.end)
+    .filter(
+      (
+        entry,
+      ): entry is TomlTableEntryRange & { key: string } =>
+        entry.key !== undefined,
+    )
+    .map((entry) => ({
+      key: entry.key,
+      lines: lines.slice(entry.start, entry.end),
+    }));
+}
+
+function stripTomlTableKey(
+  lines: string[],
+  headerPattern: RegExp,
+  keyName: string,
+): string[] {
+  const range = findTomlTableRange(lines, headerPattern);
+  if (!range) return lines;
+
+  const filtered = [...lines];
+  const entries = findTomlTableEntryRanges(
+    filtered,
+    range.start + 1,
+    range.end,
+  );
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.key === keyName) {
+      filtered.splice(entry.start, entry.end - entry.start);
+    }
+  }
+
+  const newRange = findTomlTableRange(filtered, headerPattern);
+  if (!newRange) return filtered;
+
+  const sectionContent = filtered.slice(newRange.start + 1, newRange.end);
+  if (sectionContent.every((line) => line.trim() === "")) {
+    filtered.splice(newRange.start, newRange.end - newRange.start);
+  }
+
+  return filtered;
+}
+
+function upsertEnvSettings(config: string): string {
+  const lines = config.split(/\r?\n/);
+  const legacyEnvRange = findTomlTableRange(lines, /^\s*\[env\]\s*$/);
+  const legacyEnvEntries =
+    legacyEnvRange === undefined
+      ? []
+      : collectTomlTableKeyEntries(lines, legacyEnvRange);
+
+  if (legacyEnvRange !== undefined) {
     lines.splice(
-      sectionEnd,
-      0,
+      legacyEnvRange.start,
+      legacyEnvRange.end - legacyEnvRange.start,
+    );
+  }
+
+  const shellEnvSetRange = findTomlTableRange(
+    lines,
+    /^\s*\[shell_environment_policy\.set\]\s*$/,
+  );
+  if (shellEnvSetRange === undefined) {
+    const base = lines.join("\n").trimEnd();
+    const envLines = legacyEnvEntries.flatMap((entry) => entry.lines);
+    if (
+      legacyEnvEntries.every(
+        (entry) => entry.key !== OMX_EXPLORE_CMD_ENV,
+      )
+    ) {
+      envLines.push(
+        `${OMX_EXPLORE_CMD_ENV} = "${OMX_EXPLORE_ROUTING_DEFAULT}"`,
+      );
+    }
+    const envBlock = [
+      "[shell_environment_policy.set]",
+      ...envLines,
+      "",
+    ].join("\n");
+    if (base.length === 0) return envBlock;
+    return `${base}\n\n${envBlock}`;
+  }
+
+  const shellEnvKeys = new Set<string>();
+  for (let i = shellEnvSetRange.start + 1; i < shellEnvSetRange.end; i++) {
+    const key = tomlAssignmentKey(lines[i]);
+    if (key !== undefined) shellEnvKeys.add(key);
+  }
+
+  const linesToInsert: string[] = [];
+  for (const entry of legacyEnvEntries) {
+    if (!shellEnvKeys.has(entry.key)) {
+      linesToInsert.push(...entry.lines);
+      shellEnvKeys.add(entry.key);
+    }
+  }
+
+  if (!shellEnvKeys.has(OMX_EXPLORE_CMD_ENV)) {
+    linesToInsert.push(
       `${OMX_EXPLORE_CMD_ENV} = "${OMX_EXPLORE_ROUTING_DEFAULT}"`,
     );
+  }
+
+  if (linesToInsert.length > 0) {
+    lines.splice(shellEnvSetRange.end, 0, ...linesToInsert);
   }
 
   return lines.join("\n");
@@ -340,7 +781,7 @@ export function stripOmxFeatureFlags(config: string): string {
     }
   }
 
-  const omxFlags = ["multi_agent", "child_agents_md", "collab"];
+  const omxFlags = ["multi_agent", "child_agents_md", "codex_hooks", "collab"];
   const filtered: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (i > featuresStart && i < sectionEnd) {
@@ -374,46 +815,14 @@ export function stripOmxFeatureFlags(config: string): string {
 }
 
 export function stripOmxEnvSettings(config: string): string {
-  const lines = config.split(/\r?\n/);
-  const envStart = lines.findIndex((line) => /^\s*\[env\]\s*$/.test(line));
-
-  if (envStart < 0) return config;
-
-  let sectionEnd = lines.length;
-  for (let i = envStart + 1; i < lines.length; i++) {
-    if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[i])) {
-      sectionEnd = i;
-      break;
-    }
-  }
-
-  const filtered: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (i > envStart && i < sectionEnd) {
-      const isOmxEnvKey = new RegExp(
-        `^\\s*${OMX_EXPLORE_CMD_ENV}\\s*=`,
-      ).test(lines[i]);
-      if (isOmxEnvKey) continue;
-    }
-    filtered.push(lines[i]);
-  }
-
-  const newEnvStart = filtered.findIndex((line) => /^\s*\[env\]\s*$/.test(line));
-  if (newEnvStart >= 0) {
-    let newSectionEnd = filtered.length;
-    for (let i = newEnvStart + 1; i < filtered.length; i++) {
-      if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(filtered[i])) {
-        newSectionEnd = i;
-        break;
-      }
-    }
-    const envContent = filtered.slice(newEnvStart + 1, newSectionEnd);
-    if (envContent.every((line) => line.trim() === "")) {
-      filtered.splice(newEnvStart, newSectionEnd - newEnvStart);
-    }
-  }
-
-  return filtered.join("\n");
+  let lines = config.split(/\r?\n/);
+  lines = stripTomlTableKey(lines, /^\s*\[env\]\s*$/, OMX_EXPLORE_CMD_ENV);
+  lines = stripTomlTableKey(
+    lines,
+    /^\s*\[shell_environment_policy\.set\]\s*$/,
+    OMX_EXPLORE_CMD_ENV,
+  );
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -483,7 +892,72 @@ function stripOrphanedOmxSections(config: string): string {
   return result.join("\n");
 }
 
-function upsertTuiStatusLine(config: string): {
+function extractCustomizedTuiSectionsFromOmxBlocks(config: string): string[] {
+  const sections: string[] = [];
+  let searchStart = 0;
+
+  while (true) {
+    const markerIdx = config.indexOf(OMX_CONFIG_MARKER, searchStart);
+    if (markerIdx < 0) break;
+
+    const endIdx = config.indexOf(OMX_CONFIG_END_MARKER, markerIdx);
+    if (endIdx < 0) break;
+
+    const blockLines = config.slice(markerIdx, endIdx).split(/\r?\n/);
+
+    for (let i = 0; i < blockLines.length; i++) {
+      if (!/^\s*\[tui\]\s*$/.test(blockLines[i])) continue;
+
+      const tuiLines = [blockLines[i].trim()];
+      let hasCustomizedStatusLine = false;
+      let lastNonBlankBeforeStatusLine: string | undefined;
+
+      for (let j = i + 1; j < blockLines.length; j++) {
+        if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(blockLines[j])) break;
+
+        const trimmed = blockLines[j].trim();
+        if (!trimmed) continue;
+
+        tuiLines.push(trimmed);
+        if (/^status_line\s*=/.test(trimmed)) {
+          // OMX-managed when:
+          //   1. Preceded by the managed-status-line marker AND the value is
+          //      a known OMX preset literal (post-marker installs). If the
+          //      marker is present but the value isn't a preset, the user
+          //      edited the value and left the marker — treat as customized.
+          //   2. No marker but the value byte-matches the legacy seven-field
+          //      default (pre-marker installs only ever shipped focused).
+          // Anything else inside an OMX-marker block is treated as a user
+          // customization and preserved across rebuild.
+          const hasMarker =
+            lastNonBlankBeforeStatusLine === OMX_MANAGED_STATUS_LINE_MARKER;
+          const matchesPreset = OMX_PRESET_STATUS_LINE_VALUES.has(trimmed);
+          const isManagedByMarker = hasMarker && matchesPreset;
+          const isManagedByLegacyValue =
+            !hasMarker && trimmed === LEGACY_OMX_STATUS_LINE;
+          if (!isManagedByMarker && !isManagedByLegacyValue) {
+            hasCustomizedStatusLine = true;
+          }
+        }
+        lastNonBlankBeforeStatusLine = trimmed;
+      }
+
+      if (hasCustomizedStatusLine) {
+        sections.push(tuiLines.join("\n"));
+      }
+    }
+
+    searchStart = endIdx + OMX_CONFIG_END_MARKER.length;
+  }
+
+  return sections;
+}
+
+function upsertTuiStatusLine(
+  config: string,
+  preset: HudPreset = DEFAULT_STATUS_LINE_PRESET,
+  options: { forceStatusLinePreset?: boolean } = {},
+): {
   cleaned: string;
   hadExistingTui: boolean;
 } {
@@ -510,24 +984,74 @@ function upsertTuiStatusLine(config: string): {
 
   const preservedKeyLines: string[] = [];
   const seenKeys = new Set<string>();
+  let preservedStatusLine: string | undefined;
 
   for (const section of sections) {
+    let lastNonBlankBeforeStatusLine: string | undefined;
+
     for (let i = section.start + 1; i < section.end; i++) {
       const line = lines[i];
       const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
+      if (!trimmed) continue;
+      if (trimmed.startsWith("#")) {
+        lastNonBlankBeforeStatusLine = trimmed;
+        continue;
+      }
 
       const keyMatch = trimmed.match(/^([A-Za-z0-9_-]+)\s*=/);
-      if (!keyMatch) continue;
+      if (!keyMatch) {
+        lastNonBlankBeforeStatusLine = trimmed;
+        continue;
+      }
 
       const key = keyMatch[1];
-      if (key === "status_line" || seenKeys.has(key)) continue;
+      if (key === "status_line") {
+        const entryLines = [trimmed];
+        while (
+          !parseStandaloneToml(entryLines.join("\n")) &&
+          i + 1 < section.end
+        ) {
+          i += 1;
+          entryLines.push(lines[i].trim());
+        }
+        const statusLineEntry = entryLines.join("\n");
+        const hasMarker =
+          lastNonBlankBeforeStatusLine === OMX_MANAGED_STATUS_LINE_MARKER;
+        const isManagedByMarker =
+          hasMarker && OMX_PRESET_STATUS_LINE_VALUES.has(statusLineEntry);
+        const isManagedByLegacyValue =
+          !hasMarker && statusLineEntry === LEGACY_OMX_STATUS_LINE;
+        const isOmxManagedStatusLine =
+          isManagedByMarker || isManagedByLegacyValue;
+
+        if (!options.forceStatusLinePreset || !isOmxManagedStatusLine) {
+          preservedStatusLine ??= statusLineEntry;
+        }
+        lastNonBlankBeforeStatusLine = statusLineEntry;
+        continue;
+      }
+      if (seenKeys.has(key)) {
+        lastNonBlankBeforeStatusLine = trimmed;
+        continue;
+      }
       seenKeys.add(key);
       preservedKeyLines.push(trimmed);
+      lastNonBlankBeforeStatusLine = trimmed;
     }
   }
 
-  const mergedSection = ["[tui]", ...preservedKeyLines, OMX_TUI_STATUS_LINE];
+  // When OMX is supplying the status_line (no user-preserved value),
+  // emit the managed-status-line marker comment alongside it so the
+  // customized-section detector can unambiguously tell our writes apart
+  // from a user edit on the next merge.
+  const mergedSection = preservedStatusLine
+    ? ["[tui]", ...preservedKeyLines, preservedStatusLine]
+    : [
+        "[tui]",
+        ...preservedKeyLines,
+        OMX_MANAGED_STATUS_LINE_MARKER,
+        statusLineForPreset(preset),
+      ];
   const firstStart = sections[0].start;
   const rebuilt: string[] = [];
 
@@ -562,13 +1086,11 @@ export function stripExistingOmxBlocks(config: string): {
   cleaned: string;
   removed: number;
 } {
-  const marker = "oh-my-codex (OMX) Configuration";
-  const endMarker = "# End oh-my-codex";
   let cleaned = config;
   let removed = 0;
 
   while (true) {
-    const markerIdx = cleaned.indexOf(marker);
+    const markerIdx = cleaned.indexOf(OMX_CONFIG_MARKER);
     if (markerIdx < 0) break;
 
     let blockStart = cleaned.lastIndexOf("\n", markerIdx);
@@ -587,7 +1109,7 @@ export function stripExistingOmxBlocks(config: string): {
     }
 
     let blockEnd = cleaned.length;
-    const endIdx = cleaned.indexOf(endMarker, markerIdx);
+    const endIdx = cleaned.indexOf(OMX_CONFIG_END_MARKER, markerIdx);
     if (endIdx >= 0) {
       const endLineBreak = cleaned.indexOf("\n", endIdx);
       blockEnd = endLineBreak >= 0 ? endLineBreak + 1 : cleaned.length;
@@ -659,6 +1181,118 @@ function configHasMcpServer(config: string, name: string): boolean {
   return new RegExp(`^\\s*\\[${tableName}\\]\\s*$`, "m").test(config);
 }
 
+function launcherCommandBasename(command: string): string {
+  return (
+    command.replace(/\\/g, "/").trim().split("/").pop()?.toLowerCase() ?? ""
+  );
+}
+
+function isLauncherBackedMcpCommand(
+  command: string,
+  args: readonly string[],
+): boolean {
+  const base = launcherCommandBasename(command);
+  if (base === "npx" || base === "uvx") {
+    return true;
+  }
+
+  return base === "npm" && args[0]?.toLowerCase() === "exec";
+}
+
+interface LauncherTimeoutRepairTarget {
+  insertAt: number;
+}
+
+function findLauncherTimeoutRepairTargets(
+  config: string,
+): LauncherTimeoutRepairTarget[] {
+  const lines = config.split(/\r?\n/);
+  const targets: LauncherTimeoutRepairTarget[] = [];
+
+  for (let start = 0; start < lines.length; start += 1) {
+    const isMcpSection = /^\s*\[mcp_servers\./.test(lines[start] ?? "");
+    if (!isMcpSection) continue;
+
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i += 1) {
+      if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[i] ?? "")) {
+        end = i;
+        break;
+      }
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = TOML.parse(lines.slice(start, end).join("\n"));
+    } catch {
+      start = end - 1;
+      continue;
+    }
+
+    const mcpServers = (parsed as { mcp_servers?: Record<string, unknown> })
+      .mcp_servers;
+    const [name, value] = Object.entries(mcpServers ?? {})[0] ?? [];
+    if (
+      !name ||
+      name.startsWith("omx_") ||
+      typeof value !== "object" ||
+      !value
+    ) {
+      start = end - 1;
+      continue;
+    }
+
+    const section = value as Record<string, unknown>;
+    const command =
+      typeof section.command === "string" ? section.command : undefined;
+    const args =
+      Array.isArray(section.args) &&
+      section.args.every((item) => typeof item === "string")
+        ? (section.args as string[])
+        : [];
+    const hasStartupTimeout =
+      (typeof section.startup_timeout_sec === "number" &&
+        Number.isFinite(section.startup_timeout_sec)) ||
+      (typeof section.startupTimeoutSec === "number" &&
+        Number.isFinite(section.startupTimeoutSec));
+
+    if (
+      !command ||
+      hasStartupTimeout ||
+      !isLauncherBackedMcpCommand(command, args)
+    ) {
+      start = end - 1;
+      continue;
+    }
+
+    let insertAt = end;
+    while (insertAt > start + 1 && (lines[insertAt - 1] ?? "").trim() === "") {
+      insertAt -= 1;
+    }
+
+    targets.push({ insertAt });
+    start = end - 1;
+  }
+
+  return targets;
+}
+
+function addDefaultLauncherMcpStartupTimeouts(config: string): string {
+  const targets = findLauncherTimeoutRepairTargets(config);
+  if (targets.length === 0) return config;
+
+  const lines = config.split(/\r?\n/);
+  for (const target of [...targets].reverse()) {
+    lines.splice(
+      target.insertAt,
+      0,
+      `startup_timeout_sec = ${DEFAULT_LAUNCHER_MCP_STARTUP_TIMEOUT_SEC}`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
 function getSharedMcpRegistryBlock(
   servers: UnifiedMcpRegistryServer[],
   sourcePath: string | undefined,
@@ -708,77 +1342,51 @@ function getSharedMcpRegistryBlock(
  * OMX table-section block (MCP servers, TUI).
  * Contains ONLY [table] sections — no bare keys.
  */
-function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
-  const stateServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "state-server.js"),
-  );
-  const memoryServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "memory-server.js"),
-  );
-  const codeIntelServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "code-intel-server.js"),
-  );
-  const traceServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "trace-server.js"),
-  );
-  const teamServerPath = escapeTomlString(
-    join(pkgRoot, "dist", "mcp", "team-server.js"),
-  );
-
-  return [
+function getOmxTablesBlock(
+  pkgRoot: string,
+  includeTui = true,
+  statusLinePreset: HudPreset = DEFAULT_STATUS_LINE_PRESET,
+): string {
+  const lines = [
     "",
     "# ============================================================",
     "# oh-my-codex (OMX) Configuration",
     "# Managed by omx setup - manual edits preserved on next setup",
     "# ============================================================",
-    "",
-    "# OMX State Management MCP Server",
-    "[mcp_servers.omx_state]",
-    'command = "node"',
-    `args = ["${stateServerPath}"]`,
-    "enabled = true",
-    "startup_timeout_sec = 5",
-    "",
-    "# OMX Project Memory MCP Server",
-    "[mcp_servers.omx_memory]",
-    'command = "node"',
-    `args = ["${memoryServerPath}"]`,
-    "enabled = true",
-    "startup_timeout_sec = 5",
-    "",
-    "# OMX Code Intelligence MCP Server (LSP diagnostics, AST search)",
-    "[mcp_servers.omx_code_intel]",
-    'command = "node"',
-    `args = ["${codeIntelServerPath}"]`,
-    "enabled = true",
-    "startup_timeout_sec = 10",
-    "",
-    "# OMX Trace MCP Server (agent flow timeline & statistics)",
-    "[mcp_servers.omx_trace]",
-    'command = "node"',
-    `args = ["${traceServerPath}"]`,
-    "enabled = true",
-    "startup_timeout_sec = 5",
-    "",
-    "# OMX Team MCP Server (team job lifecycle: start, status, wait, cleanup)",
-    "[mcp_servers.omx_team_run]",
-    'command = "node"',
-    `args = ["${teamServerPath}"]`,
-    "enabled = true",
-    "startup_timeout_sec = 5",
+  ];
+
+  for (const server of getOmxFirstPartySetupMcpServers(pkgRoot)) {
+    lines.push("");
+    lines.push(server.title);
+    lines.push(`[mcp_servers.${server.name}]`);
+    lines.push('command = "node"');
+    lines.push(
+      `args = [${server.args
+        .map((arg) => `"${escapeTomlString(arg)}"`)
+        .join(", ")}]`,
+    );
+    lines.push(`enabled = ${server.enabled ? "true" : "false"}`);
+    if (typeof server.startupTimeoutSec === "number") {
+      lines.push(`startup_timeout_sec = ${server.startupTimeoutSec}`);
+    }
+  }
+
+  lines.push(
     ...(includeTui
       ? [
           "",
           "# OMX TUI StatusLine (Codex CLI v0.101.0+)",
           "[tui]",
-          OMX_TUI_STATUS_LINE,
+          OMX_MANAGED_STATUS_LINE_MARKER,
+          statusLineForPreset(statusLinePreset),
           "",
         ]
-      : []),
-    "# ============================================================",
-    "# End oh-my-codex",
-    "",
-  ].join("\n");
+      : [""]),
+  );
+  lines.push("# ============================================================");
+  lines.push("# End oh-my-codex");
+  lines.push("");
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -792,7 +1400,7 @@ function getOmxTablesBlock(pkgRoot: string, includeTui = true): string {
  * Layout:
  *   1. OMX top-level keys (notify, model_reasoning_effort, developer_instructions)
  *   2. [features] with multi_agent + child_agents_md
- *   3. [env] with defaulted explore-routing opt-in
+ *   3. [shell_environment_policy.set] with defaulted explore-routing opt-in
  *   4. … user sections …
  *   5. OMX [table] sections (mcp_servers, tui)
  */
@@ -803,10 +1411,17 @@ export function buildMergedConfig(
 ): string {
   let existing = existingConfig;
   const includeTui = options.includeTui !== false;
+  const statusLinePreset =
+    options.statusLinePreset ?? DEFAULT_STATUS_LINE_PRESET;
+  const customizedManagedTuiSections =
+    extractCustomizedTuiSectionsFromOmxBlocks(existing);
 
-  if (existing.includes("oh-my-codex (OMX) Configuration")) {
+  if (existing.includes(OMX_CONFIG_MARKER)) {
     const stripped = stripExistingOmxBlocks(existing);
     existing = stripped.cleaned;
+    if (customizedManagedTuiSections.length > 0) {
+      existing = `${existing.trimEnd()}\n\n${customizedManagedTuiSections.join("\n\n")}\n`;
+    }
   }
   if (existing.includes(SHARED_MCP_REGISTRY_MARKER)) {
     const stripped = stripExistingSharedMcpRegistryBlock(existing);
@@ -823,7 +1438,9 @@ export function buildMergedConfig(
   existing = upsertEnvSettings(existing);
   existing = upsertAgentsSettings(existing);
   const tuiUpsert = includeTui
-    ? upsertTuiStatusLine(existing)
+    ? upsertTuiStatusLine(existing, statusLinePreset, {
+        forceStatusLinePreset: options.forceStatusLinePreset,
+      })
     : { cleaned: existing, hadExistingTui: false };
   existing = tuiUpsert.cleaned;
 
@@ -835,6 +1452,7 @@ export function buildMergedConfig(
   const tablesBlock = getOmxTablesBlock(
     pkgRoot,
     includeTui && !tuiUpsert.hadExistingTui,
+    statusLinePreset,
   );
   const sharedRegistryBlock = getSharedMcpRegistryBlock(
     options.sharedMcpServers ?? [],
@@ -847,15 +1465,19 @@ export function buildMergedConfig(
     body = body ? `${body}\n\n${sharedRegistryBlock}` : sharedRegistryBlock;
   }
 
-  return topLines.join("\n") + "\n\n" + body + "\n" + tablesBlock;
+  return addDefaultLauncherMcpStartupTimeouts(
+    topLines.join("\n") + "\n\n" + body + "\n" + tablesBlock,
+  );
 }
 
 /**
- * Detect and repair duplicate TOML table headers (e.g. [tui]) in config.toml.
+ * Detect and repair upgrade-era managed config incompatibilities in config.toml.
  *
  * After an omx version upgrade the OLD setup code (still loaded in memory)
- * may write a config with duplicate [tui] sections.  The Codex CLI TOML
- * parser rejects duplicates, so we must fix them before the CLI is spawned.
+ * may leave a config with duplicate [tui] sections or the retired
+ * [mcp_servers.omx_team_run] table. Codex rejects duplicate tables and newer
+ * OMX builds no longer ship the team MCP entrypoint, so we repair both before
+ * the CLI is spawned.
  *
  * Returns `true` if a repair was performed.
  */
@@ -868,10 +1490,15 @@ export async function repairConfigIfNeeded(
 
   const content = await readFile(configPath, "utf-8");
   const tuiCount = (content.match(/^\s*\[tui\]\s*$/gm) || []).length;
-  if (tuiCount <= 1) return false;
+  const hasLegacyTeamRunTable = hasLegacyOmxTeamRunTable(content);
+  const hasLauncherTimeoutGap =
+    findLauncherTimeoutRepairTargets(content).length > 0;
+  if (tuiCount <= 1 && !hasLegacyTeamRunTable && !hasLauncherTimeoutGap)
+    return false;
 
-  // Duplicate [tui] detected — run full merge to repair
+  // Managed config compatibility issue detected — run full merge to repair
   const repaired = buildMergedConfig(content, pkgRoot, options);
+  if (repaired === content) return false;
   await writeFile(configPath, repaired);
   return true;
 }

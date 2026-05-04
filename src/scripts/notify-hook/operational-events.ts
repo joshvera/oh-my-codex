@@ -1,6 +1,7 @@
 import { execFileSync } from 'child_process';
 import { basename, dirname } from 'path';
 import { safeString } from './utils.js';
+import { upsertCurrentTaskBaseline } from '../../team/current-task-baseline.js';
 
 const TEST_SEGMENT_PATTERNS = [
   /^npm\s+(?:run\s+)?test\b/i,
@@ -39,6 +40,7 @@ function gitValue(cwd: any, args: string[]): string {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 2000,
+      windowsHide: true,
     }).trim();
   } catch {
     return '';
@@ -69,8 +71,12 @@ function buildTmuxSessionName(cwd: any, sessionId: any): string {
   const branch = gitValue(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const branchToken = branch ? sanitizeTmuxToken(branch) : 'detached';
   const sessionToken = sanitizeTmuxToken(safeString(sessionId).replace(/^omx-/, ''));
-  const name = `omx-${dirToken}-${branchToken}-${sessionToken}`;
-  return name.length > 120 ? name.slice(0, 120) : name;
+  const prefix = `omx-${dirToken}-${branchToken}`;
+  const name = `${prefix}-${sessionToken}`;
+  if (name.length <= 120) return name;
+  const prefixBudget = Math.max(4, 120 - sessionToken.length - 1);
+  const trimmedPrefix = prefix.slice(0, prefixBudget).replace(/-+$/g, '');
+  return `${trimmedPrefix}-${sessionToken}`.slice(0, 120);
 }
 
 export function resolveOperationalSessionName(cwd: any, sessionId = '', sessionName = ''): string | undefined {
@@ -83,6 +89,7 @@ export function resolveOperationalSessionName(cwd: any, sessionId = '', sessionN
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'ignore'],
         timeout: 2000,
+        windowsHide: true,
       }).trim();
       if (tmuxSession) return tmuxSession;
     } catch {
@@ -209,6 +216,26 @@ export function buildOperationalContext({
     ...(prUrl !== undefined ? { pr_url: prUrl } : {}),
   };
   const resolvedSessionName = resolveOperationalSessionName(cwd, sessionId, sessionName);
+
+  if (repoMeta.repo_path && repoMeta.branch) {
+    try {
+      const lifecycleStatus = normalizedEvent === 'pr-merged'
+        ? 'merged'
+        : normalizedEvent === 'pr-closed'
+          ? 'closed'
+          : undefined;
+      upsertCurrentTaskBaseline(repoMeta.repo_path, {
+        branch_name: repoMeta.branch,
+        worktree_path: repoMeta.worktree_path,
+        issue_number: detectedIssue,
+        pr_number: detectedPrInfo.pr_number,
+        pr_url: detectedPrInfo.pr_url,
+        ...(lifecycleStatus ? { status: lifecycleStatus } : {}),
+      });
+    } catch {
+      // best effort only; operational context building must stay non-fatal
+    }
+  }
 
   return {
     normalized_event: normalizedEvent,

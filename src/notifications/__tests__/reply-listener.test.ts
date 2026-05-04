@@ -1,12 +1,13 @@
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, type spawnSync } from 'node:child_process';
 import type { ClientRequestArgs, IncomingMessage } from 'node:http';
 import { PassThrough } from 'node:stream';
 import {
   RateLimiter,
   captureReplyAcknowledgementSummary,
   formatReplyAcknowledgement,
+  redactSensitiveTokens,
   sanitizeReplyInput,
   isReplyListenerProcess,
   normalizeReplyListenerConfig,
@@ -16,6 +17,7 @@ import {
 } from '../reply-listener.js';
 import type { ReplyListenerDaemonConfig, ReplyListenerState } from '../reply-listener.js';
 import type { SessionMapping } from '../session-registry.js';
+import { NO_TRACKED_SESSION_MESSAGE } from '../session-status.js';
 
 function createBaseConfig(overrides: Partial<ReplyListenerDaemonConfig> = {}): ReplyListenerDaemonConfig {
   return {
@@ -195,8 +197,33 @@ describe('sanitizeReplyInput', () => {
 });
 
 describe('isReplyListenerProcess', () => {
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+
+  afterEach(() => {
+    if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+  });
+
   it('returns false for the current process (test runner has no daemon marker)', () => {
     assert.equal(isReplyListenerProcess(process.pid), false);
+  });
+
+  it('returns false on native Windows instead of shelling out to ps', (_, done) => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    const child = spawn(
+      process.execPath,
+      ['-e', 'const pollLoop = () => {}; setInterval(pollLoop, 60000);'],
+      { stdio: 'ignore' },
+    );
+    child.once('spawn', () => {
+      const pid = child.pid!;
+      const result = isReplyListenerProcess(pid);
+      child.kill();
+      assert.equal(result, false);
+      done();
+    });
+    child.once('error', (err) => {
+      done(err);
+    });
   });
 
   it('returns true for a process whose command line contains the daemon marker', (_, done) => {
@@ -237,6 +264,27 @@ describe('isReplyListenerProcess', () => {
 
   it('returns false for a non-existent PID', () => {
     assert.equal(isReplyListenerProcess(0), false);
+  });
+
+  it('returns false on Windows when ps is unavailable', () => {
+    const result = isReplyListenerProcess(123, {
+      platform: 'win32',
+      env: {
+        PATH: '',
+        PATHEXT: '.EXE;.CMD;.PS1',
+      },
+      spawnImpl: ((() => ({
+        pid: 0,
+        output: [null, '', ''],
+        stdout: '',
+        stderr: '',
+        status: null,
+        signal: null,
+        error: Object.assign(new Error('spawnSync ps ENOENT'), { code: 'ENOENT' }),
+      })) as unknown) as typeof spawnSync,
+    });
+
+    assert.equal(result, false);
   });
 });
 
@@ -336,7 +384,166 @@ describe('formatReplyAcknowledgement', () => {
   });
 });
 
+describe('redactSensitiveTokens', () => {
+  it('redacts OpenAI-style API keys', () => {
+    assert.equal(
+      redactSensitiveTokens('export OPENAI_API_KEY=sk-proj-abc123def456'),
+      'export OPENAI_API_KEY=[REDACTED]',
+    );
+  });
+
+  it('redacts GitHub PAT tokens', () => {
+    assert.equal(
+      redactSensitiveTokens('token: ghp_1234567890abcdefABCDEF'),
+      'token: [REDACTED]',
+    );
+  });
+
+  it('redacts generic key=value secrets', () => {
+    const result = redactSensitiveTokens('api_key=mysecretvalue123 other text');
+    assert.equal(result.includes('mysecretvalue123'), false);
+  });
+
+  it('redacts multi-part authorization header values', () => {
+    assert.equal(
+      redactSensitiveTokens('authorization: Bearer mysecrettoken'),
+      'authorization: [REDACTED]',
+    );
+  });
+
+  it('redacts quoted JSON secret fields', () => {
+    assert.equal(
+      redactSensitiveTokens('{"api_key":"mysecret","safe":true}'),
+      '{"api_key":"[REDACTED]","safe":true}',
+    );
+  });
+
+  it('preserves text without secrets', () => {
+    const input = 'npm run build\n33 tests passed\nno errors found';
+    assert.equal(redactSensitiveTokens(input), input);
+  });
+});
+
+describe('captureReplyAcknowledgementSummary redaction', () => {
+  it('redacts secrets from captured tmux output', () => {
+    const summary = captureReplyAcknowledgementSummary('%99', {
+      capturePaneContentImpl: () => 'export OPENAI_API_KEY=sk-proj-abc123\n$ codex chat',
+      parseTmuxTailImpl: (raw: string) => raw,
+    });
+    assert.ok(summary);
+    assert.equal(summary.includes('sk-proj-abc123'), false, 'API key must be redacted');
+    assert.ok(summary.includes('[REDACTED]'));
+  });
+});
+
 describe('pollDiscordOnce', () => {
+  it('treats exact-match status replies as read-only Discord session lookups', async () => {
+    resetReplyListenerTransientState();
+    const config = createBaseConfig();
+    const state = createBaseState();
+    const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+    let injectCalled = false;
+
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      fetchCalls.push({ url, init });
+      if (url.endsWith('/messages?limit=10')) {
+        return jsonResponse([
+          {
+            id: 'discord-status-1',
+            author: { id: 'discord-user-1' },
+            content: '  STATUS  ',
+            message_reference: { message_id: 'orig-discord-msg' },
+          },
+        ]);
+      }
+      if (url.endsWith('/messages')) {
+        return jsonResponse({ id: 'status-reply-1' });
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    };
+
+    await pollDiscordOnce(
+      config,
+      state,
+      new RateLimiter(10),
+      {
+        fetchImpl,
+        lookupByMessageIdImpl: () => createMapping('discord-bot'),
+        buildSessionStatusReplyImpl: async (mapping) => {
+          assert.equal(mapping.sessionId, 'session-1');
+          return 'Tracked OMX session status';
+        },
+        injectReplyImpl: () => {
+          injectCalled = true;
+          return true;
+        },
+      },
+    );
+
+    assert.equal(injectCalled, false);
+    assert.equal(state.messagesInjected, 0);
+    assert.equal(state.errors, 0);
+    assert.equal(state.discordLastMessageId, 'discord-status-1');
+    assert.equal(fetchCalls.length, 2);
+
+    const replyBody = JSON.parse(String(fetchCalls[1].init?.body));
+    assert.equal(replyBody.content, 'Tracked OMX session status');
+    assert.deepEqual(replyBody.message_reference, { message_id: 'discord-status-1' });
+    assert.deepEqual(replyBody.allowed_mentions, { parse: [] });
+  });
+
+  it('uses the latest correlated session when a Discord notification message id is reused', async () => {
+    resetReplyListenerTransientState();
+    const config = createBaseConfig();
+    const state = createBaseState();
+    const statusSessionIds: string[] = [];
+
+    await pollDiscordOnce(
+      config,
+      state,
+      new RateLimiter(10),
+      {
+        fetchImpl: async (input) => {
+          const url = String(input);
+          if (url.endsWith('/messages?limit=10')) {
+            return jsonResponse([
+              {
+                id: 'discord-status-reused-id',
+                author: { id: 'discord-user-1' },
+                content: 'status',
+                message_reference: { message_id: 'orig-discord-msg' },
+              },
+            ]);
+          }
+          if (url.endsWith('/messages')) {
+            return jsonResponse({ id: 'status-reply-reused-id' });
+          }
+          throw new Error(`Unexpected fetch url: ${url}`);
+        },
+        lookupByMessageIdImpl: () => ({
+          ...createMapping('discord-bot'),
+          messageId: 'orig-discord-msg',
+          sessionId: 'session-newer',
+          tmuxPaneId: '%10',
+          tmuxSessionName: 'latest-session',
+        }),
+        buildSessionStatusReplyImpl: async (mapping) => {
+          statusSessionIds.push(mapping.sessionId);
+          return `Tracked OMX session status\nSession: ${mapping.sessionId}`;
+        },
+        injectReplyImpl: () => {
+          throw new Error('injectReply should not run for exact-match status probes');
+        },
+      },
+    );
+
+    assert.deepEqual(statusSessionIds, ['session-newer']);
+    assert.equal(state.messagesInjected, 0);
+    assert.equal(state.errors, 0);
+    assert.equal(state.discordLastMessageId, 'discord-status-reused-id');
+  });
+
   it('injects authorized replies and posts a threaded acknowledgement with recent output', async () => {
     resetReplyListenerTransientState();
     const config = createBaseConfig({ discordMention: '<@123>' });
@@ -437,6 +644,87 @@ describe('pollDiscordOnce', () => {
     assert.equal(state.messagesInjected, 0);
     assert.equal(state.errors, 0);
     assert.equal(state.discordLastMessageId, 'discord-reply-2');
+  });
+
+  it('does not return status data for unauthorized status replies', async () => {
+    resetReplyListenerTransientState();
+    const state = createBaseState();
+    const fetchCalls: string[] = [];
+
+    await pollDiscordOnce(
+      createBaseConfig(),
+      state,
+      new RateLimiter(10),
+      {
+        fetchImpl: async (input) => {
+          fetchCalls.push(String(input));
+          return jsonResponse([
+            {
+              id: 'discord-reply-unauthorized-status',
+              author: { id: 'intruder' },
+              content: 'status',
+              message_reference: { message_id: 'orig-discord-msg' },
+            },
+          ]);
+        },
+        lookupByMessageIdImpl: () => {
+          throw new Error('lookup should not run for unauthorized status replies');
+        },
+        injectReplyImpl: () => {
+          throw new Error('injectReply should not run for unauthorized status replies');
+        },
+      },
+    );
+
+    assert.deepEqual(fetchCalls, ['https://discord.com/api/v10/channels/discord-channel/messages?limit=10']);
+    assert.equal(state.messagesInjected, 0);
+    assert.equal(state.errors, 0);
+    assert.equal(state.discordLastMessageId, 'discord-reply-unauthorized-status');
+  });
+
+  it('replies with a bounded failure when status has no tracked correlation and does not inject', async () => {
+    resetReplyListenerTransientState();
+    const state = createBaseState();
+    const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+    let injectCalled = false;
+
+    await pollDiscordOnce(
+      createBaseConfig(),
+      state,
+      new RateLimiter(10),
+      {
+        fetchImpl: async (input, init) => {
+          const url = String(input);
+          fetchCalls.push({ url, init });
+          if (url.endsWith('/messages?limit=10')) {
+            return jsonResponse([
+              {
+                id: 'discord-status-untracked',
+                author: { id: 'discord-user-1' },
+                content: 'status',
+                message_reference: { message_id: 'unknown-msg' },
+              },
+            ]);
+          }
+          if (url.endsWith('/messages')) {
+            return jsonResponse({ id: 'status-failure-reply' });
+          }
+          throw new Error(`Unexpected fetch url: ${url}`);
+        },
+        lookupByMessageIdImpl: () => null,
+        injectReplyImpl: () => {
+          injectCalled = true;
+          return true;
+        },
+      },
+    );
+
+    assert.equal(injectCalled, false);
+    assert.equal(state.messagesInjected, 0);
+    assert.equal(state.errors, 0);
+    assert.equal(fetchCalls.length, 2);
+    const replyBody = JSON.parse(String(fetchCalls[1].init?.body));
+    assert.equal(replyBody.content, NO_TRACKED_SESSION_MESSAGE);
   });
 
   it('drops mapped Discord replies when the rate limiter rejects them', async () => {

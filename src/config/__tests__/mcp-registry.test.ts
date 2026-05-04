@@ -27,7 +27,7 @@ describe("unified MCP registry loader", () => {
       await writeFile(
         omcPath,
         JSON.stringify({
-          gitnexus: { command: "gitnexus", args: ["mcp"] },
+          legacy_helper: { command: "legacy-helper", args: ["mcp"] },
         }),
       );
 
@@ -40,7 +40,7 @@ describe("unified MCP registry loader", () => {
     }
   });
 
-  it("falls back to ~/.omc/mcp-registry.json when ~/.omx registry is absent", async () => {
+  it("loads a legacy registry when it is passed explicitly as a candidate", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-mcp-registry-"));
     try {
       const omcPath = join(wd, ".omc", "mcp-registry.json");
@@ -48,14 +48,14 @@ describe("unified MCP registry loader", () => {
       await writeFile(
         omcPath,
         JSON.stringify({
-          gitnexus: { command: "gitnexus", args: ["mcp"], enabled: false },
+          legacy_helper: { command: "legacy-helper", args: ["mcp"], enabled: false },
         }),
       );
 
-      const result = await loadUnifiedMcpRegistry({ homeDir: wd });
+      const result = await loadUnifiedMcpRegistry({ candidates: [omcPath] });
       assert.equal(result.sourcePath, omcPath);
       assert.equal(result.servers.length, 1);
-      assert.equal(result.servers[0].name, "gitnexus");
+      assert.equal(result.servers[0].name, "legacy_helper");
       assert.equal(result.servers[0].enabled, false);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -87,12 +87,56 @@ describe("unified MCP registry loader", () => {
     }
   });
 
+  it("preserves string approval_mode values and warns on non-string ones", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-mcp-registry-"));
+    try {
+      const registryPath = join(wd, "registry.json");
+      await writeFile(
+        registryPath,
+        JSON.stringify({
+          eslint: {
+            command: "npx",
+            args: ["@eslint/mcp@latest"],
+            approval_mode: "never",
+          },
+          invalid_mode: {
+            command: "npx",
+            args: ["@example/mcp"],
+            approval_mode: 42,
+          },
+        }),
+      );
+
+      const result = await loadUnifiedMcpRegistry({
+        candidates: [registryPath],
+      });
+      assert.equal(result.servers.length, 2);
+      assert.deepEqual(result.servers[0], {
+        name: "eslint",
+        command: "npx",
+        args: ["@eslint/mcp@latest"],
+        enabled: true,
+        approval_mode: "never",
+        startupTimeoutSec: undefined,
+      });
+      assert.deepEqual(result.servers[1], {
+        name: "invalid_mode",
+        command: "npx",
+        args: ["@example/mcp"],
+        enabled: true,
+        startupTimeoutSec: undefined,
+      });
+      assert.deepEqual(result.warnings, [
+        'registry entry "invalid_mode" has non-string approval_mode; ignoring approval_mode',
+      ]);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("returns canonical home-based registry candidates", () => {
     const candidates = getUnifiedMcpRegistryCandidates("/tmp/home");
-    assert.deepEqual(candidates, [
-      "/tmp/home/.omx/mcp-registry.json",
-      "/tmp/home/.omc/mcp-registry.json",
-    ]);
+    assert.deepEqual(candidates, ["/tmp/home/.omx/mcp-registry.json"]);
   });
   it("plans Claude settings sync by adding only missing shared servers", () => {
     const plan = planClaudeCodeMcpSettingsSync(
@@ -100,8 +144,8 @@ describe("unified MCP registry loader", () => {
         {
           theme: "dark",
           mcpServers: {
-            gitnexus: {
-              command: "custom-gitnexus",
+            existing_server: {
+              command: "custom-existing-server",
               args: ["serve"],
               enabled: true,
             },
@@ -112,8 +156,8 @@ describe("unified MCP registry loader", () => {
       ),
       [
         {
-          name: "gitnexus",
-          command: "gitnexus",
+          name: "existing_server",
+          command: "existing-server",
           args: ["mcp"],
           enabled: true,
         },
@@ -128,16 +172,24 @@ describe("unified MCP registry loader", () => {
     );
 
     assert.deepEqual(plan.added, ["eslint"]);
-    assert.deepEqual(plan.unchanged, ["gitnexus"]);
+    assert.deepEqual(plan.unchanged, ["existing_server"]);
     assert.deepEqual(plan.warnings, []);
 
     const parsed = JSON.parse(plan.content ?? "{}") as {
       theme?: string;
-      mcpServers?: Record<string, { command: string; args: string[]; enabled: boolean }>;
+      mcpServers?: Record<
+        string,
+        {
+          command: string;
+          args: string[];
+          enabled: boolean;
+          approval_mode?: string;
+        }
+      >;
     };
     assert.equal(parsed.theme, "dark");
-    assert.deepEqual(parsed.mcpServers?.gitnexus, {
-      command: "custom-gitnexus",
+    assert.deepEqual(parsed.mcpServers?.existing_server, {
+      command: "custom-existing-server",
       args: ["serve"],
       enabled: true,
     });
@@ -145,6 +197,40 @@ describe("unified MCP registry loader", () => {
       command: "npx",
       args: ["@eslint/mcp@latest"],
       enabled: false,
+    });
+  });
+
+  it("includes approval_mode when adding missing Claude MCP servers", () => {
+    const plan = planClaudeCodeMcpSettingsSync(
+      JSON.stringify({ mcpServers: {} }, null, 2),
+      [
+        {
+          name: "eslint",
+          command: "npx",
+          args: ["@eslint/mcp@latest"],
+          enabled: false,
+          approval_mode: "never",
+        },
+      ],
+    );
+
+    const parsed = JSON.parse(plan.content ?? "{}") as {
+      mcpServers?: Record<
+        string,
+        {
+          command: string;
+          args: string[];
+          enabled: boolean;
+          approval_mode?: string;
+        }
+      >;
+    };
+
+    assert.deepEqual(parsed.mcpServers?.eslint, {
+      command: "npx",
+      args: ["@eslint/mcp@latest"],
+      enabled: false,
+      approval_mode: "never",
     });
   });
 

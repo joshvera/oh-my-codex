@@ -9,16 +9,24 @@ import {
   formatTmuxInfo,
   getTeamTmuxSessions,
   captureTmuxPane,
+  captureTmuxPaneWithLiveness,
+  sanitizeTmuxAlertText,
 } from '../tmux.js';
 
 describe('getCurrentTmuxSession', () => {
   const originalTmux = process.env.TMUX;
+  const originalPidFallback = process.env.OMX_TMUX_PID_FALLBACK;
 
   afterEach(() => {
     if (originalTmux !== undefined) {
       process.env.TMUX = originalTmux;
     } else {
       delete process.env.TMUX;
+    }
+    if (originalPidFallback !== undefined) {
+      process.env.OMX_TMUX_PID_FALLBACK = originalPidFallback;
+    } else {
+      delete process.env.OMX_TMUX_PID_FALLBACK;
     }
   });
 
@@ -27,11 +35,24 @@ describe('getCurrentTmuxSession', () => {
     const value = getCurrentTmuxSession();
     assert.ok(value === null || typeof value === 'string');
   });
+
+  it('skips ps-based pid fallback on native Windows', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    delete process.env.TMUX;
+    process.env.OMX_TMUX_PID_FALLBACK = '1';
+    try {
+      assert.equal(getCurrentTmuxSession(), null);
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+    }
+  });
 });
 
 describe('getCurrentTmuxPaneId', () => {
   const originalTmux = process.env.TMUX;
   const originalPane = process.env.TMUX_PANE;
+  const originalPidFallback = process.env.OMX_TMUX_PID_FALLBACK;
 
   afterEach(() => {
     if (originalTmux !== undefined) {
@@ -43,6 +64,11 @@ describe('getCurrentTmuxPaneId', () => {
       process.env.TMUX_PANE = originalPane;
     } else {
       delete process.env.TMUX_PANE;
+    }
+    if (originalPidFallback !== undefined) {
+      process.env.OMX_TMUX_PID_FALLBACK = originalPidFallback;
+    } else {
+      delete process.env.OMX_TMUX_PID_FALLBACK;
     }
   });
 
@@ -71,6 +97,19 @@ describe('getCurrentTmuxPaneId', () => {
     // Falls back to tmux command, which may or may not work
     const result = getCurrentTmuxPaneId();
     assert.ok(result === null || /^%\d+$/.test(result));
+  });
+
+  it('skips ps-based pid fallback on native Windows', () => {
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    delete process.env.TMUX;
+    delete process.env.TMUX_PANE;
+    process.env.OMX_TMUX_PID_FALLBACK = '1';
+    try {
+      assert.equal(getCurrentTmuxPaneId(), null);
+    } finally {
+      if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform);
+    }
   });
 });
 
@@ -189,6 +228,7 @@ describe('captureTmuxPane', () => {
   });
 
   it('captures output for valid pane id and sanitizes/clamps lines', () => {
+    const livePid = process.pid;
     const fakeBinDir = mkdtempSync(join(tmpdir(), 'omx-tmux-test-'));
     tmpDirs.push(fakeBinDir);
     const tmuxPath = join(fakeBinDir, 'tmux');
@@ -196,6 +236,10 @@ describe('captureTmuxPane', () => {
       tmuxPath,
       [
         '#!/bin/sh',
+        'if [ "$1" = "list-panes" ]; then',
+        `  printf "0 ${livePid}\\n"`,
+        '  exit 0',
+        'fi',
         'if [ "$1" != "capture-pane" ]; then exit 2; fi',
         'target=""',
         'lines=""',
@@ -214,5 +258,69 @@ describe('captureTmuxPane', () => {
     assert.equal(captureTmuxPane('%42', Number.NaN), 'capture:%42:-12');
     assert.equal(captureTmuxPane('%42', 0), 'capture:%42:-1');
     assert.equal(captureTmuxPane('%42', 999999), 'capture:%42:-2000');
+  });
+
+  it('suppresses capture when the target pane is already dead', () => {
+    const fakeBinDir = mkdtempSync(join(tmpdir(), 'omx-tmux-dead-pane-test-'));
+    tmpDirs.push(fakeBinDir);
+    const tmuxPath = join(fakeBinDir, 'tmux');
+    writeFileSync(
+      tmuxPath,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "list-panes" ]; then',
+        '  printf "1 99999\\n"',
+        '  exit 0',
+        'fi',
+        'if [ "$1" = "capture-pane" ]; then',
+        '  printf "stale pane output that should never be used\\n"',
+        '  exit 0',
+        'fi',
+        'exit 2',
+      ].join('\n'),
+    );
+    chmodSync(tmuxPath, 0o755);
+    process.env.PATH = `${fakeBinDir}:${originalPath ?? ''}`;
+
+    const result = captureTmuxPaneWithLiveness('%42', 12);
+    assert.equal(result.live, false);
+    assert.equal(result.content, null);
+    assert.equal(captureTmuxPane('%42', 12), null);
+  });
+});
+
+describe('sanitizeTmuxAlertText', () => {
+  it('drops metadata-only branch and HUD summary lines', () => {
+    const raw = [
+      'fix/issue-1525-post-stop-keyword-replay',
+      'fix/issue-1525-post-stop-keyword-replay | ralph:2/50 | turns:4 | session:1m | last:5s ago',
+      '[OMX#3] ultrawork active',
+    ].join('\n');
+
+    assert.equal(sanitizeTmuxAlertText(raw), undefined);
+  });
+
+  it('preserves real failure lines even when they resemble alert keywords', () => {
+    const raw = [
+      'fix/issue-1525-post-stop-keyword-replay | ralph:2/50 | turns:4 | session:1m | last:5s ago',
+      'stderr: Error: test suite failed',
+    ].join('\n');
+
+    assert.equal(sanitizeTmuxAlertText(raw), 'stderr: Error: test suite failed');
+  });
+
+  it('preserves ordinary runtime lines with separators', () => {
+    const raw = 'vitest summary | 12 passed | 1 failed';
+    assert.equal(sanitizeTmuxAlertText(raw), raw);
+  });
+
+  it('drops metadata-only branch lines even when the branch name contains failure-like words', () => {
+    const raw = 'feature/error-repro | ralph:2/50 | turns:4 | session:1m | last:5s ago';
+    assert.equal(sanitizeTmuxAlertText(raw), undefined);
+  });
+
+  it('preserves a branch line when it carries a real failure marker', () => {
+    const raw = 'feature/error-repro | stderr: TypeError: cannot read properties of undefined';
+    assert.equal(sanitizeTmuxAlertText(raw), raw);
   });
 });

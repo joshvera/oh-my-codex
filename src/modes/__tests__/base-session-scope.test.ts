@@ -27,6 +27,25 @@ describe('modes/base session-scoped persistence', () => {
     }
   });
 
+  it('persists owner_omx_session_id for Ralph when session scope is active', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-session-ralph-owner-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-ralph-owner';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+
+      await startMode('ralph', 'own this session', 5, wd);
+
+      const scoped = JSON.parse(await readFile(join(sessionDir, 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(scoped.owner_omx_session_id, sessionId);
+      assert.equal(scoped.active, true);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('prefers session-scoped reads over root fallback and writes updates back to the session scope', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-mode-session-read-'));
     try {
@@ -50,6 +69,37 @@ describe('modes/base session-scoped persistence', () => {
       assert.equal(scoped.iteration, 2);
       assert.equal(root.current_phase, 'root-only');
       assert.equal(root.iteration, 9);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('allows an explicit Ralph start to overwrite an inactive current-session Ralph file', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-session-ralph-restart-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const sessionId = 'sess-ralph-restart';
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({ session_id: sessionId }));
+      await writeFile(join(sessionDir, 'ralph-state.json'), JSON.stringify({
+        active: false,
+        iteration: 7,
+        max_iterations: 10,
+        current_phase: 'cancelled',
+        completed_at: '2026-02-22T00:10:00.000Z',
+      }));
+
+      await startMode('ralph', 'restart from current session', 5, wd);
+
+      const scoped = JSON.parse(await readFile(join(sessionDir, 'ralph-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(scoped.active, true);
+      assert.equal(scoped.mode, 'ralph');
+      assert.equal(scoped.iteration, 0);
+      assert.equal(scoped.max_iterations, 5);
+      assert.equal(scoped.current_phase, 'starting');
+      assert.equal(scoped.owner_omx_session_id, sessionId);
+      assert.equal(typeof scoped.completed_at, 'undefined');
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

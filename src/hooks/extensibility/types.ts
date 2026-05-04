@@ -3,12 +3,19 @@ export type HookEventSource = 'native' | 'derived';
 
 export type HookEventName =
   | 'session-start'
+  | 'stop'
   | 'session-end'
   | 'session-idle'
   | 'turn-complete'
   | 'blocked'
+  | 'run.heartbeat'
+  | 'run.blocked_on_user'
+  | 'run.blocked_on_system'
   | 'finished'
   | 'failed'
+  | 'worker.assigned'
+  | 'worker.stalled'
+  | 'worker.recovered'
   | 'retry-needed'
   | 'pr-created'
   | 'test-started'
@@ -77,6 +84,7 @@ export type HookPluginSendKeysResult = HookPluginTmuxSendKeysResult;
 
 export interface HookPluginOmxSessionState {
   session_id: string;
+  native_session_id?: string;
   started_at?: string;
   cwd?: string;
   pid?: number;

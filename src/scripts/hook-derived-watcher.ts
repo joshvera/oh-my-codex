@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { existsSync } from 'fs';
-import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'fs/promises';
+import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from 'fs/promises';
 import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
+import { StringDecoder } from 'string_decoder';
 import {
   buildOperationalContext,
   classifyExecCommand,
@@ -40,6 +41,7 @@ interface FileMeta {
   partial: string;
   dispatched: number;
   currentTurnId: string;
+  decoder: StringDecoder;
 }
 
 interface PendingCall {
@@ -60,6 +62,48 @@ let flushedOnShutdown = false;
 
 function safeString(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+function collectMessageTextFragments(value: unknown, fragments: string[]): void {
+  if (typeof value === 'string') {
+    if (value.trim() !== '') fragments.push(value);
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) collectMessageTextFragments(item, fragments);
+    return;
+  }
+
+  if (!value || typeof value !== 'object') return;
+
+  const record = value as Record<string, unknown>;
+  let usedPreferredField = false;
+  for (const key of ['text', 'message', 'content']) {
+    if (!(key in record)) continue;
+    usedPreferredField = true;
+    collectMessageTextFragments(record[key], fragments);
+  }
+  if (usedPreferredField) return;
+
+  for (const child of Object.values(record)) {
+    collectMessageTextFragments(child, fragments);
+  }
+}
+
+function extractMessageText(payload: Record<string, unknown>): string {
+  for (const candidate of [payload.text, payload.message, payload.content]) {
+    if (typeof candidate === 'string') {
+      if (candidate.trim() !== '') return candidate;
+      continue;
+    }
+
+    const fragments: string[] = [];
+    collectMessageTextFragments(candidate, fragments);
+    const text = fragments.join('\n').trim();
+    if (text) return text;
+  }
+  return '';
 }
 
 function derivedLog(entry: Record<string, unknown>): Promise<void> {
@@ -185,7 +229,7 @@ function inferDerivedEvent(parsed: Record<string, unknown> | null, meta: FileMet
   }
 
   if (payloadType === 'assistant_message') {
-    const message = safeString(payload.text || payload.message || payload.content);
+    const message = extractMessageText(payload);
     const looksLikeQuestion = /\?|\b(can you|could you|please provide|need input|what should)/i.test(message);
     if (looksLikeQuestion) {
       return {
@@ -373,7 +417,9 @@ async function ensureTrackedFiles(): Promise<void> {
     const firstLine = await readFirstLine(path).catch(() => '');
     const meta = shouldTrackSessionMeta(firstLine);
     if (!meta) continue;
-    const size = (await stat(path).catch(() => ({ size: 0 }))).size || 0;
+    const fileStat = await stat(path).catch(() => null);
+    if (!fileStat) continue;
+    const size = fileStat.size || 0;
     const offset = runOnce ? 0 : size;
     fileState.set(path, {
       ...meta,
@@ -381,6 +427,7 @@ async function ensureTrackedFiles(): Promise<void> {
       partial: '',
       dispatched: 0,
       currentTurnId: '',
+      decoder: new StringDecoder('utf8'),
     });
   }
 }
@@ -462,16 +509,54 @@ async function processLine(meta: FileMeta, line: string): Promise<void> {
   meta.dispatched += 1;
 }
 
+async function readFileDelta(
+  path: string,
+  offset: number,
+  currentSize: number,
+): Promise<{ bytes: Buffer; nextOffset: number }> {
+  const length = currentSize - offset;
+  if (length <= 0) return { bytes: Buffer.alloc(0), nextOffset: offset };
+  const handle = await open(path, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(length);
+    let totalBytesRead = 0;
+    while (totalBytesRead < length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        totalBytesRead,
+        length - totalBytesRead,
+        offset + totalBytesRead,
+      );
+      if (bytesRead === 0) break;
+      totalBytesRead += bytesRead;
+    }
+    return {
+      bytes: buffer.subarray(0, totalBytesRead),
+      nextOffset: offset + totalBytesRead,
+    };
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
 async function pollFiles(): Promise<void> {
   for (const [path, meta] of fileState.entries()) {
-    const currentSize = (await stat(path).catch(() => ({ size: 0 }))).size || 0;
+    const fileStat = await stat(path).catch(() => null);
+    if (!fileStat) continue;
+    const currentSize = fileStat.size || 0;
+    if (currentSize < meta.offset) {
+      meta.offset = 0;
+      meta.partial = '';
+      meta.decoder = new StringDecoder('utf8');
+    }
     if (currentSize <= meta.offset) continue;
 
-    const content = await readFile(path, 'utf-8').catch(() => '');
-    if (!content) continue;
-
-    const delta = content.slice(meta.offset);
-    meta.offset = currentSize;
+    const read = await readFileDelta(path, meta.offset, currentSize).catch(() => null);
+    if (!read || read.bytes.length === 0) continue;
+    const { bytes, nextOffset } = read;
+    meta.offset = nextOffset;
+    const delta = meta.decoder.write(bytes);
+    if (!delta) continue;
     const merged = meta.partial + delta;
     const lines = merged.split('\n');
     meta.partial = lines.pop() || '';

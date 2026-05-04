@@ -22,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 20
@@ -107,8 +109,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@v1
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - name: Install Linux musl toolchain
         if: runner.os == 'Linux'
@@ -149,6 +152,8 @@ jobs:
     needs: [build-native]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
           path: release-artifacts
@@ -160,7 +165,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
       - name: Install cargo-dist
         run: cargo install cargo-dist --locked --version "$CARGO_DIST_VERSION"
       - name: Generate release manifest from cargo-dist plan
@@ -181,11 +188,16 @@ jobs:
           name: native-release-assets
           path: release-assets/*
           if-no-files-found: error
+      - name: Generate release body
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node dist/scripts/generate-release-body.js --template RELEASE_BODY.md --out RELEASE_BODY.generated.md
       - name: Attach native assets to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
-          body_path: RELEASE_BODY.md
+          body_path: RELEASE_BODY.generated.md
           files: release-assets/*
           fail_on_unmatched_files: true
       - name: Write release summary

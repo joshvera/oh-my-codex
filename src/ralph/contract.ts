@@ -3,6 +3,7 @@ export const RALPH_PHASES = [
   'executing',
   'verifying',
   'fixing',
+  'blocked_on_user',
   'complete',
   'failed',
   'cancelled',
@@ -11,7 +12,7 @@ export const RALPH_PHASES = [
 export type RalphPhase = typeof RALPH_PHASES[number];
 
 const RALPH_PHASE_SET = new Set<string>(RALPH_PHASES);
-const RALPH_TERMINAL_PHASE_SET = new Set<RalphPhase>(['complete', 'failed', 'cancelled']);
+const RALPH_TERMINAL_PHASE_SET = new Set<RalphPhase>(['blocked_on_user', 'complete', 'failed', 'cancelled']);
 
 const LEGACY_PHASE_ALIASES: Record<string, RalphPhase> = {
   start: 'starting',
@@ -21,6 +22,8 @@ const LEGACY_PHASE_ALIASES: Record<string, RalphPhase> = {
   verify: 'verifying',
   verification: 'verifying',
   fix: 'fixing',
+  blocked: 'blocked_on_user',
+  'blocked-on-user': 'blocked_on_user',
   complete: 'complete',
   completed: 'complete',
   fail: 'failed',

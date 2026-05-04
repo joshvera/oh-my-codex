@@ -51,7 +51,7 @@ import {
 } from './mcp-comm.js';
 import {
   generateInitialInbox,
-  generateTriggerMessage,
+  buildTriggerDirective,
   writeWorkerRoleInstructionsFile,
   writeWorkerWorktreeRootAgentsFile,
   removeWorkerWorktreeRootAgentsFile,
@@ -257,7 +257,9 @@ export async function scaleUp(
         }
         try {
           if (w.pane_id) {
-            execFileSync('tmux', ['kill-pane', '-t', w.pane_id], { stdio: 'pipe' });
+            execFileSync('tmux', ['kill-pane', '-t', w.pane_id], { stdio: 'pipe',
+      windowsHide: true,
+    });
           }
         } catch {}
         if (w.worktree_path) {
@@ -280,7 +282,9 @@ export async function scaleUp(
 
       if (context.paneId) {
         try {
-          execFileSync('tmux', ['kill-pane', '-t', context.paneId], { stdio: 'pipe' });
+          execFileSync('tmux', ['kill-pane', '-t', context.paneId], { stdio: 'pipe',
+      windowsHide: true,
+    });
         } catch {}
       }
 
@@ -329,6 +333,7 @@ export async function scaleUp(
       const workerRole = workerTaskRoles.length > 0 && uniqueTaskRoles.size === 1
         ? workerTaskRoles[0]
         : agentType;
+      const runtimeRole = workerRole;
       if (uniqueTaskRoles.size > 1) {
         console.log(`[omx:scaling] ${workerName}: mixed task roles [${[...uniqueTaskRoles].join(', ')}], falling back to ${agentType}`);
       }
@@ -347,27 +352,27 @@ export async function scaleUp(
       const workerCwd = workerWorkspace ? workerWorkspace.worktreePath : leaderCwd;
 
       // Build startup command and create tmux pane
-      const rawRolePromptContent = await loadRolePrompt(workerRole, join(leaderCwd, '.codex', 'prompts'))
-        ?? await loadRolePrompt(workerRole, codexPromptsDir());
-      const preferredReasoning = resolveAgentReasoningEffort(workerRole) ?? resolveAgentReasoningEffort(agentType);
-      const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, workerRole, preferredReasoning);
+      const rawRolePromptContent = await loadRolePrompt(runtimeRole, join(leaderCwd, '.codex', 'prompts'))
+        ?? await loadRolePrompt(runtimeRole, codexPromptsDir());
+      const preferredReasoning = resolveAgentReasoningEffort(runtimeRole) ?? resolveAgentReasoningEffort(agentType);
+      const workerLaunchArgs = resolveWorkerLaunchArgsForScaling(env, runtimeRole, preferredReasoning);
       const resolvedWorkerModel = parseTeamWorkerLaunchArgs(workerLaunchArgs).modelOverride ?? undefined;
       const rolePromptContent = rawRolePromptContent
-        ? composeRoleInstructionsForRole(workerRole, rawRolePromptContent, resolvedWorkerModel)
+        ? composeRoleInstructionsForRole(runtimeRole, rawRolePromptContent, resolvedWorkerModel)
         : null;
       const teamInstructionsPath = join(leaderCwd, '.omx', 'state', 'team', sanitized, 'worker-agents.md');
       const instructionsFilePath = workerWorkspace
         ? await writeWorkerWorktreeRootAgentsFile({
             teamName: sanitized,
             workerName,
-            workerRole,
+            workerRole: runtimeRole,
             rolePromptContent: rolePromptContent ?? '',
             teamStateRoot,
             leaderCwd,
             worktreePath: workerWorkspace.worktreePath,
           })
         : rolePromptContent
-          ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, teamInstructionsPath, workerRole, rolePromptContent)
+          ? await writeWorkerRoleInstructionsFile(sanitized, workerName, leaderCwd, teamInstructionsPath, runtimeRole, rolePromptContent)
           : teamInstructionsPath;
       const extraEnv: Record<string, string> = {
         OMX_TEAM_STATE_ROOT: teamStateRoot,
@@ -388,6 +393,8 @@ export async function scaleUp(
         workerCwd,
         extraEnv,
         workerCliPlan[i],
+        undefined,
+        runtimeRole,
       );
 
       // Find the right-most worker pane to split from, or fall back to leader pane.
@@ -459,12 +466,12 @@ export async function scaleUp(
       const inbox = generateInitialInbox(workerName, sanitized, agentType, workerTasks, {
         teamStateRoot,
         leaderCwd,
-        workerRole,
+        workerRole: runtimeRole,
         rolePromptContent: rawRolePromptContent ?? undefined,
         worktreeRootAgentsCanonical: Boolean(workerWorkspace?.worktreePath),
       });
 
-      const trigger = generateTriggerMessage(
+      const triggerDirective = buildTriggerDirective(
         workerName,
         sanitized,
         resolveInstructionStateRoot(workerInfo.worktree_path),
@@ -475,7 +482,8 @@ export async function scaleUp(
         workerIndex,
         paneId,
         inbox,
-        triggerMessage: trigger,
+        triggerMessage: triggerDirective.text,
+        intent: triggerDirective.intent,
         cwd: leaderCwd,
         transportPreference: dispatchPolicy.dispatch_mode,
         fallbackAllowed: true,
@@ -496,7 +504,7 @@ export async function scaleUp(
         if (receipt && (receipt.status === 'notified' || receipt.status === 'delivered')) {
           outcome = { ok: true, transport: 'hook', reason: `hook_receipt_${receipt.status}`, request_id: queued.request_id };
         } else {
-          const fallback = await notifyWorkerPaneOutcome(sessionName, workerIndex, trigger, paneId, workerCliPlan[i]);
+          const fallback = await notifyWorkerPaneOutcome(sessionName, workerIndex, triggerDirective.text, paneId, workerCliPlan[i]);
           if (receipt?.status === 'failed') {
             if (fallback.ok) {
               await transitionDispatchRequest(
@@ -576,7 +584,7 @@ export async function scaleUp(
       // Retry dispatch once if a trust prompt is blocking the worker pane (fixes #393).
       if (!outcome.ok && dismissTrustPromptIfPresent(sessionName, workerIndex, paneId)) {
         waitForWorkerReady(sessionName, workerIndex, readyTimeoutMs, paneId);
-        const retry = await notifyWorkerPaneOutcome(sessionName, workerIndex, trigger, paneId, workerCliPlan[i]);
+        const retry = await notifyWorkerPaneOutcome(sessionName, workerIndex, triggerDirective.text, paneId, workerCliPlan[i]);
         if (retry.ok) {
           outcome = retry;
         }

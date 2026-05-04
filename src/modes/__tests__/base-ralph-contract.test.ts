@@ -53,6 +53,21 @@ describe('modes/base ralph contract integration', () => {
       const updated = await updateModeState('ralph', { current_phase: 'verification' }, wd);
       assert.equal(updated.current_phase, 'verifying');
       assert.equal(updated.ralph_phase_normalized_from, 'verification');
+      assert.equal(updated.run_outcome, 'continue');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('updateModeState persists terminal run outcomes on blocked_on_user', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-mode-ralph-contract-'));
+    try {
+      await startMode('ralph', 'demo', 5, wd);
+      const updated = await updateModeState('ralph', { active: false, current_phase: 'blocked_on_user' }, wd);
+      assert.equal(updated.current_phase, 'blocked_on_user');
+      assert.equal(updated.run_outcome, 'blocked_on_user');
+      assert.equal(updated.active, false);
+      assert.ok(typeof updated.completed_at === 'string' && updated.completed_at.length > 0);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

@@ -21,6 +21,11 @@ import {
   removeSessionModelInstructionsFile,
   sessionModelInstructionsPath,
 } from "../agents-overlay.js";
+import {
+  OMX_GENERATED_AGENTS_MARKER,
+  OMX_MANAGED_AGENTS_END_MARKER,
+  OMX_MANAGED_AGENTS_START_MARKER,
+} from "../../utils/agents-md.js";
 
 const RUNTIME_START = "<!-- OMX:RUNTIME:START -->";
 const RUNTIME_END = "<!-- OMX:RUNTIME:END -->";
@@ -134,6 +139,56 @@ describe("generateOverlay", () => {
     const overlay = await generateOverlay(tempDir, "sess1");
     assert.ok(overlay.includes("team"));
     assert.ok(overlay.includes("iteration 1/5"));
+  });
+
+  it("does not inherit stale root active modes into a fresh session overlay", async () => {
+    await writeFile(
+      join(tempDir, ".omx", "state", "ralph-state.json"),
+      JSON.stringify({
+        active: true,
+        iteration: 9,
+        max_iterations: 10,
+        current_phase: "executing",
+      }),
+    );
+
+    const overlay = await generateOverlay(tempDir, "fresh-session-isolation");
+    assert.equal(overlay.includes("ralph"), false);
+  });
+
+  it("lists both approved combined workflow members from canonical skill state", async () => {
+    const sessionId = "combined-session";
+    const sessionDir = join(tempDir, ".omx", "state", "sessions", sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(tempDir, ".omx", "state", "session.json"),
+      JSON.stringify({ session_id: sessionId }),
+    );
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "team",
+        phase: "running",
+        session_id: sessionId,
+        active_skills: [
+          { skill: "team", phase: "running", active: true, session_id: sessionId },
+          { skill: "ralph", phase: "executing", active: true, session_id: sessionId },
+        ],
+      }),
+    );
+    await writeFile(
+      join(sessionDir, "team-state.json"),
+      JSON.stringify({ active: true, current_phase: "running" }),
+    );
+    await writeFile(
+      join(sessionDir, "ralph-state.json"),
+      JSON.stringify({ active: true, iteration: 2, max_iterations: 5, current_phase: "executing" }),
+    );
+
+    const overlay = await generateOverlay(tempDir, sessionId);
+    assert.match(overlay, /- team: phase: running/);
+    assert.match(overlay, /- ralph: iteration 2\/5, phase: executing/);
   });
 
   it("generates overlay with notepad priority content", async () => {
@@ -307,6 +362,22 @@ describe("resolveSessionOrchestrationMode", () => {
     assert.equal(mode, "team");
   });
 
+  it("does not inherit root skill-active orchestration mode into a fresh session", async () => {
+    await writeFile(
+      join(tempDir, ".omx", "state", "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "team",
+      }),
+    );
+
+    const mode = await resolveSessionOrchestrationMode(
+      tempDir,
+      "fresh-session-isolation",
+    );
+    assert.equal(mode, "default");
+  });
+
   it("reads persisted team skill state from the current session scope", async () => {
     const sessionId = "sess-team";
     const sessionDir = join(tempDir, ".omx", "state", "sessions", sessionId);
@@ -356,7 +427,7 @@ describe("resolveSessionOrchestrationMode", () => {
     assert.equal(mode, "default");
   });
 
-  it("falls back to root team skill state only when no session-scoped skill state exists", async () => {
+  it("does not inherit root team skill state into a fresh session without session-scoped state", async () => {
     const sessionId = "sess-root-fallback";
     await writeFile(
       join(tempDir, ".omx", "state", "skill-active-state.json"),
@@ -364,7 +435,65 @@ describe("resolveSessionOrchestrationMode", () => {
     );
 
     const mode = await resolveSessionOrchestrationMode(tempDir, sessionId);
-    assert.equal(mode, "team");
+    assert.equal(mode, "default");
+  });
+
+  it("active mode summary follows canonical session skill state instead of stale root mode files", async () => {
+    const sessionId = "sess-active-summary";
+    const rootStateDir = join(tempDir, ".omx", "state");
+    const sessionDir = join(rootStateDir, "sessions", sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(rootStateDir, "ralph-state.json"),
+      JSON.stringify({ active: true, iteration: 9, max_iterations: 10, current_phase: "stale-root" }),
+    );
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "team",
+        phase: "running",
+        session_id: sessionId,
+        active_skills: [{ skill: "team", phase: "running", active: true, session_id: sessionId }],
+      }),
+    );
+    await writeFile(
+      join(sessionDir, "team-state.json"),
+      JSON.stringify({ active: true, team_name: "delta" }),
+    );
+
+    const overlay = await generateOverlay(tempDir, sessionId);
+    assert.ok(overlay.includes("- team: phase: running"));
+    assert.equal(overlay.includes("ralph"), false);
+  });
+
+  it("active mode summary suppresses stale autoresearch mode files when canonical session skill state excludes it", async () => {
+    const sessionId = "sess-autoresearch-summary";
+    const rootStateDir = join(tempDir, ".omx", "state");
+    const sessionDir = join(rootStateDir, "sessions", sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(rootStateDir, "autoresearch-state.json"),
+      JSON.stringify({ active: true, current_phase: "running" }),
+    );
+    await writeFile(
+      join(sessionDir, "skill-active-state.json"),
+      JSON.stringify({
+        active: true,
+        skill: "team",
+        phase: "running",
+        session_id: sessionId,
+        active_skills: [{ skill: "team", phase: "running", active: true, session_id: sessionId }],
+      }),
+    );
+    await writeFile(
+      join(sessionDir, "team-state.json"),
+      JSON.stringify({ active: true, team_name: "delta" }),
+    );
+
+    const overlay = await generateOverlay(tempDir, sessionId);
+    assert.ok(overlay.includes("- team: phase: running"));
+    assert.equal(overlay.includes("- autoresearch:"), false);
   });
 });
 
@@ -667,6 +796,94 @@ describe("session-scoped model instructions file", () => {
 
     assert.ok(sessionContent.includes("<!-- OMX:RUNTIME:START -->"));
     assert.ok(sessionContent.includes("<!-- OMX:RUNTIME:END -->"));
+    assert.doesNotMatch(sessionContent, /omx:generated:agents-md/);
+  });
+
+  it("omits pure generated OMX project AGENTS from the session model instructions file", async () => {
+    await mkdir(join(tempDir, "home", ".codex"), { recursive: true });
+    await rm(join(tempDir, "home", ".codex", "AGENTS.md"), { force: true });
+    await writeFile(
+      join(tempDir, "AGENTS.md"),
+      [
+        "<!-- AUTONOMY DIRECTIVE — DO NOT REMOVE -->",
+        "YOU ARE AN AUTONOMOUS CODING AGENT.",
+        "<!-- END AUTONOMY DIRECTIVE -->",
+        OMX_GENERATED_AGENTS_MARKER,
+        "",
+        "# oh-my-codex - Intelligent Multi-Agent Orchestration",
+        "",
+        "Generated orchestration brain.",
+      ].join("\n"),
+    );
+
+    const overlay = await generateOverlay(tempDir, "session-generated");
+    const writtenPath = await writeSessionModelInstructionsFile(
+      tempDir,
+      "session-generated",
+      overlay,
+    );
+    const sessionContent = await readFile(writtenPath, "utf-8");
+
+    assert.doesNotMatch(sessionContent, /Generated orchestration brain/);
+    assert.doesNotMatch(sessionContent, /omx:generated:agents-md/);
+    assert.match(sessionContent, /<!-- OMX:RUNTIME:START -->/);
+  });
+
+  it("preserves real unmarked project AGENTS guidance distinct from generated session AGENTS", async () => {
+    await mkdir(join(tempDir, "home", ".codex"), { recursive: true });
+    await rm(join(tempDir, "home", ".codex", "AGENTS.md"), { force: true });
+    await writeFile(
+      join(tempDir, "AGENTS.md"),
+      "# Real project AGENTS\n\nPreserve this project guidance.\n",
+    );
+
+    const overlay = await generateOverlay(tempDir, "session-real-project");
+    const writtenPath = await writeSessionModelInstructionsFile(
+      tempDir,
+      "session-real-project",
+      overlay,
+    );
+    const sessionContent = await readFile(writtenPath, "utf-8");
+
+    assert.match(sessionContent, /# Real project AGENTS/);
+    assert.match(sessionContent, /Preserve this project guidance\./);
+    assert.match(sessionContent, /<!-- OMX:RUNTIME:START -->/);
+  });
+
+  it("strips only generated OMX managed blocks from merged AGENTS files", async () => {
+    await mkdir(join(tempDir, "home", ".codex"), { recursive: true });
+    await rm(join(tempDir, "home", ".codex", "AGENTS.md"), { force: true });
+    await writeFile(
+      join(tempDir, "AGENTS.md"),
+      [
+        "# Team AGENTS",
+        "",
+        "Preserve header guidance.",
+        "",
+        OMX_MANAGED_AGENTS_START_MARKER,
+        OMX_GENERATED_AGENTS_MARKER,
+        "# oh-my-codex - Intelligent Multi-Agent Orchestration",
+        "Generated managed block.",
+        OMX_MANAGED_AGENTS_END_MARKER,
+        "",
+        "Preserve footer guidance.",
+      ].join("\n"),
+    );
+
+    const overlay = await generateOverlay(tempDir, "session-merged-project");
+    const writtenPath = await writeSessionModelInstructionsFile(
+      tempDir,
+      "session-merged-project",
+      overlay,
+    );
+    const sessionContent = await readFile(writtenPath, "utf-8");
+
+    assert.match(sessionContent, /# Team AGENTS/);
+    assert.match(sessionContent, /Preserve header guidance\./);
+    assert.match(sessionContent, /Preserve footer guidance\./);
+    assert.doesNotMatch(sessionContent, /Generated managed block/);
+    assert.doesNotMatch(sessionContent, /omx:generated:agents-md/);
+    assert.match(sessionContent, /<!-- OMX:RUNTIME:START -->/);
   });
 
   it("removes session-scoped file without touching project AGENTS.md", async () => {

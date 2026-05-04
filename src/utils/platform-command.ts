@@ -1,6 +1,6 @@
-import { existsSync } from 'fs';
+import { statSync } from 'fs';
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from 'child_process';
-import { delimiter, extname, join, resolve } from 'path';
+import { basename, delimiter, dirname, extname, join, resolve } from 'path';
 
 type ExistsSyncLike = (path: string) => boolean;
 type SpawnSyncLike = typeof spawnSync;
@@ -21,8 +21,22 @@ export interface ProbedPlatformCommand {
 const WINDOWS_DEFAULT_PATHEXT = ['.com', '.exe', '.bat', '.cmd', '.ps1'];
 const WINDOWS_DIRECT_EXTENSIONS = new Set(['.com', '.exe']);
 const WINDOWS_CMD_EXTENSIONS = new Set(['.bat', '.cmd']);
-const WINDOWS_EXTENSION_PRIORITY = ['.exe', '.com', '.ps1', '.cmd', '.bat'];
+const WINDOWS_EXTENSION_PRIORITY = ['.exe', '.com', '.cmd', '.bat', '.ps1'];
 const NODE_HOSTED_SCRIPT_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+const WINDOWS_COMPATIBLE_COMMAND_ALIASES: Record<string, string[]> = {
+  tmux: ['tmux', 'psmux'],
+};
+const WINDOWS_NODE_HOSTED_COMMANDS: Record<string, string[]> = {
+  codex: ['node_modules', '@openai', 'codex', 'bin', 'codex.js'],
+};
+
+function existsFileSync(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
 
 function isWindowsPathLike(command: string): boolean {
   return /^[A-Za-z]:/.test(command) || /[\\/]/.test(command);
@@ -47,40 +61,75 @@ function classifyWindowsCommandPath(path: string): 'direct' | 'cmd' | 'powershel
   return 'direct';
 }
 
+function normalizeWindowsCommandName(command: string): string {
+  return basename(command, extname(command)).toLowerCase();
+}
+
+function resolveWindowsCommandVariants(command: string): string[] {
+  if (isWindowsPathLike(command)) return [command];
+  const extension = extname(command);
+  const aliases = WINDOWS_COMPATIBLE_COMMAND_ALIASES[normalizeWindowsCommandName(command)];
+  if (!aliases || aliases.length === 0) return [command];
+  return [...new Set(aliases.map((alias) => `${alias}${extension}`))];
+}
+
+function resolveWindowsNodeHostedCommandPath(
+  command: string,
+  resolvedPath: string,
+  existsImpl: ExistsSyncLike,
+): string | null {
+  const relativeSegments = WINDOWS_NODE_HOSTED_COMMANDS[normalizeWindowsCommandName(command)];
+  if (!relativeSegments) return null;
+  if (classifyWindowsCommandPath(resolvedPath) === 'direct') return null;
+
+  const candidates = [
+    join(dirname(resolvedPath), ...relativeSegments),
+    join(dirname(resolvedPath), '..', ...relativeSegments.slice(1)),
+    join(dirname(resolvedPath), '..', ...relativeSegments),
+  ];
+  for (const candidate of candidates) {
+    if (existsImpl(candidate)) return candidate;
+  }
+  return null;
+}
+
 function resolveWindowsCommandPath(
   command: string,
   env: NodeJS.ProcessEnv,
   existsImpl: ExistsSyncLike,
 ): string | null {
-  const candidates: string[] = [];
-  const extension = extname(command).toLowerCase();
   const pathext = normalizeWindowsPathext(env);
+  const pathEntries = String(env.Path ?? env.PATH ?? '')
+    .split(delimiter)
+    .map((value) => value.trim())
+    .filter(Boolean);
 
-  const addCandidatesForBase = (base: string): void => {
-    if (extension) {
+  for (const commandVariant of resolveWindowsCommandVariants(command)) {
+    const candidates: string[] = [];
+    const extension = extname(commandVariant).toLowerCase();
+
+    const addCandidatesForBase = (base: string): void => {
+      if (extension) {
+        candidates.push(base);
+        return;
+      }
+      for (const ext of pathext) {
+        candidates.push(`${base}${ext}`);
+      }
       candidates.push(base);
-      return;
-    }
-    for (const ext of pathext) {
-      candidates.push(`${base}${ext}`);
-    }
-    candidates.push(base);
-  };
+    };
 
-  if (isWindowsPathLike(command)) {
-    addCandidatesForBase(command);
-  } else {
-    const pathEntries = String(env.Path ?? env.PATH ?? '')
-      .split(delimiter)
-      .map((value) => value.trim())
-      .filter(Boolean);
-    for (const entry of pathEntries) {
-      addCandidatesForBase(join(entry, command));
+    if (isWindowsPathLike(commandVariant)) {
+      addCandidatesForBase(commandVariant);
+    } else {
+      for (const entry of pathEntries) {
+        addCandidatesForBase(join(entry, commandVariant));
+      }
     }
-  }
 
-  for (const candidate of candidates) {
-    if (existsImpl(candidate)) return candidate;
+    for (const candidate of candidates) {
+      if (existsImpl(candidate)) return candidate;
+    }
   }
 
   return null;
@@ -148,7 +197,7 @@ export function resolveCommandPathForPlatform(
   command: string,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  existsImpl: ExistsSyncLike = existsSync,
+  existsImpl: ExistsSyncLike = existsFileSync,
 ): string | null {
   if (platform === 'win32') {
     return resolveWindowsCommandPath(command, env, existsImpl);
@@ -156,12 +205,20 @@ export function resolveCommandPathForPlatform(
   return resolvePosixCommandPath(command, env, existsImpl);
 }
 
+export function resolveTmuxBinaryForPlatform(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  existsImpl: ExistsSyncLike = existsFileSync,
+): string | null {
+  return resolveCommandPathForPlatform('tmux', platform, env, existsImpl);
+}
+
 export function buildPlatformCommandSpec(
   command: string,
   args: string[],
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  existsImpl: ExistsSyncLike = existsSync,
+  existsImpl: ExistsSyncLike = existsFileSync,
 ): PlatformCommandSpec {
   if (platform !== 'win32') {
     return { command, args: [...args] };
@@ -173,6 +230,15 @@ export function buildPlatformCommandSpec(
   }
 
   const kind = classifyWindowsCommandPath(resolvedPath);
+  const nodeHostedPath = resolveWindowsNodeHostedCommandPath(command, resolvedPath, existsImpl);
+  if (nodeHostedPath) {
+    return {
+      command: process.execPath,
+      args: [nodeHostedPath, ...args],
+      resolvedPath: nodeHostedPath,
+    };
+  }
+
   if (kind === 'cmd') {
     return buildCmdLaunch(resolvedPath, args, env);
   }
@@ -202,13 +268,14 @@ export function spawnPlatformCommandSync(
   options: SpawnSyncOptionsWithStringEncoding = { encoding: 'utf-8' },
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-  existsImpl: ExistsSyncLike = existsSync,
+  existsImpl: ExistsSyncLike = existsFileSync,
   spawnImpl: SpawnSyncLike = spawnSync,
 ): ProbedPlatformCommand {
   const spec = buildPlatformCommandSpec(command, args, platform, env, existsImpl);
+  const baseOptions = platform === 'win32' ? { ...options, windowsHide: true } : options;
   const spawnOptions = shouldUseWindowsVerbatimArguments(platform, spec)
-    ? { ...options, windowsVerbatimArguments: true }
-    : options;
+    ? { ...baseOptions, windowsVerbatimArguments: true }
+    : baseOptions;
   const result = spawnImpl(spec.command, spec.args, spawnOptions);
   if (!shouldRetryWithNodeHost(spec, result.error as NodeJS.ErrnoException | undefined, platform)) {
     return { spec, result };

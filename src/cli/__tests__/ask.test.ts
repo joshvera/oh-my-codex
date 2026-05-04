@@ -39,6 +39,11 @@ function runProviderAdvisorScript(
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '', error: r.error?.message };
 }
 
+
+function normalizeDarwinTmpPath(value: string): string {
+  return process.platform === 'darwin' ? value.replaceAll('/private/var/', '/var/') : value;
+}
+
 function shouldSkipForSpawnPermissions(err?: string): boolean {
   return typeof err === 'string' && /(EPERM|EACCES)/i.test(err);
 }
@@ -170,7 +175,7 @@ describe('omx ask', () => {
 
       assert.equal(res.status, 0, res.stderr || res.stdout);
       const artifactPath = res.stdout.trim();
-      assert.ok(artifactPath.startsWith(join(wd, '.omx', 'artifacts', 'claude-')));
+      assert.ok(normalizeDarwinTmpPath(artifactPath).startsWith(normalizeDarwinTmpPath(join(wd, '.omx', 'artifacts', 'claude-'))));
       assert.equal(existsSync(artifactPath), true);
       const artifact = await readFile(artifactPath, 'utf-8');
       assert.match(artifact, /NONROOT_DEFAULT_OK/);
@@ -213,6 +218,38 @@ describe('omx ask', () => {
       const geminiArtifactPath = geminiRes.stdout.trim();
       const geminiArtifact = await readFile(geminiArtifactPath, 'utf-8');
       assert.match(geminiArtifact, /GEMINI_PROMPT_OK:gemini-long-flag/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('adds Claude skip-permissions for issue-work prompts only', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-ask-issue-permissions-'));
+    try {
+      const fakeBin = join(wd, 'bin');
+      await mkdir(fakeBin, { recursive: true });
+
+      await writeFile(
+        join(fakeBin, 'claude'),
+        '#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"fake-claude\"; exit 0; fi\necho \"CLAUDE_ARGS:$*\"; exit 0\n',
+      );
+      await chmod(join(fakeBin, 'claude'), 0o755);
+
+      const env = { PATH: `${fakeBin}:${process.env.PATH || ''}` };
+
+      const issueRes = runOmx(wd, ['ask', 'claude', 'Investigate issue #1536 and summarize it'], env);
+      if (shouldSkipForSpawnPermissions(issueRes.error)) return;
+      assert.equal(issueRes.status, 0, issueRes.stderr || issueRes.stdout);
+      const issueArtifactPath = issueRes.stdout.trim();
+      const issueArtifact = await readFile(issueArtifactPath, 'utf-8');
+      assert.match(issueArtifact, /CLAUDE_ARGS:--dangerously-skip-permissions -p Investigate issue #1536 and summarize it/);
+
+      const genericRes = runOmx(wd, ['ask', 'claude', 'Summarize the README'], env);
+      assert.equal(genericRes.status, 0, genericRes.stderr || genericRes.stdout);
+      const genericArtifactPath = genericRes.stdout.trim();
+      const genericArtifact = await readFile(genericArtifactPath, 'utf-8');
+      assert.match(genericArtifact, /CLAUDE_ARGS:-p Summarize the README/);
+      assert.doesNotMatch(genericArtifact, /--dangerously-skip-permissions/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

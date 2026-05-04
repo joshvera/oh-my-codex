@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { join } from "path";
 import { homedir, tmpdir } from "os";
 import { existsSync } from "fs";
-import { mkdtemp, mkdir, rm, writeFile } from "fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "fs/promises";
 import {
   codexHome,
   codexConfigPath,
@@ -17,15 +17,24 @@ import {
   omxProjectMemoryPath,
   omxNotepadPath,
   omxPlansDir,
+  omxAdaptersDir,
   omxLogsDir,
   packageRoot,
+  canonicalizeComparablePath,
+  OMX_ENTRY_PATH_ENV,
+  OMX_STARTUP_CWD_ENV,
+  rememberOmxLaunchContext,
+  resolveOmxCliEntryPath,
+  resolveOmxEntryPath,
 } from "../paths.js";
 
 describe("codexHome", () => {
   let originalCodexHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     originalCodexHome = process.env.CODEX_HOME;
+    originalUserProfile = process.env.USERPROFILE;
   });
 
   afterEach(() => {
@@ -33,6 +42,12 @@ describe("codexHome", () => {
       process.env.CODEX_HOME = originalCodexHome;
     } else {
       delete process.env.CODEX_HOME;
+    }
+
+    if (typeof originalUserProfile === "string") {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
     }
   });
 
@@ -49,9 +64,11 @@ describe("codexHome", () => {
 
 describe("codexConfigPath", () => {
   let originalCodexHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     originalCodexHome = process.env.CODEX_HOME;
+    originalUserProfile = process.env.USERPROFILE;
     process.env.CODEX_HOME = "/tmp/test-codex";
   });
 
@@ -61,18 +78,26 @@ describe("codexConfigPath", () => {
     } else {
       delete process.env.CODEX_HOME;
     }
+
+    if (typeof originalUserProfile === "string") {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
+    }
   });
 
   it("returns config.toml under codex home", () => {
-    assert.equal(codexConfigPath(), "/tmp/test-codex/config.toml");
+    assert.equal(codexConfigPath(), join("/tmp/test-codex", "config.toml"));
   });
 });
 
 describe("codexPromptsDir", () => {
   let originalCodexHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     originalCodexHome = process.env.CODEX_HOME;
+    originalUserProfile = process.env.USERPROFILE;
     process.env.CODEX_HOME = "/tmp/test-codex";
   });
 
@@ -82,18 +107,26 @@ describe("codexPromptsDir", () => {
     } else {
       delete process.env.CODEX_HOME;
     }
+
+    if (typeof originalUserProfile === "string") {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
+    }
   });
 
   it("returns prompts/ under codex home", () => {
-    assert.equal(codexPromptsDir(), "/tmp/test-codex/prompts");
+    assert.equal(codexPromptsDir(), join("/tmp/test-codex", "prompts"));
   });
 });
 
 describe("userSkillsDir", () => {
   let originalCodexHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     originalCodexHome = process.env.CODEX_HOME;
+    originalUserProfile = process.env.USERPROFILE;
     process.env.CODEX_HOME = "/tmp/test-codex";
   });
 
@@ -103,16 +136,22 @@ describe("userSkillsDir", () => {
     } else {
       delete process.env.CODEX_HOME;
     }
+
+    if (typeof originalUserProfile === "string") {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
+    }
   });
 
   it("returns CODEX_HOME/skills", () => {
-    assert.equal(userSkillsDir(), "/tmp/test-codex/skills");
+    assert.equal(userSkillsDir(), join("/tmp/test-codex", "skills"));
   });
 });
 
 describe("projectSkillsDir", () => {
   it("uses provided projectRoot", () => {
-    assert.equal(projectSkillsDir("/my/project"), "/my/project/.codex/skills");
+    assert.equal(projectSkillsDir("/my/project"), join("/my/project", ".codex", "skills"));
   });
 
   it("defaults to cwd when no projectRoot given", () => {
@@ -122,10 +161,13 @@ describe("projectSkillsDir", () => {
 
 describe("legacyUserSkillsDir", () => {
   let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
     process.env.HOME = "/tmp/test-home";
+    process.env.USERPROFILE = "/tmp/test-home";
   });
 
   afterEach(() => {
@@ -134,18 +176,34 @@ describe("legacyUserSkillsDir", () => {
     } else {
       delete process.env.HOME;
     }
+
+    if (typeof originalUserProfile === "string") {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
+    }
   });
 
   it("returns ~/.agents/skills under HOME", () => {
-    assert.equal(legacyUserSkillsDir(), "/tmp/test-home/.agents/skills");
+    assert.equal(legacyUserSkillsDir(), join("/tmp/test-home", ".agents", "skills"));
+  });
+});
+
+describe("omxAdaptersDir", () => {
+  it("returns .omx/adapters under the project root", () => {
+    assert.equal(omxAdaptersDir("/my/project"), join("/my/project", ".omx", "adapters"));
   });
 });
 
 describe("listInstalledSkillDirectories", () => {
   let originalCodexHome: string | undefined;
+  let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     originalCodexHome = process.env.CODEX_HOME;
+    originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
   });
 
   afterEach(() => {
@@ -153,6 +211,18 @@ describe("listInstalledSkillDirectories", () => {
       process.env.CODEX_HOME = originalCodexHome;
     } else {
       delete process.env.CODEX_HOME;
+    }
+
+    if (typeof originalHome === "string") {
+      process.env.HOME = originalHome;
+    } else {
+      delete process.env.HOME;
+    }
+
+    if (typeof originalUserProfile === "string") {
+      process.env.USERPROFILE = originalUserProfile;
+    } else {
+      delete process.env.USERPROFILE;
     }
   });
 
@@ -206,6 +276,7 @@ describe("listInstalledSkillDirectories", () => {
     const codexHomeRoot = join(homeRoot, ".codex");
     const legacyRoot = join(homeRoot, ".agents", "skills");
     process.env.HOME = homeRoot;
+    process.env.USERPROFILE = homeRoot;
     process.env.CODEX_HOME = codexHomeRoot;
 
     try {
@@ -232,6 +303,42 @@ describe("listInstalledSkillDirectories", () => {
       assert.equal(overlap.legacySkillCount, 2);
       assert.deepEqual(overlap.overlappingSkillNames, ["help"]);
       assert.deepEqual(overlap.mismatchedSkillNames, ["help"]);
+      assert.equal(overlap.sameResolvedTarget, false);
+    } finally {
+      await rm(homeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a legacy link to canonical skills as the same resolved target", async () => {
+    const homeRoot = await mkdtemp(join(tmpdir(), "omx-paths-linked-home-"));
+    const codexHomeRoot = join(homeRoot, ".codex");
+    const canonicalSkillsRoot = join(codexHomeRoot, "skills");
+    const legacyParent = join(homeRoot, ".agents");
+    const legacyRoot = join(legacyParent, "skills");
+    process.env.HOME = homeRoot;
+    process.env.USERPROFILE = homeRoot;
+    process.env.CODEX_HOME = codexHomeRoot;
+
+    try {
+      const canonicalHelpDir = join(canonicalSkillsRoot, "help");
+      await mkdir(canonicalHelpDir, { recursive: true });
+      await mkdir(legacyParent, { recursive: true });
+      await writeFile(join(canonicalHelpDir, "SKILL.md"), "# canonical help\n");
+      await symlink(
+        canonicalSkillsRoot,
+        legacyRoot,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+
+      const overlap = await detectLegacySkillRootOverlap();
+
+      assert.equal(overlap.canonicalExists, true);
+      assert.equal(overlap.legacyExists, true);
+      assert.equal(overlap.canonicalSkillCount, 1);
+      assert.equal(overlap.legacySkillCount, 1);
+      assert.equal(overlap.sameResolvedTarget, true);
+      assert.deepEqual(overlap.overlappingSkillNames, ["help"]);
+      assert.deepEqual(overlap.mismatchedSkillNames, []);
     } finally {
       await rm(homeRoot, { recursive: true, force: true });
     }
@@ -240,7 +347,7 @@ describe("listInstalledSkillDirectories", () => {
 
 describe("omxStateDir", () => {
   it("uses provided projectRoot", () => {
-    assert.equal(omxStateDir("/my/project"), "/my/project/.omx/state");
+    assert.equal(omxStateDir("/my/project"), join("/my/project", ".omx", "state"));
   });
 
   it("defaults to cwd when no projectRoot given", () => {
@@ -252,7 +359,7 @@ describe("omxProjectMemoryPath", () => {
   it("uses provided projectRoot", () => {
     assert.equal(
       omxProjectMemoryPath("/my/project"),
-      "/my/project/.omx/project-memory.json",
+      join("/my/project", ".omx", "project-memory.json"),
     );
   });
 
@@ -266,7 +373,7 @@ describe("omxProjectMemoryPath", () => {
 
 describe("omxNotepadPath", () => {
   it("uses provided projectRoot", () => {
-    assert.equal(omxNotepadPath("/my/project"), "/my/project/.omx/notepad.md");
+    assert.equal(omxNotepadPath("/my/project"), join("/my/project", ".omx", "notepad.md"));
   });
 
   it("defaults to cwd when no projectRoot given", () => {
@@ -276,7 +383,7 @@ describe("omxNotepadPath", () => {
 
 describe("omxPlansDir", () => {
   it("uses provided projectRoot", () => {
-    assert.equal(omxPlansDir("/my/project"), "/my/project/.omx/plans");
+    assert.equal(omxPlansDir("/my/project"), join("/my/project", ".omx", "plans"));
   });
 
   it("defaults to cwd when no projectRoot given", () => {
@@ -286,7 +393,7 @@ describe("omxPlansDir", () => {
 
 describe("omxLogsDir", () => {
   it("uses provided projectRoot", () => {
-    assert.equal(omxLogsDir("/my/project"), "/my/project/.omx/logs");
+    assert.equal(omxLogsDir("/my/project"), join("/my/project", ".omx", "logs"));
   });
 
   it("defaults to cwd when no projectRoot given", () => {
@@ -299,4 +406,241 @@ describe("packageRoot", () => {
     const root = packageRoot();
     assert.equal(existsSync(join(root, "package.json")), true);
   });
+});
+
+describe("OMX launcher path resolution", () => {
+  // Existing launcher files are resolved through realpath before being stored or
+  // compared. These assertions intentionally use canonicalized expected paths
+  // so macOS /var -> /private/var temp roots and symlinked launch directories
+  // exercise the same canonical-realpath contract as production launch context.
+  const originalEntryPath = process.env[OMX_ENTRY_PATH_ENV];
+  const originalStartupCwd = process.env[OMX_STARTUP_CWD_ENV];
+
+  afterEach(() => {
+    if (typeof originalEntryPath === "string") {
+      process.env[OMX_ENTRY_PATH_ENV] = originalEntryPath;
+    } else {
+      delete process.env[OMX_ENTRY_PATH_ENV];
+    }
+    if (typeof originalStartupCwd === "string") {
+      process.env[OMX_STARTUP_CWD_ENV] = originalStartupCwd;
+    } else {
+      delete process.env[OMX_STARTUP_CWD_ENV];
+    }
+  });
+
+  it("resolves relative launcher paths against the recorded startup cwd", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-start-"));
+    const laterCwd = await mkdtemp(join(tmpdir(), "omx-launcher-later-"));
+    try {
+      const launcherDir = join(startupCwd, "dist", "cli");
+      const launcherPath = join(launcherDir, "omx.js");
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, "#!/usr/bin/env node\n", "utf-8");
+
+      const resolved = resolveOmxEntryPath({
+        argv1: "dist/cli/omx.js",
+        cwd: laterCwd,
+        env: {
+          ...process.env,
+          [OMX_STARTUP_CWD_ENV]: startupCwd,
+        },
+      });
+
+      assert.equal(resolved, canonicalizeComparablePath(launcherPath));
+    } finally {
+      await rm(startupCwd, { recursive: true, force: true });
+      await rm(laterCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("canonicalizes symlinked startup cwd launcher paths to their real path", async () => {
+    const realRoot = await mkdtemp(join(tmpdir(), "omx-launcher-real-root-"));
+    const linkParent = await mkdtemp(join(tmpdir(), "omx-launcher-link-root-"));
+    const laterCwd = await mkdtemp(join(tmpdir(), "omx-launcher-symlink-later-"));
+    const realStartupCwd = join(realRoot, "project");
+    const linkedStartupCwd = join(linkParent, "project-link");
+    try {
+      const launcherDir = join(realStartupCwd, "dist", "cli");
+      const launcherPath = join(launcherDir, "omx.js");
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, "#!/usr/bin/env node\n", "utf-8");
+      await symlink(
+        realStartupCwd,
+        linkedStartupCwd,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+
+      const resolved = resolveOmxEntryPath({
+        argv1: "dist/cli/omx.js",
+        cwd: laterCwd,
+        env: {
+          ...process.env,
+          [OMX_STARTUP_CWD_ENV]: linkedStartupCwd,
+        },
+      });
+
+      assert.equal(resolved, await realpath(launcherPath));
+      assert.notEqual(resolved, join(linkedStartupCwd, "dist", "cli", "omx.js"));
+    } finally {
+      await rm(realRoot, { recursive: true, force: true });
+      await rm(linkParent, { recursive: true, force: true });
+      await rm(laterCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records launcher context once so later cwd changes keep the absolute entry path", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-record-"));
+    try {
+      const launcherDir = join(startupCwd, "dist", "cli");
+      const launcherPath = join(launcherDir, "omx.js");
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, "#!/usr/bin/env node\n", "utf-8");
+
+      delete process.env[OMX_ENTRY_PATH_ENV];
+      delete process.env[OMX_STARTUP_CWD_ENV];
+      rememberOmxLaunchContext({
+        argv1: "dist/cli/omx.js",
+        cwd: startupCwd,
+        env: process.env,
+      });
+
+      assert.equal(process.env[OMX_STARTUP_CWD_ENV], startupCwd);
+      assert.equal(process.env[OMX_ENTRY_PATH_ENV], canonicalizeComparablePath(launcherPath));
+    } finally {
+      await rm(startupCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers explicit argv1 over an ambient OMX_ENTRY_PATH override", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-explicit-start-"));
+    try {
+      const launcherDir = join(startupCwd, "dist", "cli");
+      const launcherPath = join(launcherDir, "omx.js");
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, "#!/usr/bin/env node\n", "utf-8");
+
+      const resolved = resolveOmxEntryPath({
+        argv1: "dist/cli/omx.js",
+        cwd: startupCwd,
+        env: {
+          ...process.env,
+          [OMX_ENTRY_PATH_ENV]: "/tmp/ambient-omx.js",
+          [OMX_STARTUP_CWD_ENV]: startupCwd,
+        },
+      });
+
+      assert.equal(resolved, canonicalizeComparablePath(launcherPath));
+    } finally {
+      await rm(startupCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records the default launcher path when called without an explicit argv1", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-default-record-"));
+    const originalArgv1 = process.argv[1];
+    try {
+      const launcherDir = join(startupCwd, "dist", "cli");
+      const launcherPath = join(launcherDir, "omx.js");
+      await mkdir(launcherDir, { recursive: true });
+      await writeFile(launcherPath, "#!/usr/bin/env node\n", "utf-8");
+
+      delete process.env[OMX_ENTRY_PATH_ENV];
+      delete process.env[OMX_STARTUP_CWD_ENV];
+      process.argv[1] = launcherPath;
+
+      rememberOmxLaunchContext({
+        cwd: startupCwd,
+        env: process.env,
+      });
+
+      assert.equal(process.env[OMX_STARTUP_CWD_ENV], startupCwd);
+      assert.equal(process.env[OMX_ENTRY_PATH_ENV], canonicalizeComparablePath(launcherPath));
+    } finally {
+      process.argv[1] = originalArgv1;
+      await rm(startupCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the packaged CLI entry when argv1 points at a non-CLI script", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-cli-fallback-start-"));
+    const packageRootDir = await mkdtemp(join(tmpdir(), "omx-launcher-cli-fallback-root-"));
+    try {
+      const hookDir = join(startupCwd, "dist", "scripts");
+      const hookPath = join(hookDir, "codex-native-hook.js");
+      const cliDir = join(packageRootDir, "dist", "cli");
+      const cliPath = join(cliDir, "omx.js");
+      await mkdir(hookDir, { recursive: true });
+      await mkdir(cliDir, { recursive: true });
+      await writeFile(hookPath, "#!/usr/bin/env node\n", "utf-8");
+      await writeFile(cliPath, "#!/usr/bin/env node\n", "utf-8");
+
+      const resolved = resolveOmxCliEntryPath({
+        argv1: "dist/scripts/codex-native-hook.js",
+        cwd: startupCwd,
+        env: {
+          ...process.env,
+          [OMX_STARTUP_CWD_ENV]: startupCwd,
+        },
+        packageRootDir,
+      });
+
+      assert.equal(resolved, canonicalizeComparablePath(cliPath));
+    } finally {
+      await rm(startupCwd, { recursive: true, force: true });
+      await rm(packageRootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the resolved path when argv1 already points at the CLI entry", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-cli-direct-start-"));
+    try {
+      const cliDir = join(startupCwd, "dist", "cli");
+      const cliPath = join(cliDir, "omx.js");
+      await mkdir(cliDir, { recursive: true });
+      await writeFile(cliPath, "#!/usr/bin/env node\n", "utf-8");
+
+      const resolved = resolveOmxCliEntryPath({
+        argv1: "dist/cli/omx.js",
+        cwd: startupCwd,
+        env: {
+          ...process.env,
+          [OMX_STARTUP_CWD_ENV]: startupCwd,
+        },
+      });
+
+      assert.equal(resolved, canonicalizeComparablePath(cliPath));
+    } finally {
+      await rm(startupCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back from a non-OMX host binary to the packaged CLI entry", async () => {
+    const startupCwd = await mkdtemp(join(tmpdir(), "omx-launcher-cli-host-start-"));
+    const packageRootDir = await mkdtemp(join(tmpdir(), "omx-launcher-cli-host-root-"));
+    try {
+      const hostPath = join(startupCwd, "codex-host");
+      const cliDir = join(packageRootDir, "dist", "cli");
+      const cliPath = join(cliDir, "omx.js");
+      await writeFile(hostPath, "#!/usr/bin/env node\n", "utf-8");
+      await mkdir(cliDir, { recursive: true });
+      await writeFile(cliPath, "#!/usr/bin/env node\n", "utf-8");
+
+      const resolved = resolveOmxCliEntryPath({
+        argv1: hostPath,
+        cwd: startupCwd,
+        env: {
+          ...process.env,
+          [OMX_STARTUP_CWD_ENV]: startupCwd,
+        },
+        packageRootDir,
+      });
+
+      assert.equal(resolved, canonicalizeComparablePath(cliPath));
+    } finally {
+      await rm(startupCwd, { recursive: true, force: true });
+      await rm(packageRootDir, { recursive: true, force: true });
+    }
+  });
+
 });

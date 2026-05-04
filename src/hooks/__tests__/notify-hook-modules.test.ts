@@ -172,6 +172,41 @@ describe('notify-hook/operational-events – buildOperationalContext', () => {
       else process.env.TMUX = originalTmux;
     }
   });
+
+  it('writes PR lifecycle details into the repo baseline registry as best effort state', async () => {
+    const { buildOperationalContext } = await loadModule('notify-hook/operational-events.js');
+    const { mkdtemp, rm, writeFile, readFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { execFileSync } = await import('node:child_process');
+
+    const repo = await mkdtemp(join(tmpdir(), 'omx-opctx-baseline-'));
+    try {
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo, stdio: 'ignore' });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repo, stdio: 'ignore' });
+      await writeFile(join(repo, 'README.md'), 'hello\n', 'utf-8');
+      execFileSync('git', ['add', 'README.md'], { cwd: repo, stdio: 'ignore' });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: repo, stdio: 'ignore' });
+      execFileSync('git', ['checkout', '-b', 'feature/opctx-pr'], { cwd: repo, stdio: 'ignore' });
+
+      const context = buildOperationalContext({
+        cwd: repo,
+        normalizedEvent: 'pr-merged',
+        text: 'Merged issue #1407 via PR #1416',
+        prUrl: 'https://github.com/Yeachan-Heo/oh-my-codex/pull/1416',
+      });
+
+      assert.equal(context.branch, 'feature/opctx-pr');
+      const baseline = JSON.parse(await readFile(join(repo, '.omx', 'state', 'current-task-baseline.json'), 'utf-8'));
+      const entry = baseline.tasks.find((item: { branch_name: string }) => item.branch_name === 'feature/opctx-pr');
+      assert.equal(entry.issue_number, 1407);
+      assert.equal(entry.pr_number, 1416);
+      assert.equal(entry.status, 'merged');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('notify-hook/operational-events – deriveAssistantSignalEvents', () => {
@@ -199,24 +234,25 @@ describe('notify-hook/operational-events – deriveAssistantSignalEvents', () =>
 // auto-nudge.js – detectStallPattern
 // ---------------------------------------------------------------------------
 describe('notify-hook/auto-nudge – detectStallPattern', () => {
-  it('detects default stall patterns case-insensitively', async () => {
+  it('detects default continuation patterns case-insensitively', async () => {
     const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
-    assert.equal(detectStallPattern('Would you like me to continue?', DEFAULT_STALL_PATTERNS), true);
-    assert.equal(detectStallPattern('WOULD YOU LIKE me to continue?', DEFAULT_STALL_PATTERNS), true);
-    assert.equal(detectStallPattern('Shall I proceed?', DEFAULT_STALL_PATTERNS), true);
-    assert.equal(detectStallPattern('If you want, I can refactor.', DEFAULT_STALL_PATTERNS), true);
-    assert.equal(detectStallPattern('Let me know if you need more help.', DEFAULT_STALL_PATTERNS), true);
-    assert.equal(detectStallPattern('Ready to proceed whenever you are.', DEFAULT_STALL_PATTERNS), true);
-    assert.equal(detectStallPattern('I’M READY TO take the next step.', DEFAULT_STALL_PATTERNS), true);
     assert.equal(detectStallPattern('KEEP GOING and I will finish the patch.', DEFAULT_STALL_PATTERNS), true);
+    assert.equal(detectStallPattern('Continue with the existing cleanup from here.', DEFAULT_STALL_PATTERNS), true);
   });
 
-  it('detects team-worker follow-up phrases like continue with and next step', async () => {
+  it('detects team-worker continuation phrases like continue with and keep going', async () => {
     const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
     assert.equal(detectStallPattern('I can continue with the worker follow-up from here.', DEFAULT_STALL_PATTERNS), true);
-    assert.equal(detectStallPattern('The next step is to finish the worker handoff.', DEFAULT_STALL_PATTERNS), true);
-    assert.equal(detectStallPattern('The NEXT STEPS would be running tests and posting the summary.', DEFAULT_STALL_PATTERNS), true);
     assert.equal(detectStallPattern('We can pick up with the cleanup after this.', DEFAULT_STALL_PATTERNS), true);
+  });
+
+  it('does not treat permission-seeking or planning prompts as auto-nudge stalls', async () => {
+    const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(detectStallPattern('Would you like me to continue?', DEFAULT_STALL_PATTERNS), false);
+    assert.equal(detectStallPattern('Shall I proceed?', DEFAULT_STALL_PATTERNS), false);
+    assert.equal(detectStallPattern('If you want, I can refactor.', DEFAULT_STALL_PATTERNS), false);
+    assert.equal(detectStallPattern('Ready to proceed whenever you are.', DEFAULT_STALL_PATTERNS), false);
+    assert.equal(detectStallPattern('I can continue with the plan from here.', DEFAULT_STALL_PATTERNS), false);
   });
 
   it('returns false when no stall pattern present', async () => {
@@ -233,16 +269,31 @@ describe('notify-hook/auto-nudge – detectStallPattern', () => {
     assert.equal(detectStallPattern('Would you like me to proceed?', custom), false);
   });
 
+  it('keeps native Stop permission-seeking detection separate from default notify-hook detection', async () => {
+    const { detectStallPattern, detectNativeStopStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
+    const text = 'If you want, I can continue with the cleanup from here.';
+    assert.equal(detectStallPattern(text, DEFAULT_STALL_PATTERNS), false);
+    assert.equal(detectNativeStopStallPattern(text, DEFAULT_STALL_PATTERNS), true);
+  });
+
   it('ignores prior OMX injection lines so injected text cannot self-trigger detection', async () => {
     const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
     const text = 'Completed the change.\nyes, proceed [OMX_TMUX_INJECT]\nkeep going [OMX_TMUX_INJECT]';
     assert.equal(detectStallPattern(text, DEFAULT_STALL_PATTERNS), false);
   });
 
+  it('ignores orchestration intent tags when normalizing stall text', async () => {
+    const { normalizeAutoNudgeSignatureText } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(
+      normalizeAutoNudgeSignatureText('Team alpha: 1 msg(s) for leader. [OMX_INTENT:pending-mailbox-review]'),
+      'team alpha 1 msg s for leader',
+    );
+  });
+
   it('focuses detection on the last few lines (hotZone)', async () => {
     const { detectStallPattern, DEFAULT_STALL_PATTERNS } = await loadModule('notify-hook/auto-nudge.js');
     // Stall phrase only in the last line — should detect
-    const text = 'Line 1\nLine 2\nLine 3\nLine 4\nWould you like me to continue?';
+    const text = 'Line 1\nLine 2\nLine 3\nLine 4\nKeep going and finish the patch.';
     assert.equal(detectStallPattern(text, DEFAULT_STALL_PATTERNS), true);
   });
 
@@ -312,6 +363,15 @@ describe('notify-hook/auto-nudge – normalizeAutoNudgeConfig', () => {
   });
 });
 
+describe('notify-hook/auto-nudge – resolveEffectiveAutoNudgeResponse', () => {
+  it('maps legacy approval-style responses to a non-authorizing continuation message', async () => {
+    const { DEFAULT_AUTO_NUDGE_RESPONSE, resolveEffectiveAutoNudgeResponse } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(resolveEffectiveAutoNudgeResponse('yes, proceed'), DEFAULT_AUTO_NUDGE_RESPONSE);
+    assert.equal(resolveEffectiveAutoNudgeResponse('continue'), DEFAULT_AUTO_NUDGE_RESPONSE);
+    assert.equal(resolveEffectiveAutoNudgeResponse('custom follow-up'), 'custom follow-up');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // auto-nudge.js – skill-active state phase helpers
 // ---------------------------------------------------------------------------
@@ -378,6 +438,12 @@ describe('notify-hook/auto-nudge – blocked deep-interview auto approvals', () 
     assert.equal(isBlockedAutoApprovalInput('Maybe next I should update the focused tests.'), false);
   });
 
+  it('normalizes custom blocked inputs before exact and prefix matching', async () => {
+    const { isBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
+    assert.equal(isBlockedAutoApprovalInput('GO ahead!!!', [' go ahead ']), true);
+    assert.equal(isBlockedAutoApprovalInput('Next I should update the focused tests.', [' Next I Should ']), true);
+  });
+
   it('does not block unrelated responses', async () => {
     const { isBlockedAutoApprovalInput } = await loadModule('notify-hook/auto-nudge.js');
     assert.equal(isBlockedAutoApprovalInput('deep interview is active; auto-approval shortcuts are blocked until the interview finishes.'), false);
@@ -406,6 +472,37 @@ describe('notify-hook/auto-nudge – blocked deep-interview auto approvals', () 
       latestUserInput: 'abort',
       lastMessage: 'Stopping now.',
     }), 'abort');
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// orchestration-intent.js – team reminder taxonomy
+// ---------------------------------------------------------------------------
+describe('notify-hook/orchestration-intent – taxonomy helpers', () => {
+  it('appends and strips orchestration intent tags', async () => {
+    const { appendOrchestrationIntentTag, stripOrchestrationIntentTags } = await loadModule('notify-hook/orchestration-intent.js');
+    const tagged = appendOrchestrationIntentTag('Team alpha: 1 msg(s) for leader.', 'pending-mailbox-review');
+    assert.equal(tagged, 'Team alpha: 1 msg(s) for leader. [OMX_INTENT:pending-mailbox-review]');
+    assert.equal(stripOrchestrationIntentTags(tagged).trim(), 'Team alpha: 1 msg(s) for leader.');
+  });
+
+  it('maps leader reminder reasons to stable orchestration intents', async () => {
+    const { resolveLeaderNudgeIntent } = await loadModule('notify-hook/orchestration-intent.js');
+    assert.equal(resolveLeaderNudgeIntent({ nudgeReason: 'new_mailbox_message' }), 'pending-mailbox-review');
+    assert.equal(resolveLeaderNudgeIntent({ nudgeReason: 'ack_without_start_evidence' }), 'followup-relaunch');
+    assert.equal(resolveLeaderNudgeIntent({ nudgeReason: 'stuck_waiting_on_leader' }), 'stalled-unblock');
+    assert.equal(resolveLeaderNudgeIntent({ nudgeReason: 'all_workers_idle', leaderActionState: 'done_waiting_on_leader' }), 'done-review-or-shutdown');
+    assert.equal(resolveLeaderNudgeIntent({ nudgeReason: 'all_workers_idle', leaderActionState: 'still_actionable' }), 'followup-reuse');
+  });
+
+  it('maps worker-state reminders to stable orchestration intents', async () => {
+    const { resolveAllWorkersIdleIntent, resolveWorkerIdleIntent } = await loadModule('notify-hook/orchestration-intent.js');
+    assert.equal(resolveAllWorkersIdleIntent('done_waiting_on_leader'), 'done-review-or-shutdown');
+    assert.equal(resolveAllWorkersIdleIntent('stuck_waiting_on_leader'), 'stalled-unblock');
+    assert.equal(resolveAllWorkersIdleIntent('still_actionable'), 'followup-reuse');
+    assert.equal(resolveWorkerIdleIntent('idle'), 'followup-reuse');
+    assert.equal(resolveWorkerIdleIntent('done'), 'done-review-or-shutdown');
   });
 });
 

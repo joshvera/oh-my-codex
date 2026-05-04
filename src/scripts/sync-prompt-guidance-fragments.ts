@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 
 async function read(path: string): Promise<string> { return await readFile(path, 'utf-8'); }
@@ -12,6 +13,7 @@ function replaceBetween(text: string, startMarker: string, endMarker: string, re
 
 async function main(): Promise<void> {
   const op = (await read('docs/prompt-guidance-fragments/core-operating-principles.md')).trim();
+  const sr = (await read('docs/prompt-guidance-fragments/leader-specialist-routing.md')).trim();
   const vs = (await read('docs/prompt-guidance-fragments/core-verification-and-sequencing.md')).trim();
   const exC = (await read('docs/prompt-guidance-fragments/executor-constraints.md')).trim();
   const exO = (await read('docs/prompt-guidance-fragments/executor-output.md')).trim();
@@ -22,8 +24,10 @@ async function main(): Promise<void> {
   const vfI = (await read('docs/prompt-guidance-fragments/verifier-investigation.md')).trim();
 
   for (const file of ['AGENTS.md', 'templates/AGENTS.md']) {
+    if (!existsSync(file)) continue;
     let text = await read(file);
     text = replaceBetween(text, '<!-- OMX:GUIDANCE:OPERATING:START -->', '<!-- OMX:GUIDANCE:OPERATING:END -->', op);
+    text = replaceBetween(text, '<!-- OMX:GUIDANCE:SPECIALIST-ROUTING:START -->', '<!-- OMX:GUIDANCE:SPECIALIST-ROUTING:END -->', sr);
     text = replaceBetween(text, '<!-- OMX:GUIDANCE:VERIFYSEQ:START -->', '<!-- OMX:GUIDANCE:VERIFYSEQ:END -->', vs);
     await writeFile(file, text);
   }

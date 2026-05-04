@@ -29,7 +29,7 @@ const SHELL_FAMILY_SPECS: ShellFamilySpec[] = [
   },
   {
     family: 'zsh',
-    paths: ['/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/homebrew/bin/zsh'],
+    paths: ['/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/local/bin/zsh', '/opt/homebrew/bin/zsh'],
     rcFile: '~/.zshrc',
   },
   {

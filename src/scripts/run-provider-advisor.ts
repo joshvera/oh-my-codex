@@ -3,12 +3,18 @@ import { mkdir, writeFile } from 'fs/promises';
 import { join } from 'path';
 import process from 'process';
 import { spawnSync } from 'child_process';
+import { CLAUDE_SKIP_PERMISSIONS_FLAG } from '../cli/constants.js';
 
 const PROVIDER_BINARIES: Record<string, string> = {
   claude: 'claude',
   gemini: 'gemini',
 };
 const ASK_ORIGINAL_TASK_ENV = 'OMX_ASK_ORIGINAL_TASK';
+const ISSUE_WORK_PROMPT_PATTERNS = [
+  /\bgh\s+issue\b/i,
+  /\b(?:fix|work on|work|investigate|implement|triage|debug|review|handle)\s+issue\s*#?\d+\b/i,
+  /\bissue\s*#\d+\b/i,
+];
 
 function usage(): void {
   console.error('Usage: omx ask <claude|gemini> "<prompt>"');
@@ -59,7 +65,8 @@ function ensureBinary(binary: string): void {
   const probe = spawnSync(binary, ['--version'], {
     stdio: 'ignore',
     encoding: 'utf8',
-  });
+      windowsHide: true,
+    });
 
   if (probe.error && (probe.error as NodeJS.ErrnoException).code === 'ENOENT') {
     const verify = `${binary} --version`;
@@ -67,6 +74,13 @@ function ensureBinary(binary: string): void {
     console.error(`[ask-${binary}] Install/configure ${binary} CLI, then verify with: ${verify}`);
     process.exit(1);
   }
+}
+
+function shouldUseClaudeIssuePermissionsBypass(provider: string, prompt: string): boolean {
+  if (provider !== 'claude') return false;
+  const trimmed = prompt.trim();
+  if (trimmed === '') return false;
+  return ISSUE_WORK_PROMPT_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
 function buildSummary(exitCode: number, output: string): string {
@@ -147,13 +161,19 @@ async function writeArtifact({ provider, originalTask, finalPrompt, rawOutput, e
 async function main(): Promise<void> {
   const { provider, prompt } = parseArgs(process.argv.slice(2));
   const binary = PROVIDER_BINARIES[provider];
+  const originalTask = process.env[ASK_ORIGINAL_TASK_ENV] ?? prompt;
 
   ensureBinary(binary);
 
-  const run = spawnSync(binary, ['-p', prompt], {
+  const launchArgs = shouldUseClaudeIssuePermissionsBypass(provider, originalTask)
+    ? [CLAUDE_SKIP_PERMISSIONS_FLAG, '-p', prompt]
+    : ['-p', prompt];
+
+  const run = spawnSync(binary, launchArgs, {
     encoding: 'utf8',
     maxBuffer: 10 * 1024 * 1024,
-  });
+      windowsHide: true,
+    });
 
   const stdout = run.stdout || '';
   const stderr = run.stderr || '';
@@ -162,7 +182,7 @@ async function main(): Promise<void> {
 
   const artifactPath = await writeArtifact({
     provider,
-    originalTask: process.env[ASK_ORIGINAL_TASK_ENV] ?? prompt,
+    originalTask,
     finalPrompt: prompt,
     rawOutput,
     exitCode,
