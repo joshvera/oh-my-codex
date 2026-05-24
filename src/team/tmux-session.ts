@@ -24,6 +24,7 @@ import {
 import { readActiveProviderEnvOverrides } from '../config/models.js';
 import { extractModelProviderOverrideValue } from './model-contract.js';
 import { sleep, sleepSync } from '../utils/sleep.js';
+import { ensureManagedHudPane } from '../hud/lifecycle.js';
 import {
   buildPlatformCommandSpec,
   classifySpawnError,
@@ -35,6 +36,11 @@ import { resolveOmxCliEntryPath } from '../utils/paths.js';
 const execFileAsync = promisify(execFile);
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_TEAM_HEIGHT_LINES } from '../hud/constants.js';
 import { OMX_TMUX_HUD_OWNER_ENV } from '../hud/reconcile.js';
+import {
+  readHudPaneMetadata,
+  writeHudPaneMetadata,
+  OMX_TMUX_HUD_LEADER_PANE_ENV,
+} from '../hud/tmux.js';
 
 const OMX_INSTANCE_OPTION = '@omx_instance_id';
 const OMX_PANE_INSTANCE_OPTION = '@omx_pane_instance_id';
@@ -318,6 +324,73 @@ function findHudPaneIds(target: string, leaderPaneId: string): string[] {
     .map((pane) => pane.paneId);
 }
 
+function createTeamHudPane(
+  cwd: string,
+  hudCmd: string,
+  options: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string } = {},
+): string | null {
+  const args = [
+    'split-window',
+    '-v',
+    ...(options.fullWidth ? ['-f'] : []),
+    '-l',
+    String(options.heightLines ?? HUD_TMUX_TEAM_HEIGHT_LINES),
+    ...(options.targetPaneId ? ['-t', options.targetPaneId] : []),
+    '-d',
+    '-P',
+    '-F',
+    '#{pane_id}',
+    '-c',
+    translatePathForMsys(cwd),
+    hudCmd,
+  ];
+  const result = runTmux(args);
+  if (!result.ok) return null;
+  const paneId = result.stdout.split('\n')[0]?.trim() ?? '';
+  return paneId.startsWith('%') ? paneId : null;
+}
+
+function ensureTeamHudPane(options: {
+  cwd: string;
+  hudCmd: string;
+  currentPaneId?: string;
+  sessionId?: string;
+  leaderPaneId?: string;
+  fullWidth?: boolean;
+}): string | null {
+  const result = ensureManagedHudPane({
+    cwd: options.cwd,
+    hudCmd: options.hudCmd,
+    currentPaneId: options.currentPaneId,
+    owner: {
+      sessionId: options.sessionId,
+      leaderPaneId: options.leaderPaneId,
+      root: process.env.OMX_ROOT,
+    },
+    heightLines: HUD_TMUX_TEAM_HEIGHT_LINES,
+    fullWidth: options.fullWidth,
+    targetPaneId: options.currentPaneId,
+  }, {
+    listCurrentWindowPanes: (currentPaneId) => listPanes(currentPaneId ?? options.currentPaneId ?? ''),
+    createHudWatchPane: createTeamHudPane,
+    killTmuxPane: (paneId) => runTmux(['kill-pane', '-t', paneId]).ok,
+    resizeTmuxPane: (paneId, heightLines) => runTmux(buildHudResizeArgs(paneId, heightLines)).ok,
+    registerHudResizeHook: () => true,
+    unregisterHudResizeHook: () => true,
+    readHudPaneMetadata: (paneId) => readHudPaneMetadata(paneId, (args) => {
+      const result = runTmux(args);
+      if (!result.ok) throw new Error(result.stderr);
+      return result.stdout;
+    }),
+    writeHudPaneMetadata: (paneId, metadata) => writeHudPaneMetadata(paneId, metadata, (args) => {
+      const result = runTmux(args);
+      if (!result.ok) throw new Error(result.stderr);
+      return result.stdout;
+    }),
+  });
+  return result.paneId;
+}
+
 const MAX_FRACTIONAL_SLEEP_MS = 60_000;
 
 function toFractionalSleepMs(seconds: number): number {
@@ -404,9 +477,16 @@ function shellQuoteSingle(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function formatHudEnvAssignments(env: NodeJS.ProcessEnv = process.env): string {
+function formatHudEnvAssignments(
+  env: NodeJS.ProcessEnv = process.env,
+  owner: { sessionId?: string; leaderPaneId?: string } = {},
+): string {
   const assignments = [
     `${OMX_TMUX_HUD_OWNER_ENV}=1`,
+    ...(owner.sessionId?.trim() ? [`OMX_SESSION_ID=${shellQuoteSingle(owner.sessionId.trim())}`] : []),
+    ...(owner.leaderPaneId?.trim()
+      ? [`${OMX_TMUX_HUD_LEADER_PANE_ENV}=${shellQuoteSingle(owner.leaderPaneId.trim())}`]
+      : []),
     ...(typeof env.OMX_ROOT === 'string' && env.OMX_ROOT.trim() !== ''
       ? [`OMX_ROOT=${shellQuoteSingle(env.OMX_ROOT)}`]
       : []),
@@ -1277,78 +1357,79 @@ export function createTeamSession(
     let resizeHookName: string | null = null;
     let resizeHookTarget: string | null = null;
     if (canRecreateTeamHud && omxEntry) {
-      const hudCmd = `exec env ${formatHudEnvAssignments()} node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
-      const hudCwd = translatePathForMsys(cwd);
-      const hudResult = runTmux([
-        'split-window', '-v', '-f', '-l', String(HUD_TMUX_TEAM_HEIGHT_LINES), '-t', teamTarget, '-d', '-P', '-F', '#{pane_id}', '-c', hudCwd, hudCmd,
-      ]);
-      if (hudResult.ok) {
-        const id = hudResult.stdout.split('\n')[0]?.trim() ?? '';
-        if (id.startsWith('%')) {
-          rollbackPaneIds.push(id);
-          if (isNativeWindows() && !waitForPaneToRemainPresent(teamTarget, id)) {
-            throw new Error(`HUD pane did not remain present after tmux split-window returned ${id}`);
+      const hudCmd = `exec env ${formatHudEnvAssignments(process.env, { sessionId: instanceId, leaderPaneId })} node ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
+      const id = ensureTeamHudPane({
+        cwd,
+        hudCmd,
+        currentPaneId: leaderPaneId,
+        sessionId: instanceId,
+        leaderPaneId,
+        fullWidth: true,
+      }) ?? '';
+      if (id.startsWith('%')) {
+        rollbackPaneIds.push(id);
+        if (isNativeWindows() && !waitForPaneToRemainPresent(teamTarget, id)) {
+          throw new Error(`HUD pane did not remain present after tmux split-window returned ${id}`);
+        }
+        tagPaneInstance(id, instanceId);
+        hudPaneId = id;
+
+        if (isNativeWindows()) {
+          // Native Windows tmux support may flow through psmux; issuing a
+          // direct control-plane resize avoids nested run-shell PATH drift.
+          const reconcile = runTmux(buildHudResizeArgs(hudPaneId));
+          if (!reconcile.ok) {
+            throw new Error(`failed to reconcile HUD resize: ${reconcile.stderr}`);
           }
-          tagPaneInstance(id, instanceId);
-          hudPaneId = id;
-
-          if (isNativeWindows()) {
-            // Native Windows tmux support may flow through psmux; issuing a
-            // direct control-plane resize avoids nested run-shell PATH drift.
-            const reconcile = runTmux(buildHudResizeArgs(hudPaneId));
-            if (!reconcile.ok) {
-              throw new Error(`failed to reconcile HUD resize: ${reconcile.stderr}`);
-            }
+        } else {
+          const hookTarget = buildResizeHookTarget(sessionName, windowIndex);
+          const hookName = buildResizeHookName(safeTeamName, sessionName, windowIndex, hudPaneId);
+          const registerHook = runTmux(buildRegisterResizeHookArgs(hookTarget, hookName, hudPaneId));
+          const clientAttachedHookName = buildClientAttachedReconcileHookName(
+            safeTeamName,
+            sessionName,
+            windowIndex,
+            hudPaneId,
+          );
+          if (registerHook.ok) {
+            resizeHookTarget = hookTarget;
+            resizeHookName = hookName;
+            registeredResizeHook = { name: resizeHookName, target: resizeHookTarget };
           } else {
-            const hookTarget = buildResizeHookTarget(sessionName, windowIndex);
-            const hookName = buildResizeHookName(safeTeamName, sessionName, windowIndex, hudPaneId);
-            const registerHook = runTmux(buildRegisterResizeHookArgs(hookTarget, hookName, hudPaneId));
-            const clientAttachedHookName = buildClientAttachedReconcileHookName(
-              safeTeamName,
-              sessionName,
-              windowIndex,
-              hudPaneId,
+            // tmux versions/builds that reject indexed client-resized hooks should not
+            // abort madmax/team startup after panes were successfully created. Keep the
+            // fallback narrow: skip only the long-lived resize hook metadata, then
+            // still try the one-shot client-attached reconcile plus the explicit
+            // delayed/direct resize checks below so real tmux/run-shell failures
+            // still surface.
+            console.warn(
+              `[omx] tmux resize hook unavailable for ${hookTarget} (${hookName}): ${registerHook.stderr}; `
+                + 'continuing with best-effort HUD resize fallback.',
             );
-            if (registerHook.ok) {
-              resizeHookTarget = hookTarget;
-              resizeHookName = hookName;
-              registeredResizeHook = { name: resizeHookName, target: resizeHookTarget };
-            } else {
-              // tmux versions/builds that reject indexed client-resized hooks should not
-              // abort madmax/team startup after panes were successfully created. Keep the
-              // fallback narrow: skip only the long-lived resize hook metadata, then
-              // still try the one-shot client-attached reconcile plus the explicit
-              // delayed/direct resize checks below so real tmux/run-shell failures
-              // still surface.
-              console.warn(
-                `[omx] tmux resize hook unavailable for ${hookTarget} (${hookName}): ${registerHook.stderr}; `
-                  + 'continuing with best-effort HUD resize fallback.',
-              );
-            }
-            const registerClientAttachedHook = runTmux(
-              buildRegisterClientAttachedReconcileArgs(hookTarget, clientAttachedHookName, hudPaneId),
+          }
+          const registerClientAttachedHook = runTmux(
+            buildRegisterClientAttachedReconcileArgs(hookTarget, clientAttachedHookName, hudPaneId),
+          );
+          if (registerClientAttachedHook.ok) {
+            registeredClientAttachedHook = { name: clientAttachedHookName, target: hookTarget };
+          } else if (registerHook.ok) {
+            throw new Error(
+              `failed to register client-attached reconcile hook ${clientAttachedHookName}: ${registerClientAttachedHook.stderr}`,
             );
-            if (registerClientAttachedHook.ok) {
-              registeredClientAttachedHook = { name: clientAttachedHookName, target: hookTarget };
-            } else if (registerHook.ok) {
-              throw new Error(
-                `failed to register client-attached reconcile hook ${clientAttachedHookName}: ${registerClientAttachedHook.stderr}`,
-              );
-            } else {
-              console.warn(
-                `[omx] tmux client-attached resize fallback unavailable for ${hookTarget} `
-                  + `(${clientAttachedHookName}): ${registerClientAttachedHook.stderr}; continuing with delayed HUD resize fallback.`,
-              );
-            }
+          } else {
+            console.warn(
+              `[omx] tmux client-attached resize fallback unavailable for ${hookTarget} `
+                + `(${clientAttachedHookName}): ${registerClientAttachedHook.stderr}; continuing with delayed HUD resize fallback.`,
+            );
+          }
 
-            const delayed = runTmux(buildScheduleDelayedHudResizeArgs(hudPaneId));
-            if (!delayed.ok) {
-              throw new Error(`failed to schedule delayed HUD resize: ${delayed.stderr}`);
-            }
-            const reconcile = runTmux(buildReconcileHudResizeArgs(hudPaneId));
-            if (!reconcile.ok) {
-              throw new Error(`failed to reconcile HUD resize: ${reconcile.stderr}`);
-            }
+          const delayed = runTmux(buildScheduleDelayedHudResizeArgs(hudPaneId));
+          if (!delayed.ok) {
+            throw new Error(`failed to schedule delayed HUD resize: ${delayed.stderr}`);
+          }
+          const reconcile = runTmux(buildReconcileHudResizeArgs(hudPaneId));
+          if (!reconcile.ok) {
+            throw new Error(`failed to reconcile HUD resize: ${reconcile.stderr}`);
           }
         }
       }
@@ -1404,27 +1485,16 @@ export function restoreStandaloneHudPane(
   const omxEntry = resolveOmxCliEntryPath();
   if (!omxEntry || omxEntry.trim() === '') return null;
 
-  const hudCmd = `exec env ${formatHudEnvAssignments()} ${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
-  const hudCwd = translatePathForMsys(cwd);
-  const hudResult = runTmux([
-    'split-window',
-    '-v',
-    '-l',
-    String(HUD_TMUX_TEAM_HEIGHT_LINES),
-    '-t',
-    normalizedLeaderPaneId,
-    '-d',
-    '-P',
-    '-F',
-    '#{pane_id}',
-    '-c',
-    hudCwd,
+  const sessionId = process.env.OMX_SESSION_ID?.trim();
+  const hudCmd = `exec env ${formatHudEnvAssignments(process.env, { sessionId, leaderPaneId: normalizedLeaderPaneId })} ${shellQuoteSingle(translatePathForMsys(resolveLeaderNodePath()))} ${shellQuoteSingle(translatePathForMsys(omxEntry))} hud --watch`;
+  const paneId = ensureTeamHudPane({
+    cwd,
     hudCmd,
-  ]);
-  if (!hudResult.ok) return null;
-
-  const paneId = hudResult.stdout.split('\n')[0]?.trim() ?? '';
-  if (!paneId.startsWith('%')) return null;
+    currentPaneId: normalizedLeaderPaneId,
+    sessionId,
+    leaderPaneId: normalizedLeaderPaneId,
+  });
+  if (!paneId?.startsWith('%')) return null;
 
   if (isNativeWindows()) {
     runTmux(buildHudResizeArgs(paneId));

@@ -87,7 +87,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(created.length, 1);
     assert.match(
       created[0]?.cmd || '',
-      /^exec env OMX_SESSION_ID='sess-canonical' OMX_TMUX_HUD_LEADER_PANE='%1' '.*' '.*omx\.js' hud --watch/,
+      /^exec env OMX_TMUX_HUD_OWNER='1' OMX_SESSION_ID='sess-canonical' OMX_TMUX_HUD_LEADER_PANE='%1' '.*' '.*omx\.js' hud --watch/,
     );
     assert.doesNotMatch(created[0]?.cmd || '', /sess-stale/);
   });
@@ -118,7 +118,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(created.length, 1);
     assert.match(
       created[0]?.cmd || '',
-      /^exec env OMX_SESSION_ID='sess boxed' OMX_TMUX_HUD_LEADER_PANE='%1' OMX_ROOT='\/tmp\/boxed root\/it'\\''s\/\$\(literal\)' '.*' '.*omx\.js' hud --watch/,
+      /^exec env OMX_TMUX_HUD_OWNER='1' OMX_SESSION_ID='sess boxed' OMX_TMUX_HUD_LEADER_PANE='%1' OMX_ROOT='\/tmp\/boxed root\/it'\\''s\/\$\(literal\)' '.*' '.*omx\.js' hud --watch/,
     );
   });
 
@@ -147,8 +147,9 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(created[0]?.options?.targetPaneId, '%leader');
   });
 
-  it('kills duplicate HUD panes and recreates one full-width pane', async () => {
+  it('keeps one owned HUD pane and kills duplicate panes for the same leader', async () => {
     const killed: string[] = [];
+    let created = false;
 
     const result = await reconcileHudForPromptSubmit('/repo', {
       env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
@@ -170,9 +171,8 @@ describe('reconcileHudForPromptSubmit', () => {
         killed.push(paneId);
         return true;
       },
-      createHudWatchPane: (_cwd, _cmd, options) => {
-        assert.equal(options?.fullWidth, true);
-        assert.equal(options?.heightLines, 3);
+      createHudWatchPane: () => {
+        created = true;
         return '%9';
       },
       resizeTmuxPane: () => true,
@@ -180,7 +180,32 @@ describe('reconcileHudForPromptSubmit', () => {
     });
 
     assert.equal(result.status, 'replaced_duplicates');
-    assert.deepEqual(killed, ['%2', '%3']);
+    assert.equal(result.paneId, '%2');
+    assert.equal(created, false);
+    assert.deepEqual(killed, ['%3']);
+  });
+
+  it('creates a missing HUD pane full-width when multiple non-HUD panes share the window', async () => {
+    const created: Array<{ options?: { heightLines?: number; fullWidth?: boolean; targetPaneId?: string } }> = [];
+
+    const result = await reconcileHudForPromptSubmit('/repo', {
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      listCurrentWindowPanes: () => [
+        { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
+        { paneId: '%4', currentCommand: 'codex', startCommand: 'codex' },
+      ],
+      createHudWatchPane: (_cwd, _cmd, options) => {
+        created.push({ options });
+        return '%9';
+      },
+      resizeTmuxPane: () => true,
+      resolveOmxCliEntryPath: () => '/repo/dist/cli/omx.js',
+    });
+
+    assert.equal(result.status, 'recreated');
+    assert.equal(result.paneId, '%9');
+    assert.equal(created[0]?.options?.fullWidth, true);
+    assert.equal(created[0]?.options?.heightLines, 3);
   });
 
   it('does not resize, kill, or reuse another active leader session HUD in the same tmux window', async () => {
@@ -256,7 +281,8 @@ describe('reconcileHudForPromptSubmit', () => {
     });
 
     assert.equal(result.status, 'replaced_duplicates');
-    assert.deepEqual(killed, ['%2', '%3']);
+    assert.equal(result.paneId, '%2');
+    assert.deepEqual(killed, ['%3']);
   });
 
   it('resizes an existing single HUD pane instead of recreating it', async () => {
@@ -334,16 +360,24 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(registered[0]?.heightLines, 3);
   });
 
-  it('unregisters existing hook before killing duplicates and re-registers for the new pane', async () => {
+  it('unregisters existing hook before killing duplicates and re-registers the kept pane', async () => {
     const unregistered: Array<string | undefined> = [];
     const registered: Array<{ hudPaneId: string; currentPaneId: string | undefined }> = [];
 
     await reconcileHudForPromptSubmit('/repo', {
-      env: { TMUX: '1', TMUX_PANE: '%1', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
+      env: { TMUX: '1', TMUX_PANE: '%1', OMX_SESSION_ID: 'sess-a', [OMX_TMUX_HUD_OWNER_ENV]: '1' },
       listCurrentWindowPanes: () => [
         { paneId: '%1', currentCommand: 'codex', startCommand: 'codex' },
-        { paneId: '%2', currentCommand: 'node', startCommand: 'node omx hud --watch' },
-        { paneId: '%3', currentCommand: 'node', startCommand: 'node omx hud --watch' },
+        {
+          paneId: '%2',
+          currentCommand: 'node',
+          startCommand: `env OMX_SESSION_ID='sess-a' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' node omx hud --watch`,
+        },
+        {
+          paneId: '%3',
+          currentCommand: 'node',
+          startCommand: `env OMX_SESSION_ID='sess-a' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' node omx hud --watch`,
+        },
       ],
       killTmuxPane: () => true,
       createHudWatchPane: () => '%9',
@@ -356,7 +390,7 @@ describe('reconcileHudForPromptSubmit', () => {
     assert.equal(unregistered.length, 1);
     assert.equal(unregistered[0], '%1');
     assert.equal(registered.length, 1);
-    assert.equal(registered[0]?.hudPaneId, '%9');
+    assert.equal(registered[0]?.hudPaneId, '%2');
     assert.equal(registered[0]?.currentPaneId, '%1');
   });
 });

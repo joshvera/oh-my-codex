@@ -3870,7 +3870,7 @@ esac
           const tmuxLog = await readFile(logPath, 'utf-8');
           assert.match(
             tmuxLog,
-            /exec env OMX_TMUX_HUD_OWNER=1 OMX_ROOT='\/tmp\/boxed root\/it'\\''s\/\$\(literal\)' .*hud --watch/,
+            /exec env OMX_TMUX_HUD_OWNER=1 OMX_TMUX_HUD_LEADER_PANE='%11' OMX_ROOT='\/tmp\/boxed root\/it'\\''s\/\$\(literal\)' .*hud --watch/,
           );
         },
       );

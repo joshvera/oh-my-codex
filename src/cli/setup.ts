@@ -50,6 +50,7 @@ import {
 	hasFirstPartyOmxMcpRegistrations,
 	extractFirstPartyOmxMcpSections,
 	stripFirstPartyOmxMcpSections,
+	mergeManagedTuiStatusLine,
 } from "../config/generator.js";
 import type { CodexHookFeatureFlag } from "../config/codex-feature-flags.js";
 import {
@@ -2296,6 +2297,22 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				"  Plugin-mode developer_instructions default not selected.\n",
 			);
 		}
+		const statusLineResult = await applyPluginModeStatusLineConfig(
+			scopeDirs.codexConfigFile,
+			backupContext,
+			summary.config,
+			{ dryRun, verbose },
+		);
+		resolvedConfig = existsSync(scopeDirs.codexConfigFile)
+			? await readFile(scopeDirs.codexConfigFile, "utf-8")
+			: "";
+		omxManagesTui = true;
+		console.log(
+			statusLineResult === "updated"
+				? `  ${dryRun ? "Would configure" : "Configured"} plugin-mode StatusLine via [tui] section.`
+				: "  Plugin-mode StatusLine already configured or preserved as user custom.",
+		);
+		console.log();
 	} else {
 		const statusLinePreset = await resolveStatusLinePresetForSetup(
 			projectRoot,
@@ -3626,6 +3643,43 @@ async function updateManagedConfig(
 		repairedLegacyTeamRunTable:
 			hadLegacyTeamRunTable && !hasLegacyOmxTeamRunTable(finalConfig),
 	};
+}
+
+async function applyPluginModeStatusLineConfig(
+	configPath: string,
+	backupContext: SetupBackupContext,
+	summary: SetupCategorySummary,
+	options: Pick<SetupOptions, "dryRun" | "verbose">,
+): Promise<"updated" | "unchanged"> {
+	const existing = existsSync(configPath)
+		? await readFile(configPath, "utf-8")
+		: "";
+	const finalConfig = mergeManagedTuiStatusLine(existing);
+	if (existing === finalConfig) {
+		summary.unchanged += 1;
+		return "unchanged";
+	}
+	if (
+		await ensureBackup(
+			configPath,
+			existsSync(configPath),
+			backupContext,
+			options,
+		)
+	) {
+		summary.backedUp += 1;
+	}
+	if (!options.dryRun) {
+		await mkdir(dirname(configPath), { recursive: true });
+		await writeFile(configPath, finalConfig);
+	}
+	summary.updated += 1;
+	if (options.verbose) {
+		console.log(
+			`  ${options.dryRun ? "would update" : "updated"} plugin-mode status_line in ${configPath}`,
+		);
+	}
+	return "updated";
 }
 
 async function syncSharedMcpRegistryIntoConfig(
