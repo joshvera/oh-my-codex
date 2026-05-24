@@ -184,6 +184,7 @@ describe('HUD pane ownership helpers', () => {
   it('tags reconciled HUD watch commands with the leader pane owner', () => {
     const cmd = buildHudWatchCommand('/usr/bin/omx.js', undefined, 'sess-a', undefined, '%1');
 
+    assert.match(cmd, /OMX_TMUX_HUD_OWNER='1'/);
     assert.match(cmd, /OMX_SESSION_ID='sess-a'/);
     assert.match(cmd, new RegExp(`${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1'`));
   });

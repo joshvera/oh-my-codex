@@ -182,6 +182,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       const initResult = spawnSync("git", ["init", "-q"], { cwd: wd });
       assert.equal(initResult.status, 0);
       await writeFile(join(wd, ".gitignore"), "node_modules/\n");
+      await mkdir(join(wd, ".git", "info"), { recursive: true });
       await writeFile(join(wd, ".git", "info", "exclude"), ".omx/\n");
 
       await runSetupInTempDir(wd, { scope: "project" });
@@ -199,6 +200,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
     try {
       const initResult = spawnSync("git", ["init", "-q"], { cwd: wd });
       assert.equal(initResult.status, 0);
+      await mkdir(join(wd, ".git", "info"), { recursive: true });
       await writeFile(join(wd, ".git", "info", "exclude"), ".omx/\n");
 
       await runSetupInTempDir(wd, { scope: "project" });
@@ -424,6 +426,53 @@ describe("omx setup refresh summary and dry-run behavior", () => {
         config,
         /^status_line = \["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"\]$/m,
       );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds managed [tui].status_line during plugin-mode setup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+
+      await runSetupInTempDir(wd, {
+        scope: "project",
+        installMode: "plugin",
+      });
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.match(config, /^\[tui\]$/m);
+      assert.match(config, /^# omx:managed-status-line$/m);
+      assert.match(
+        config,
+        /^status_line = \["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"\]$/m,
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves user-owned plugin-mode [tui].status_line", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-setup-refresh-"));
+    try {
+      await mkdir(join(wd, ".omx", "state"), { recursive: true });
+      await mkdir(join(wd, ".codex"), { recursive: true });
+      await writeFile(
+        join(wd, ".codex", "config.toml"),
+        ["[tui]", 'theme = "night"', 'status_line = ["git-branch"]', ""].join("\n"),
+      );
+
+      await runSetupInTempDir(wd, {
+        scope: "project",
+        installMode: "plugin",
+        force: true,
+      });
+
+      const config = await readFile(join(wd, ".codex", "config.toml"), "utf-8");
+      assert.match(config, /^theme = "night"$/m);
+      assert.match(config, /^status_line = \["git-branch"\]$/m);
+      assert.doesNotMatch(config, /^# omx:managed-status-line$/m);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

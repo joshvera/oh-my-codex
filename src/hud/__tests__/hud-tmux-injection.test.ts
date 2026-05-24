@@ -244,12 +244,12 @@ describe('buildHudWatchCommand', () => {
     );
     assert.equal(
       cmd,
-      `exec env OMX_SESSION_ID='sess managed' OMX_ROOT='/tmp/boxed root/it'\\''s/$(literal)' ${runtimePrefix} '/usr/bin/omx.js' hud --watch --preset=minimal`,
+      `exec env OMX_TMUX_HUD_OWNER='1' OMX_SESSION_ID='sess managed' OMX_ROOT='/tmp/boxed root/it'\\''s/$(literal)' ${runtimePrefix} '/usr/bin/omx.js' hud --watch --preset=minimal`,
     );
   });
 
-  it('does not add an env wrapper when OMX_SESSION_ID and OMX_ROOT are unset', () => {
+  it('tags reconciled HUD panes as OMX-owned even when optional env is unset', () => {
     const cmd = buildHudWatchCommand('/usr/bin/omx.js');
-    assert.equal(cmd, `exec ${runtimePrefix} '/usr/bin/omx.js' hud --watch`);
+    assert.equal(cmd, `exec env OMX_TMUX_HUD_OWNER='1' ${runtimePrefix} '/usr/bin/omx.js' hud --watch`);
   });
 });

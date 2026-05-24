@@ -127,13 +127,13 @@ import type { UnifiedMcpRegistryServer } from "../config/mcp-registry.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { HUD_TMUX_HEIGHT_LINES } from "../hud/constants.js";
 import { OMX_TMUX_HUD_OWNER_ENV } from "../hud/reconcile.js";
+import { ensureManagedHudPane } from "../hud/lifecycle.js";
 import {
-  createHudWatchPane as createSharedHudWatchPane,
   killTmuxPane as killSharedTmuxPane,
-  listCurrentWindowHudPaneIds,
   OMX_TMUX_HUD_LEADER_PANE_ENV,
   parsePaneIdFromTmuxOutput,
-  registerHudResizeHook,
+  writeHudPaneMetadata,
+  listCurrentWindowHudPaneIds,
 } from "../hud/tmux.js";
 
 export { parseTmuxPaneSnapshot, isHudWatchPane, findHudWatchPaneIds } from "../hud/tmux.js";
@@ -3954,20 +3954,17 @@ function runCodex(
 
   if (launchPolicy === "inside-tmux") {
     // Already in tmux: launch codex in current pane, HUD in bottom split
-    const staleHudPaneIds = listHudWatchPaneIdsInCurrentWindow(currentPaneId, { sessionId, leaderPaneId: currentPaneId });
-    for (const paneId of staleHudPaneIds) {
-      killTmuxPane(paneId);
-    }
-
     let hudPaneId: string | null = null;
     try {
-      hudPaneId = createHudWatchPane(cwd, hudCmd, {
+      const hud = ensureManagedHudPane({
+        cwd,
+        hudCmd,
+        currentPaneId,
+        owner: { sessionId, leaderPaneId: currentPaneId, root: omxRootOverride },
         heightLines: HUD_TMUX_HEIGHT_LINES,
         targetPaneId: currentPaneId,
       });
-      if (hudPaneId && currentPaneId) {
-        registerHudResizeHook(hudPaneId, currentPaneId, HUD_TMUX_HEIGHT_LINES);
-      }
+      hudPaneId = hud.paneId;
     } catch (err) {
       logCliOperationFailure(err);
       // HUD split failed, continue without it
@@ -4124,6 +4121,13 @@ function runCodex(
           }
           if (step.name === "split-and-capture-hud-pane") {
             const hudPaneId = parsePaneIdFromTmuxOutput(output || "");
+            if (hudPaneId) {
+              writeHudPaneMetadata(hudPaneId, {
+                owner: "1",
+                sessionId,
+                root: omxRootOverride,
+              });
+            }
             const hookWindowIndex = hudPaneId
               ? detectDetachedSessionWindowIndex(sessionName)
               : null;
@@ -4263,17 +4267,6 @@ function listHudWatchPaneIdsInCurrentWindow(
     logCliOperationFailure(err);
     return [];
   }
-}
-
-function createHudWatchPane(
-  cwd: string,
-  hudCmd: string,
-  options: { heightLines?: number; targetPaneId?: string } = {},
-): string | null {
-  return createSharedHudWatchPane(cwd, hudCmd, {
-    heightLines: options.heightLines ?? HUD_TMUX_HEIGHT_LINES,
-    targetPaneId: options.targetPaneId,
-  });
 }
 
 function killTmuxPane(paneId: string): void {

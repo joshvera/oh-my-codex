@@ -1767,6 +1767,21 @@ function upsertTuiStatusLine(
   };
 }
 
+export function mergeManagedTuiStatusLine(
+  config: string,
+  preset: HudPreset = DEFAULT_STATUS_LINE_PRESET,
+  options: { forceStatusLinePreset?: boolean } = {},
+): string {
+  const tuiUpsert = upsertTuiStatusLine(config, preset, options);
+  if (tuiUpsert.hadExistingTui) return tuiUpsert.cleaned;
+  const section = [
+    "[tui]",
+    OMX_MANAGED_STATUS_LINE_MARKER,
+    statusLineForPreset(preset),
+  ].join("\n");
+  return `${config.trimEnd()}${config.trim() ? "\n\n" : ""}${section}\n`;
+}
+
 // ---------------------------------------------------------------------------
 // OMX [table] sections block (appended at end of file)
 // ---------------------------------------------------------------------------

@@ -44,7 +44,8 @@ The OMX HUD uses a two-layer architecture:
 ## Setup
 
 `omx setup` automatically configures both layers:
-- Adds `[tui] status_line` to `~/.codex/config.toml` (Layer 1)
+- Adds `[tui] status_line` to `~/.codex/config.toml` in both legacy and plugin setup modes (Layer 1)
+- Preserves user-owned `status_line` customizations unless the line was previously OMX-managed
 - Writes `.omx/hud-config.json` with default preset (Layer 2)
 - Default preset is `focused`; if HUD/statusline changes do not appear, restart Codex CLI once.
 

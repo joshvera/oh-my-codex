@@ -1,4 +1,4 @@
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_HEIGHT_LINES } from './constants.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 
@@ -8,11 +8,24 @@ export interface TmuxPaneSnapshot {
   startCommand: string;
 }
 
+export const OMX_TMUX_HUD_OWNER_ENV = 'OMX_TMUX_HUD_OWNER';
 export const OMX_TMUX_HUD_LEADER_PANE_ENV = 'OMX_TMUX_HUD_LEADER_PANE';
+export const OMX_HUD_PANE_OWNER_OPTION = '@omx_hud_owner';
+export const OMX_HUD_PANE_SESSION_OPTION = '@omx_hud_session_id';
+export const OMX_HUD_PANE_LEADER_OPTION = '@omx_hud_leader_pane';
+export const OMX_HUD_PANE_ROOT_OPTION = '@omx_hud_root';
+export const OMX_HUD_LOCK_TIMEOUT_MS = 2_000;
 
 export interface HudPaneOwner {
   sessionId?: string;
   leaderPaneId?: string;
+}
+
+export interface HudPaneMetadata {
+  owner?: string;
+  sessionId?: string;
+  leaderPaneId?: string;
+  root?: string;
 }
 
 type TmuxExecSync = (args: string[]) => string;
@@ -210,6 +223,7 @@ export function buildHudWatchCommand(
   const safeOmxRoot = typeof omxRoot === 'string' ? omxRoot : '';
   const safeLeaderPaneId = typeof leaderPaneId === 'string' ? leaderPaneId.trim() : '';
   const envPrefix = buildEnvPrefix({
+    [OMX_TMUX_HUD_OWNER_ENV]: '1',
     OMX_SESSION_ID: safeSessionId,
     [OMX_TMUX_HUD_LEADER_PANE_ENV]: safeLeaderPaneId,
     OMX_ROOT: safeOmxRoot,
@@ -363,4 +377,91 @@ export function unregisterHudResizeHook(
   } catch {
     return false;
   }
+}
+
+function readPaneUserOption(
+  paneId: string,
+  optionName: string,
+  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+): string | undefined {
+  if (!paneId.startsWith('%')) return undefined;
+  try {
+    const value = execTmuxSync(['show-options', '-p', '-v', '-t', paneId, optionName]).trim();
+    return value === '' ? undefined : value;
+  } catch {
+    return undefined;
+  }
+}
+
+export function readHudPaneMetadata(
+  paneId: string,
+  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+): HudPaneMetadata {
+  return {
+    owner: readPaneUserOption(paneId, OMX_HUD_PANE_OWNER_OPTION, execTmuxSync),
+    sessionId: readPaneUserOption(paneId, OMX_HUD_PANE_SESSION_OPTION, execTmuxSync),
+    leaderPaneId: readPaneUserOption(paneId, OMX_HUD_PANE_LEADER_OPTION, execTmuxSync),
+    root: readPaneUserOption(paneId, OMX_HUD_PANE_ROOT_OPTION, execTmuxSync),
+  };
+}
+
+function setPaneUserOption(
+  paneId: string,
+  optionName: string,
+  value: string,
+  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+): boolean {
+  if (!paneId.startsWith('%')) return false;
+  try {
+    execTmuxSync(['set-option', '-p', '-t', paneId, optionName, value]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function writeHudPaneMetadata(
+  paneId: string,
+  metadata: HudPaneMetadata,
+  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+): boolean {
+  if (!paneId.startsWith('%')) return false;
+  let wrote = setPaneUserOption(paneId, OMX_HUD_PANE_OWNER_OPTION, metadata.owner || '1', execTmuxSync);
+  if (metadata.sessionId?.trim()) {
+    wrote = setPaneUserOption(paneId, OMX_HUD_PANE_SESSION_OPTION, metadata.sessionId.trim(), execTmuxSync) || wrote;
+  }
+  if (metadata.leaderPaneId?.trim()) {
+    wrote = setPaneUserOption(paneId, OMX_HUD_PANE_LEADER_OPTION, metadata.leaderPaneId.trim(), execTmuxSync) || wrote;
+  }
+  if (metadata.root?.trim()) {
+    wrote = setPaneUserOption(paneId, OMX_HUD_PANE_ROOT_OPTION, metadata.root, execTmuxSync) || wrote;
+  }
+  return wrote;
+}
+
+export function buildHudLockChannel(sessionId?: string, leaderPaneId?: string): string {
+  const raw = ['omx_hud', sessionId || 'no_session', leaderPaneId || 'bootstrap'].join('_');
+  return raw.replace(/[^A-Za-z0-9_./:-]+/g, '_').replace(/^_+|_+$/g, '') || 'omx_hud_bootstrap';
+}
+
+export function acquireTmuxWaitLock(
+  channel: string,
+  timeoutMs: number = OMX_HUD_LOCK_TIMEOUT_MS,
+): boolean {
+  const tmuxBin = resolveTmuxBinaryForPlatform() || 'tmux';
+  const result = spawnSync(tmuxBin, ['wait-for', '-L', channel], {
+    encoding: 'utf-8',
+    timeout: Math.max(1, Math.floor(timeoutMs)),
+    ...(process.platform === 'win32' ? { windowsHide: true } : {}),
+  });
+  return !result.error && result.status === 0;
+}
+
+export function releaseTmuxWaitLock(channel: string): boolean {
+  const tmuxBin = resolveTmuxBinaryForPlatform() || 'tmux';
+  const result = spawnSync(tmuxBin, ['wait-for', '-U', channel], {
+    encoding: 'utf-8',
+    ...(process.platform === 'win32' ? { windowsHide: true } : {}),
+  });
+  return !result.error && result.status === 0;
 }
