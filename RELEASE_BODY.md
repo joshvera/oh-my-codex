@@ -1,46 +1,42 @@
-# oh-my-codex 0.18.2
+# oh-my-codex 0.18.3
 
-`0.18.2` promotes the closed post-`0.18.1` issue train from `dev` to `main`. The release includes every currently closed, completed issue opened after `v0.18.1`, plus the Prometheus Strict planner surface and Ultragoal HUD progress display that merged during the same compare range.
+`0.18.3` is a patch release after `0.18.2` for the post-release reliability and operator-experience train on `dev`. It focuses on HUD/tmux lifecycle cleanup, Team diff readability, auth slot hot-swap support, visible explore prompt syntax guidance, deep-interview runtime configuration and handoff authority, plugin-owned hook preservation, and the new Scholastic ontology reviewer agent.
 
 ## Highlights
 
-- **Post-0.18.1 closed bug train is merged** — doctor/plugin hook diagnostics, Autopilot chain visibility, tmux/HUD/madmax regressions, team Stop leakage, notification turn-ended storms, Ultragoal goal-storage recovery, research-planning wording, and project-scope native-hook duplication are all included.
-- **Prometheus Strict is available as a recipe workflow** — the planner surface now has `omx question` routing, native agent definitions, catalog entries, plugin mirrors, and dogfood docs.
-- **Ultragoal progress is visible in the HUD** — active durable goal progress and review follow-up state are surfaced during long-running workflows.
-- **Workflow handoffs are more explicit** — deep-interview remains a requirements boundary, Autopilot records durable phase state, ralplan consensus requires Architect/Critic evidence, and ralplan examples default to Ultragoal for durable execution.
+- **HUD panes are less stale and less duplicated** — HUD launch/reconcile now coalesces same-leader panes, preserves session ownership, reaps dead-leader panes, and reuses the existing HUD during UserPromptSubmit revive.
+- **Team diff output is easier to review** — wrapped multi-line diff hunks preserve the diff gutter so long patches remain readable in tmux panes.
+- **Deep-interview is more configurable and safer to hand off** — runtime config overrides are supported, and `plan_then_execute` downstream authority is enforced as a binding gate.
+- **Auth slots can be hot-swapped more safely** — the release includes the auth slot hot-swap wrapper work from the final `dev` delta.
+- **Explore runtime guidance keeps prompt syntax visible** — prompt syntax remains visible in runtime guidance so operators do not lose invocation shape while using `omx explore`.
+- **Plugin-owned hooks are respected** — Codex setup paths preserve plugin-owned hooks instead of overwriting user/plugin surfaces.
+- **Scholastic ontology review is available** — a first-class Scholastic reviewer agent is added to the agent catalog and native config surface.
 
 ## Fixes / compatibility
 
-- Plugin-mode doctor checks now validate plugin hook manifests instead of looping users through ineffective `setup --force` guidance.
-- Native subagents suppress quoted workflow keyword activation, and project-scope runtime `CODEX_HOME` no longer mirrors hook/config files in a way that duplicates hooks or loses trust state.
-- Tmux 3.2a resize hooks, boxed `OMX_ROOT` HUD panes, per-leader HUD ownership, independent madmax detached starts, stale detached locks, and same-directory lock diagnostics are hardened.
-- Team startup direct triggers require evidence, stale/foreign Team Stop state fails closed, and Codex Desktop turn-ended notify dispatch is bounded.
-- Ultragoal can record unavailable Codex goal storage as recoverable blocked evidence instead of weakening final checkpoint reconciliation.
-
-## Closed issue audit
-
-Opened after `v0.18.1` and currently closed:
-
-- Completed and merged to `dev`: #2429→#2431, #2430→#2432, #2433→#2434, #2435→#2436, #2438→#2439, #2440→#2442, #2443→#2447, #2445→#2448, #2449→#2450, #2451→#2452, #2453→#2455, #2456→#2457, #2460→#2461, #2462→#2463, #2466→#2467, #2468→#2469, #2470→#2471.
-- Closed as not planned / not an execution-track merge: #2428 (too broad; requested narrower follow-ups) and #2465 (contribution-gate closure).
+- HUD ownership and tmux reconciliation fixes reduce cross-worktree accumulation and stale session-id/env drift.
+- Team hunk rendering keeps gutters on wrapped multi-line diffs.
+- Setup and native hook paths preserve plugin ownership boundaries while still warning on invalid/missing coverage.
+- Deep-interview and ralplan guidance now encode stricter downstream execution authority and runtime override behavior.
+- Auth slot wrapper and explore prompt-guidance fixes from the rebased `dev` head are included in this cut.
 
 ## Merged PR inventory
 
-#2415, #2427, #2431, #2432, #2434, #2436, #2437, #2439, #2442, #2447, #2448, #2450, #2452, #2455, #2457, #2461, #2463, #2467, #2469, #2471, #2472.
+#2474, #2476, #2477, #2478, #2481, #2482, #2483, #2484, #2485, #2486, #2487, #2488, #2489, #2491, #2492, #2493, #2494, #2495.
 
 ## Validation
 
-- `npm run build`
-- `npm run verify:native-agents`
-- `npm run verify:plugin-bundle`
-- `npm run test:recent-bug-regressions:compiled`
-- `node --test dist/hud/__tests__/authority.test.js dist/hooks/__tests__/notify-fallback-watcher.test.js dist/scripts/__tests__/notify-dispatcher.test.js dist/ultragoal/__tests__/artifacts.test.js dist/cli/__tests__/codex-plugin-layout.test.js dist/cli/__tests__/setup-install-mode.test.js dist/hooks/__tests__/keyword-detector.test.js dist/team/__tests__/runtime.test.js`
-- `npm run sync:plugin:check`
-- Tag-time release workflow/gate regenerates the release body from `RELEASE_BODY.md` after `v0.18.2` exists.
-- `cargo check --workspace`
+- `npm run lint`
+- `npm run check:no-unused`
+- `npm run test`
+- Project-native targeted changed-area tests rerun twice through `dist/scripts/run-test-files.js`
+- Adversarial release harness for malformed state, prompt-injection, interruption/cancel wording, hung child process, misleading success output, and no-tag side-effect guard
+- `npm pack --dry-run`
+
+Accepted residual risk: `cargo test` has one known failing `omx-explore` process-group timeout cleanup assertion, waived by release-owner direction for this cut and recorded in `docs/qa/release-readiness-0.18.3.md`.
 
 ## Contributors
 
-Thanks to everyone who reported and narrowed the post-`0.18.1` closed issue train, especially the plugin-hook, Autopilot, tmux/HUD/madmax, Team Stop, notification storm, Ultragoal recovery, and project-scope launch reports.
+Thanks to everyone who reported and narrowed the post-`0.18.2` HUD, Team, auth-slot, explore, deep-interview, hook, and agent-catalog follow-ups.
 
-**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.1...v0.18.2
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.18.2...v0.18.3

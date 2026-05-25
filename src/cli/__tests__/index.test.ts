@@ -1598,6 +1598,7 @@ describe("commandOwnsLocalHelp", () => {
       "question",
       "autoresearch",
       "deepinit",
+      "explore",
       "hooks",
       "hud",
       "ralph",
@@ -3028,6 +3029,26 @@ describe("detached tmux new-session sequencing", () => {
     const argsText = newSession.args.join("\n");
     assert.doesNotMatch(argsText, /CUSTOM_LLM_API_KEY/);
     assert.doesNotMatch(argsText, /fake-provider-key/);
+  });
+
+  it("runCodex coalesces stale same-leader HUD panes across session ids", async () => {
+    const source = await readFile(join(repoRoot, "src", "cli", "index.ts"), "utf8");
+    assert.match(
+      source,
+      /const staleHudPaneIds = currentPaneId\s*\? listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ leaderPaneId: currentPaneId \}\)\s*: \[\];/,
+    );
+    assert.doesNotMatch(
+      source,
+      /const staleHudPaneIds = listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ sessionId, leaderPaneId: currentPaneId \}\);/,
+    );
+  });
+
+  it("runCodex skips launch-time HUD cleanup when TMUX_PANE is unavailable", async () => {
+    const source = await readFile(join(repoRoot, "src", "cli", "index.ts"), "utf8");
+    assert.match(
+      source,
+      /const staleHudPaneIds = currentPaneId\s*\? listHudWatchPaneIdsInCurrentWindow\(currentPaneId, \{ leaderPaneId: currentPaneId \}\)\s*: \[\];/,
+    );
   });
 
   it("runCodex builds inside-tmux HUD command with OMX_SESSION_ID and OMX_ROOT when set", async () => {

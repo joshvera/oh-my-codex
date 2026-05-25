@@ -28,6 +28,7 @@ import {
   buildWorkflowTransitionError,
   evaluateWorkflowTransition,
   isTrackedWorkflowMode,
+  type DownstreamAuthority,
   type TrackedWorkflowMode,
 } from '../state/workflow-transition.js';
 import { reconcileWorkflowTransition } from '../state/workflow-transition-reconcile.js';
@@ -35,6 +36,11 @@ import {
   clearDeepInterviewQuestionObligation,
   type DeepInterviewQuestionEnforcementState,
 } from '../question/deep-interview.js';
+import {
+  buildDeepInterviewConfigStateFields,
+  resolveDeepInterviewRuntimeConfig,
+  type DeepInterviewRuntimeConfig,
+} from '../config/deep-interview.js';
 
 export interface KeywordMatch {
   keyword: string;
@@ -77,6 +83,7 @@ export interface SkillActiveState {
   thread_id?: string;
   turn_id?: string;
   input_lock?: DeepInterviewInputLock;
+  deep_interview_config?: DeepInterviewRuntimeConfig;
   active_skills?: SkillActiveEntry[];
   initialized_mode?: string;
   initialized_state_path?: string;
@@ -158,6 +165,8 @@ export interface DeepInterviewModeState {
   turn_id?: string;
   input_lock?: DeepInterviewInputLock;
   question_enforcement?: DeepInterviewQuestionEnforcementState;
+  downstream_authority?: DownstreamAuthority;
+  bypass_planning_gate_until?: string;
   [key: string]: unknown;
 }
 
@@ -250,6 +259,7 @@ export async function persistDeepInterviewModeState(
   const previousModeState = await readExistingDeepInterviewState(statePath);
 
   if (nextSkill?.skill === 'deep-interview' && nextSkill.active) {
+    const configStateFields = buildDeepInterviewConfigStateFields(nextSkill.deep_interview_config);
     const nextQuestionEnforcement = clearDeepInterviewQuestionObligation(
       previousModeState?.question_enforcement,
       'handoff',
@@ -268,8 +278,11 @@ export async function persistDeepInterviewModeState(
         session_id: input.sessionId ?? previousModeState?.session_id,
         thread_id: input.threadId ?? previousModeState?.thread_id,
         turn_id: input.turnId ?? previousModeState?.turn_id,
+        ...configStateFields,
         ...(nextSkill.input_lock ? { input_lock: nextSkill.input_lock } : {}),
         ...(nextQuestionEnforcement ? { question_enforcement: nextQuestionEnforcement } : {}),
+        ...(previousModeState?.downstream_authority ? { downstream_authority: previousModeState.downstream_authority } : {}),
+        ...(previousModeState?.bypass_planning_gate_until ? { bypass_planning_gate_until: previousModeState.bypass_planning_gate_until } : {}),
       },
       { nowIso },
     );
@@ -304,6 +317,8 @@ export async function persistDeepInterviewModeState(
           ),
         }
       : {}),
+    ...(previousModeState?.downstream_authority ? { downstream_authority: previousModeState.downstream_authority } : {}),
+    ...(previousModeState?.bypass_planning_gate_until ? { bypass_planning_gate_until: previousModeState.bypass_planning_gate_until } : {}),
   };
   await writeFile(statePath, JSON.stringify(nextState, null, 2));
 }
@@ -386,6 +401,10 @@ async function persistStatefulSkillSeedState(
     const defaultMaxIterations = config.mode === 'autopilot' ? 10 : 50;
     baseState.iteration = typeof existingModeState?.iteration === 'number' ? existingModeState.iteration : defaultIteration;
     baseState.max_iterations = typeof existingModeState?.max_iterations === 'number' ? existingModeState.max_iterations : defaultMaxIterations;
+  }
+
+  if (config.mode === 'deep-interview') {
+    Object.assign(baseState, buildDeepInterviewConfigStateFields(nextSkill.deep_interview_config));
   }
 
   if (config.mode === 'autopilot') {
@@ -704,6 +723,21 @@ function shouldReusePreviousSkillForContinuation(
     || isNamedActiveSkillContinuationPrompt(text, previousSkill);
 }
 
+function isDeepInterviewRuntimeConfig(value: unknown): value is DeepInterviewRuntimeConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Partial<DeepInterviewRuntimeConfig>;
+  return (
+    (candidate.profile === 'quick' || candidate.profile === 'standard' || candidate.profile === 'deep')
+    && typeof candidate.threshold === 'number'
+    && Number.isFinite(candidate.threshold)
+    && typeof candidate.maxRounds === 'number'
+    && Number.isInteger(candidate.maxRounds)
+    && typeof candidate.enableChallengeModes === 'boolean'
+    && typeof candidate.sourcePath === 'string'
+    && candidate.sourcePath.trim().length > 0
+  );
+}
+
 function resolveContinuationKeywordMatch(
   text: string,
   previous: SkillActiveState | null,
@@ -832,19 +866,35 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
     )
   ));
 
-  const deepInterviewInputLock = match.skill === 'deep-interview'
+  const isTrackedWorkflowMatch = isTrackedWorkflowMode(match.skill);
+  const trackedMatchSkill = isTrackedWorkflowMatch ? match.skill : null;
+  const normalizedInputText = isTrackedWorkflowMatch
+    ? normalizeWorkflowKeyboardTypos(input.text)
+    : input.text;
+  const workflowMatches: TrackedWorkflowMode[] = isTrackedWorkflowMatch
+    ? parseExplicitSkillInvocations(normalizedInputText).matches
+      .map((entry) => entry.skill)
+      .filter(isTrackedWorkflowMode)
+    : [];
+  const resolvedWorkflowRequest = isTrackedWorkflowMatch
+    ? resolveRequestedWorkflowSkills(workflowMatches.length > 0 ? workflowMatches : [trackedMatchSkill as TrackedWorkflowMode])
+    : null;
+  const requestedWorkflowSkills = resolvedWorkflowRequest?.requestedSkills ?? [];
+  const deferredSkills = resolvedWorkflowRequest?.deferredSkills ?? [];
+  const willActivateDeepInterview = match.skill === 'deep-interview'
+    || requestedWorkflowSkills.includes('deep-interview');
+
+  const deepInterviewInputLock = willActivateDeepInterview
     ? createDeepInterviewInputLock(nowIso, previous?.input_lock)
     : releaseDeepInterviewInputLock(previous?.input_lock, nowIso);
+  const reusableDeepInterviewConfig = sameSkillContinuation && isDeepInterviewRuntimeConfig(previous?.deep_interview_config)
+    ? previous.deep_interview_config
+    : null;
+  const deepInterviewConfig = willActivateDeepInterview
+    ? reusableDeepInterviewConfig ?? resolveDeepInterviewRuntimeConfig({ cwd: sourceCwd, text: input.text })
+    : null;
 
-  if (isTrackedWorkflowMode(match.skill)) {
-    const normalizedInputText = normalizeWorkflowKeyboardTypos(input.text);
-    const workflowMatches = parseExplicitSkillInvocations(normalizedInputText).matches
-      .map((entry) => entry.skill)
-      .filter(isTrackedWorkflowMode);
-    const { requestedSkills: requestedWorkflowSkills, deferredSkills } = resolveRequestedWorkflowSkills(
-      workflowMatches.length > 0 ? workflowMatches : [match.skill],
-    );
-
+  if (isTrackedWorkflowMatch) {
     let nextWorkflowEntries = previousWorkflowEntries.map((entry) => ({ ...entry }));
     const transitionMessages: string[] = [];
     for (const requestedMode of requestedWorkflowSkills) {
@@ -859,7 +909,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
           active: previous?.active ?? nextWorkflowEntries.length > 0,
           skill: previous?.skill || match.skill,
           keyword: previous?.keyword || match.keyword,
-          phase: previous?.phase || initialWorkflowPhaseForMode(match.skill),
+          phase: previous?.phase || initialWorkflowPhaseForMode(trackedMatchSkill as TrackedWorkflowMode),
           activated_at: previous?.activated_at || nowIso,
           updated_at: nowIso,
           source: 'keyword-detector',
@@ -951,6 +1001,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       ...(requestedWorkflowSkills.length > 1 ? { requested_skills: requestedWorkflowSkills } : {}),
       ...(deferredSkills.length > 0 ? { deferred_skills: deferredSkills } : {}),
       ...(deepInterviewInputLock ? { input_lock: deepInterviewInputLock } : {}),
+      ...(primarySkill === 'deep-interview' && deepInterviewConfig ? { deep_interview_config: deepInterviewConfig } : {}),
     };
 
     try {
@@ -965,6 +1016,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
             phase: requestedEntry.phase || workflowState.phase,
             activated_at: requestedEntry.activated_at || workflowState.activated_at,
             updated_at: requestedEntry.updated_at || workflowState.updated_at,
+            ...(requestedEntry.skill === 'deep-interview' && deepInterviewConfig ? { deep_interview_config: deepInterviewConfig } : {}),
           },
           nowIso,
           previous,
@@ -1016,6 +1068,7 @@ export async function recordSkillActivation(input: RecordSkillActivationInput): 
       turn_id: input.turnId,
     }],
     ...(deepInterviewInputLock ? { input_lock: deepInterviewInputLock } : {}),
+    ...(match.skill === 'deep-interview' && deepInterviewConfig ? { deep_interview_config: deepInterviewConfig } : {}),
   };
 
   try {

@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { HUD_RESIZE_RECONCILE_DELAY_SECONDS, HUD_TMUX_HEIGHT_LINES } from './constants.js';
 import { resolveTmuxBinaryForPlatform } from '../utils/platform-command.js';
 
@@ -8,24 +8,12 @@ export interface TmuxPaneSnapshot {
   startCommand: string;
 }
 
-export const OMX_TMUX_HUD_OWNER_ENV = 'OMX_TMUX_HUD_OWNER';
 export const OMX_TMUX_HUD_LEADER_PANE_ENV = 'OMX_TMUX_HUD_LEADER_PANE';
-export const OMX_HUD_PANE_OWNER_OPTION = '@omx_hud_owner';
-export const OMX_HUD_PANE_SESSION_OPTION = '@omx_hud_session_id';
-export const OMX_HUD_PANE_LEADER_OPTION = '@omx_hud_leader_pane';
-export const OMX_HUD_PANE_ROOT_OPTION = '@omx_hud_root';
-export const OMX_HUD_LOCK_TIMEOUT_MS = 2_000;
+const OMX_TMUX_HUD_OWNER_ENV = 'OMX_TMUX_HUD_OWNER';
 
 export interface HudPaneOwner {
   sessionId?: string;
   leaderPaneId?: string;
-}
-
-export interface HudPaneMetadata {
-  owner?: string;
-  sessionId?: string;
-  leaderPaneId?: string;
-  root?: string;
 }
 
 type TmuxExecSync = (args: string[]) => string;
@@ -92,14 +80,26 @@ export function readHudPaneOwner(pane: TmuxPaneSnapshot): HudPaneOwner {
 
 export function hudPaneMatchesOwner(pane: TmuxPaneSnapshot, owner: HudPaneOwner = {}): boolean {
   if (!isHudWatchPane(pane)) return false;
-  const wantsSession = typeof owner.sessionId === 'string' && owner.sessionId.trim() !== '';
-  const wantsLeaderPane = typeof owner.leaderPaneId === 'string' && owner.leaderPaneId.trim() !== '';
+  const wantedSessionId = typeof owner.sessionId === 'string' ? owner.sessionId.trim() : '';
+  const wantedLeaderPaneId = typeof owner.leaderPaneId === 'string' ? owner.leaderPaneId.trim() : '';
+  const wantsSession = wantedSessionId !== '';
+  const wantsLeaderPane = wantedLeaderPaneId !== '';
   if (!wantsSession && !wantsLeaderPane) return true;
+
   const paneOwner = readHudPaneOwner(pane);
-  if (wantsSession && paneOwner.sessionId !== owner.sessionId?.trim()) return false;
-  if (wantsSession && wantsLeaderPane && !paneOwner.leaderPaneId) return true;
-  if (wantsLeaderPane && paneOwner.leaderPaneId !== owner.leaderPaneId?.trim()) return false;
-  return true;
+  const sessionMatches = wantsSession && paneOwner.sessionId === wantedSessionId;
+  const leaderPaneMatches = wantsLeaderPane && paneOwner.leaderPaneId === wantedLeaderPaneId;
+
+  if (wantsSession && wantsLeaderPane) {
+    // Prompt-submit revive may know the canonical session id even when an
+    // existing launch-path HUD was only tagged with its leader pane. Treat
+    // either owner identity as the same HUD so reconciliation can resize/reuse
+    // it instead of creating a duplicate, while keeping other live leaders in
+    // the same tmux window isolated when their leader tag differs.
+    return leaderPaneMatches || (sessionMatches && !paneOwner.leaderPaneId);
+  }
+  if (wantsSession) return sessionMatches;
+  return leaderPaneMatches;
 }
 
 export function findHudWatchPaneIds(
@@ -111,6 +111,43 @@ export function findHudWatchPaneIds(
     .filter((pane) => pane.paneId !== currentPaneId)
     .filter((pane) => hudPaneMatchesOwner(pane, owner))
     .map((pane) => pane.paneId);
+}
+
+export function reapDeadHudPanes(
+  panes: TmuxPaneSnapshot[],
+  opts: {
+    isLivePane?: (paneId: string) => boolean;
+    killPane?: (paneId: string) => boolean;
+  } = {},
+): { reaped: string[]; preserved: string[] } {
+  const livePaneIds = new Set(panes.map((pane) => pane.paneId));
+  const isLivePane = opts.isLivePane ?? ((paneId: string) => livePaneIds.has(paneId));
+  const killPane = opts.killPane ?? ((paneId: string) => killTmuxPane(paneId));
+  const reaped: string[] = [];
+  const preserved: string[] = [];
+
+  for (const pane of panes) {
+    if (!isHudWatchPane(pane)) continue;
+
+    const leaderPaneId = readHudPaneOwner(pane).leaderPaneId;
+    if (!leaderPaneId) {
+      preserved.push(pane.paneId);
+      continue;
+    }
+
+    if (isLivePane(leaderPaneId)) {
+      preserved.push(pane.paneId);
+      continue;
+    }
+
+    if (killPane(pane.paneId)) {
+      reaped.push(pane.paneId);
+    } else {
+      preserved.push(pane.paneId);
+    }
+  }
+
+  return { reaped, preserved };
 }
 
 export function parsePaneIdFromTmuxOutput(rawOutput: string): string | null {
@@ -223,8 +260,8 @@ export function buildHudWatchCommand(
   const safeOmxRoot = typeof omxRoot === 'string' ? omxRoot : '';
   const safeLeaderPaneId = typeof leaderPaneId === 'string' ? leaderPaneId.trim() : '';
   const envPrefix = buildEnvPrefix({
-    [OMX_TMUX_HUD_OWNER_ENV]: '1',
     OMX_SESSION_ID: safeSessionId,
+    [OMX_TMUX_HUD_OWNER_ENV]: '1',
     [OMX_TMUX_HUD_LEADER_PANE_ENV]: safeLeaderPaneId,
     OMX_ROOT: safeOmxRoot,
   });
@@ -377,91 +414,4 @@ export function unregisterHudResizeHook(
   } catch {
     return false;
   }
-}
-
-function readPaneUserOption(
-  paneId: string,
-  optionName: string,
-  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
-): string | undefined {
-  if (!paneId.startsWith('%')) return undefined;
-  try {
-    const value = execTmuxSync(['show-options', '-p', '-v', '-t', paneId, optionName]).trim();
-    return value === '' ? undefined : value;
-  } catch {
-    return undefined;
-  }
-}
-
-export function readHudPaneMetadata(
-  paneId: string,
-  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
-): HudPaneMetadata {
-  return {
-    owner: readPaneUserOption(paneId, OMX_HUD_PANE_OWNER_OPTION, execTmuxSync),
-    sessionId: readPaneUserOption(paneId, OMX_HUD_PANE_SESSION_OPTION, execTmuxSync),
-    leaderPaneId: readPaneUserOption(paneId, OMX_HUD_PANE_LEADER_OPTION, execTmuxSync),
-    root: readPaneUserOption(paneId, OMX_HUD_PANE_ROOT_OPTION, execTmuxSync),
-  };
-}
-
-function setPaneUserOption(
-  paneId: string,
-  optionName: string,
-  value: string,
-  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
-): boolean {
-  if (!paneId.startsWith('%')) return false;
-  try {
-    execTmuxSync(['set-option', '-p', '-t', paneId, optionName, value]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function writeHudPaneMetadata(
-  paneId: string,
-  metadata: HudPaneMetadata,
-  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
-): boolean {
-  if (!paneId.startsWith('%')) return false;
-  let wrote = setPaneUserOption(paneId, OMX_HUD_PANE_OWNER_OPTION, metadata.owner || '1', execTmuxSync);
-  if (metadata.sessionId?.trim()) {
-    wrote = setPaneUserOption(paneId, OMX_HUD_PANE_SESSION_OPTION, metadata.sessionId.trim(), execTmuxSync) || wrote;
-  }
-  if (metadata.leaderPaneId?.trim()) {
-    wrote = setPaneUserOption(paneId, OMX_HUD_PANE_LEADER_OPTION, metadata.leaderPaneId.trim(), execTmuxSync) || wrote;
-  }
-  if (metadata.root?.trim()) {
-    wrote = setPaneUserOption(paneId, OMX_HUD_PANE_ROOT_OPTION, metadata.root, execTmuxSync) || wrote;
-  }
-  return wrote;
-}
-
-export function buildHudLockChannel(sessionId?: string, leaderPaneId?: string): string {
-  const raw = ['omx_hud', sessionId || 'no_session', leaderPaneId || 'bootstrap'].join('_');
-  return raw.replace(/[^A-Za-z0-9_./:-]+/g, '_').replace(/^_+|_+$/g, '') || 'omx_hud_bootstrap';
-}
-
-export function acquireTmuxWaitLock(
-  channel: string,
-  timeoutMs: number = OMX_HUD_LOCK_TIMEOUT_MS,
-): boolean {
-  const tmuxBin = resolveTmuxBinaryForPlatform() || 'tmux';
-  const result = spawnSync(tmuxBin, ['wait-for', '-L', channel], {
-    encoding: 'utf-8',
-    timeout: Math.max(1, Math.floor(timeoutMs)),
-    ...(process.platform === 'win32' ? { windowsHide: true } : {}),
-  });
-  return !result.error && result.status === 0;
-}
-
-export function releaseTmuxWaitLock(channel: string): boolean {
-  const tmuxBin = resolveTmuxBinaryForPlatform() || 'tmux';
-  const result = spawnSync(tmuxBin, ['wait-for', '-U', channel], {
-    encoding: 'utf-8',
-    ...(process.platform === 'win32' ? { windowsHide: true } : {}),
-  });
-  return !result.error && result.status === 0;
 }

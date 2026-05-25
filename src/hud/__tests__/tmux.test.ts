@@ -9,6 +9,7 @@ import {
   OMX_TMUX_HUD_LEADER_PANE_ENV,
   parseTmuxPaneSnapshot,
   readHudPaneOwner,
+  reapDeadHudPanes,
   parseHudResizeHookContext,
   registerHudResizeHook,
   unregisterHudResizeHook,
@@ -157,6 +158,43 @@ describe('HUD pane ownership helpers', () => {
     assert.deepEqual(findHudWatchPaneIds(panes, '%3', { sessionId: 'sess-a', leaderPaneId: '%1' }), ['%2']);
   });
 
+  it('matches same-leader HUD panes across session ids for same-pane relaunch cleanup', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        `%2\tnode\texec env OMX_SESSION_ID='old-session' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch`,
+        `%3\tnode\texec env OMX_SESSION_ID='new-session' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch`,
+        `%4\tnode\texec env OMX_SESSION_ID='other-session' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%9' /node /omx.js hud --watch`,
+      ].join('\n'),
+    );
+
+    assert.deepEqual(findHudWatchPaneIds(panes, '%1', { leaderPaneId: '%1' }), ['%2', '%3']);
+    assert.deepEqual(findHudWatchPaneIds(panes, '%1', { sessionId: 'new-session', leaderPaneId: '%1' }), ['%2', '%3']);
+  });
+
+  it('matches owner-tagged same-leader HUD panes even when the current revive has only a canonical session id', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        `%2\tnode\texec env OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch`,
+      ].join('\n'),
+    );
+
+    assert.deepEqual(findHudWatchPaneIds(panes, '%1', { sessionId: 'sess-canonical', leaderPaneId: '%1' }), ['%2']);
+  });
+
+  it('does not owner-match a different live leader just because the session id matches', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        '%3\tcodex\tcodex',
+        `%4\tnode\texec env OMX_SESSION_ID='sess-a' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%3' /node /omx.js hud --watch`,
+      ].join('\n'),
+    );
+
+    assert.deepEqual(findHudWatchPaneIds(panes, '%1', { sessionId: 'sess-a', leaderPaneId: '%1' }), []);
+  });
+
   it('does not owner-match untagged HUD panes when an owner scope is requested', () => {
     const panes = parseTmuxPaneSnapshot(
       [
@@ -186,6 +224,110 @@ describe('HUD pane ownership helpers', () => {
 
     assert.match(cmd, /OMX_TMUX_HUD_OWNER='1'/);
     assert.match(cmd, /OMX_SESSION_ID='sess-a'/);
+    assert.match(cmd, /OMX_TMUX_HUD_OWNER='1'/);
     assert.match(cmd, new RegExp(`${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1'`));
+  });
+
+  it('tags reconciled HUD watch commands as OMX-owned even without a session id', () => {
+    const cmd = buildHudWatchCommand('/usr/bin/omx.js', undefined, '', undefined, '%1');
+
+    assert.doesNotMatch(cmd, /OMX_SESSION_ID=/);
+    assert.match(cmd, /OMX_TMUX_HUD_OWNER='1'/);
+    assert.match(cmd, new RegExp(`${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1'`));
+  });
+});
+
+describe('dead HUD pane reaper', () => {
+  it('kills HUD panes whose leader pane is not present in the snapshot', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        `%2\tnode\texec env OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%9' /node /omx.js hud --watch`,
+      ].join('\n'),
+    );
+    const killed: string[] = [];
+
+    const result = reapDeadHudPanes(panes, {
+      killPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+    });
+
+    assert.deepEqual(killed, ['%2']);
+    assert.deepEqual(result, { reaped: ['%2'], preserved: [] });
+  });
+
+  it('preserves HUD panes whose leader pane is alive', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        `%2\tnode\texec env OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch`,
+      ].join('\n'),
+    );
+
+    const result = reapDeadHudPanes(panes, {
+      killPane: () => {
+        throw new Error('live leader HUD should not be killed');
+      },
+    });
+
+    assert.deepEqual(result, { reaped: [], preserved: ['%2'] });
+  });
+
+  it('preserves legacy HUD panes with no leader tag by default', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        '%2\tnode\tnode /tmp/bin/omx.js hud --watch',
+      ].join('\n'),
+    );
+
+    const result = reapDeadHudPanes(panes, {
+      killPane: () => {
+        throw new Error('legacy untagged HUD should not be killed');
+      },
+    });
+
+    assert.deepEqual(result, { reaped: [], preserved: ['%2'] });
+  });
+
+  it('does not touch non-HUD panes', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        `%2\tnode\texec env OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%9' /node /omx.js sidecar --watch`,
+      ].join('\n'),
+    );
+
+    const result = reapDeadHudPanes(panes, {
+      killPane: () => {
+        throw new Error('non-HUD panes should not be killed');
+      },
+    });
+
+    assert.deepEqual(result, { reaped: [], preserved: [] });
+  });
+
+  it('uses an explicit live-pane predicate for reaper decisions', () => {
+    const panes = parseTmuxPaneSnapshot(
+      [
+        '%1\tcodex\tcodex',
+        `%2\tnode\texec env OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' /node /omx.js hud --watch`,
+        `%3\tnode\texec env OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%9' /node /omx.js hud --watch`,
+      ].join('\n'),
+    );
+    const killed: string[] = [];
+
+    const result = reapDeadHudPanes(panes, {
+      isLivePane: (paneId) => paneId === '%9',
+      killPane: (paneId) => {
+        killed.push(paneId);
+        return true;
+      },
+    });
+
+    assert.deepEqual(killed, ['%2']);
+    assert.deepEqual(result, { reaped: ['%2'], preserved: ['%3'] });
   });
 });

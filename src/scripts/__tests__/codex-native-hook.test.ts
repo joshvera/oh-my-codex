@@ -25,6 +25,7 @@ import { writeSessionStart } from "../../hooks/session.js";
 import { resetTriageConfigCache } from "../../hooks/triage-config.js";
 import { executeStateOperation } from "../../state/operations.js";
 import { OMX_TMUX_HUD_OWNER_ENV } from "../../hud/reconcile.js";
+import { OMX_TMUX_HUD_LEADER_PANE_ENV } from "../../hud/tmux.js";
 import { readAllState } from "../../hud/state.js";
 import { renderHud } from "../../hud/render.js";
 import { getLegacyWikiDir, serializePage, writePage } from "../../wiki/storage.js";
@@ -63,6 +64,19 @@ function runNativeHookCli(
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true }).catch(() => {});
   await writeFile(path, JSON.stringify(value, null, 2));
+}
+
+async function withIsolatedHome<T>(prefix: string, run: (homeDir: string) => Promise<T>): Promise<T> {
+  const homeDir = await mkdtemp(join(tmpdir(), `omx-native-hook-home-${prefix}-`));
+  const previousHome = process.env.HOME;
+  try {
+    process.env.HOME = homeDir;
+    return await run(homeDir);
+  } finally {
+    if (typeof previousHome === "string") process.env.HOME = previousHome;
+    else delete process.env.HOME;
+    await rm(homeDir, { recursive: true, force: true });
+  }
 }
 
 async function withLoreGuardConfig<T>(
@@ -1617,6 +1631,405 @@ describe("codex native hook dispatch", () => {
       assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", "sess-1", "ralplan-state.json")), true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("injects deep-interview config overrides into UserPromptSubmit developer context", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-"));
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "standard"
+standardThreshold = 0.05
+standardMaxRounds = 15
+enableChallengeModes = false
+`,
+      );
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: "sess-deep-interview-config",
+          thread_id: "thread-1",
+          turn_id: "turn-1",
+          prompt: "$deep-interview prove config reflection",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.skill, "deep-interview");
+      const serializedOutput = JSON.stringify(result.outputJson);
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /threshold=0\.05/);
+      assert.match(serializedOutput, /max_rounds=15/);
+      assert.match(serializedOutput, /enableChallengeModes=false/);
+
+      const modeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", "sess-deep-interview-config", "deep-interview-state.json"), "utf-8"),
+      ) as { threshold?: number; max_rounds?: number; profile?: string };
+      assert.equal(modeState.profile, "standard");
+      assert.equal(modeState.threshold, 0.05);
+      assert.equal(modeState.max_rounds, 15);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("proves UserPromptSubmit context changes before and after adding deep-interview config", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-before-after-"));
+    const sessionId = "sess-deep-interview-config-before-after";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+
+      const before = await withIsolatedHome("deep-interview-config-before-after", async () => (
+        dispatchCodexNativeHook(
+          {
+            hook_event_name: "UserPromptSubmit",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-before-after",
+            turn_id: "turn-before",
+            prompt: "$deep-interview prove before config context",
+          },
+          { cwd },
+        )
+      ));
+      const beforeOutput = JSON.stringify(before.outputJson);
+      const beforeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as {
+        deep_interview_config?: unknown;
+        threshold?: number;
+        max_rounds?: number;
+      };
+      assert.equal(before.skillState?.skill, "deep-interview");
+      assert.doesNotMatch(beforeOutput, /Deep-interview config override active/);
+      assert.equal(before.skillState?.deep_interview_config, undefined);
+      assert.equal(beforeState.deep_interview_config, undefined);
+      assert.equal(beforeState.threshold, undefined);
+      assert.equal(beforeState.max_rounds, undefined);
+
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "standard"
+standardThreshold = 0.05
+standardMaxRounds = 15
+`,
+      );
+
+      const after = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-before-after",
+          turn_id: "turn-after",
+          prompt: "$deep-interview prove after config context",
+        },
+        { cwd },
+      );
+      const afterOutput = JSON.stringify(after.outputJson);
+      const afterState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as {
+        deep_interview_config?: { profile?: string; threshold?: number; maxRounds?: number };
+        threshold?: number;
+        max_rounds?: number;
+      };
+      assert.equal(after.skillState?.deep_interview_config?.profile, "standard");
+      assert.match(afterOutput, /Deep-interview config override active/);
+      assert.match(afterOutput, /threshold=0\.05/);
+      assert.match(afterOutput, /max_rounds=15/);
+      assert.equal(afterState.deep_interview_config?.profile, "standard");
+      assert.equal(afterState.threshold, 0.05);
+      assert.equal(afterState.max_rounds, 15);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("injects deep-interview config for mixed workflow prompts that defer execution modes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-mixed-"));
+    const sessionId = "sess-deep-interview-config-mixed";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "deep"
+deepThreshold = 0.13
+deepMaxRounds = 21
+enableChallengeModes = false
+`,
+      );
+
+      const result = await withIsolatedHome("deep-interview-config-mixed", async () => (
+        dispatchCodexNativeHook(
+          {
+            hook_event_name: "UserPromptSubmit",
+            cwd,
+            session_id: sessionId,
+            thread_id: "thread-mixed-config",
+            turn_id: "turn-mixed-config",
+            prompt: "$autopilot $deep-interview prove mixed config context",
+          },
+          { cwd },
+        )
+      ));
+      const serializedOutput = JSON.stringify(result.outputJson);
+      const modeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as {
+        deep_interview_config?: { profile?: string; threshold?: number; maxRounds?: number; enableChallengeModes?: boolean };
+        profile?: string;
+        threshold?: number;
+        max_rounds?: number;
+        enable_challenge_modes?: boolean;
+      };
+
+      assert.equal(result.skillState?.skill, "deep-interview");
+      assert.deepEqual(result.skillState?.deferred_skills, ["autopilot"]);
+      assert.equal(result.skillState?.deep_interview_config?.profile, "deep");
+      assert.equal(result.skillState?.deep_interview_config?.threshold, 0.13);
+      assert.equal(result.skillState?.deep_interview_config?.maxRounds, 21);
+      assert.equal(result.skillState?.deep_interview_config?.enableChallengeModes, false);
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /profile=deep/);
+      assert.match(serializedOutput, /threshold=0\.13/);
+      assert.match(serializedOutput, /max_rounds=21/);
+      assert.match(serializedOutput, /enableChallengeModes=false/);
+      assert.equal(modeState.deep_interview_config?.profile, "deep");
+      assert.equal(modeState.profile, "deep");
+      assert.equal(modeState.threshold, 0.13);
+      assert.equal(modeState.max_rounds, 21);
+      assert.equal(modeState.enable_challenge_modes, false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps deep-interview config override context on continuation prompts", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-continuation-"));
+    const sessionId = "sess-deep-interview-config-continuation";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "standard"
+standardThreshold = 0.05
+standardMaxRounds = 15
+`,
+      );
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-continuation",
+          turn_id: "turn-start",
+          prompt: "$deep-interview prove config continuation",
+        },
+        { cwd },
+      );
+      const continued = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-continuation",
+          turn_id: "turn-continue",
+          prompt: "continue",
+        },
+        { cwd },
+      );
+      const serializedOutput = JSON.stringify(continued.outputJson);
+      const modeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as { threshold?: number; max_rounds?: number; profile?: string };
+
+      assert.equal(continued.skillState?.skill, "deep-interview");
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /threshold=0\.05/);
+      assert.match(serializedOutput, /max_rounds=15/);
+      assert.equal(modeState.profile, "standard");
+      assert.equal(modeState.threshold, 0.05);
+      assert.equal(modeState.max_rounds, 15);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps explicit deep-interview profile flags reflected on continuation prompts", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-profile-continuation-"));
+    const sessionId = "sess-deep-interview-config-profile-continuation";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "standard"
+standardThreshold = 0.22
+standardMaxRounds = 13
+deepThreshold = 0.13
+deepMaxRounds = 21
+`,
+      );
+
+      await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-profile-continuation",
+          turn_id: "turn-start",
+          prompt: "$deep-interview --deep prove explicit profile continuation",
+        },
+        { cwd },
+      );
+      const continued = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-profile-continuation",
+          turn_id: "turn-continue",
+          prompt: "continue",
+        },
+        { cwd },
+      );
+      const serializedOutput = JSON.stringify(continued.outputJson);
+      const modeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as { threshold?: number; max_rounds?: number; profile?: string; deep_interview_config?: { profile?: string } };
+
+      assert.equal(continued.skillState?.skill, "deep-interview");
+      assert.equal(continued.skillState?.deep_interview_config?.profile, "deep");
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /profile=deep/);
+      assert.match(serializedOutput, /threshold=0\.13/);
+      assert.match(serializedOutput, /max_rounds=21/);
+      assert.equal(modeState.deep_interview_config?.profile, "deep");
+      assert.equal(modeState.profile, "deep");
+      assert.equal(modeState.threshold, 0.13);
+      assert.equal(modeState.max_rounds, 21);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the documented deep-interview Suggested Config reflected in UserPromptSubmit context", async () => {
+    const skillDoc = await readFile(join(process.cwd(), "skills", "deep-interview", "SKILL.md"), "utf-8");
+    const markerIndex = skillDoc.indexOf("## Suggested Config (optional)");
+    assert.notEqual(markerIndex, -1);
+    const configMatch = skillDoc.slice(markerIndex).match(/```toml\n([\s\S]*?)\n```/);
+    assert.ok(configMatch);
+    const documentedConfig = configMatch[1]?.trimEnd();
+    assert.ok(documentedConfig);
+    assert.match(documentedConfig, /standardThreshold = 0\.20/);
+    assert.match(documentedConfig, /standardMaxRounds = 12/);
+
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-doc-config-"));
+    const sessionId = "sess-deep-interview-doc-config";
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(join(cwd, ".omx", "config.toml"), `${documentedConfig}\n`);
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-doc-config",
+          turn_id: "turn-doc-config",
+          prompt: "$deep-interview prove documented config context",
+        },
+        { cwd },
+      );
+      const serializedOutput = JSON.stringify(result.outputJson);
+      const modeState = JSON.parse(
+        await readFile(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json"), "utf-8"),
+      ) as {
+        deep_interview_config?: { profile?: string; threshold?: number; maxRounds?: number };
+        profile?: string;
+        threshold?: number;
+        max_rounds?: number;
+      };
+
+      assert.equal(result.skillState?.deep_interview_config?.profile, "standard");
+      assert.equal(result.skillState?.deep_interview_config?.threshold, 0.2);
+      assert.equal(result.skillState?.deep_interview_config?.maxRounds, 12);
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /profile=standard/);
+      assert.match(serializedOutput, /threshold=0\.2/);
+      assert.match(serializedOutput, /max_rounds=12/);
+      assert.equal(modeState.deep_interview_config?.profile, "standard");
+      assert.equal(modeState.profile, "standard");
+      assert.equal(modeState.threshold, 0.2);
+      assert.equal(modeState.max_rounds, 12);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("injects deep-interview config overrides when state is boxed under OMX_ROOT", async () => {
+    const root = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-config-boxed-"));
+    const cwd = join(root, "source");
+    const omxRoot = join(root, "box");
+    const sessionId = "sess-boxed-deep-interview-config";
+    const previousOmxRoot = process.env.OMX_ROOT;
+    const previousOmxStateRoot = process.env.OMX_STATE_ROOT;
+    const previousTeamStateRoot = process.env.OMX_TEAM_STATE_ROOT;
+    try {
+      await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+      await writeFile(
+        join(cwd, ".omx", "config.toml"),
+        `[omx.deepInterview]
+defaultProfile = "standard"
+standardThreshold = 0.05
+standardMaxRounds = 15
+`,
+      );
+      process.env.OMX_ROOT = omxRoot;
+      delete process.env.OMX_STATE_ROOT;
+      delete process.env.OMX_TEAM_STATE_ROOT;
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: sessionId,
+          thread_id: "thread-boxed",
+          turn_id: "turn-boxed",
+          prompt: "$deep-interview prove boxed config reflection",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      assert.equal(result.skillState?.initialized_state_path, `.omx/state/sessions/${sessionId}/deep-interview-state.json`);
+      const boxedStatePath = join(omxRoot, ".omx", "state", "sessions", sessionId, "deep-interview-state.json");
+      assert.equal(existsSync(boxedStatePath), true);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", sessionId, "deep-interview-state.json")), false);
+
+      const serializedOutput = JSON.stringify(result.outputJson);
+      assert.match(serializedOutput, /Deep-interview config override active/);
+      assert.match(serializedOutput, /threshold=0\.05/);
+      assert.match(serializedOutput, /max_rounds=15/);
+    } finally {
+      if (typeof previousOmxRoot === "string") process.env.OMX_ROOT = previousOmxRoot;
+      else delete process.env.OMX_ROOT;
+      if (typeof previousOmxStateRoot === "string") process.env.OMX_STATE_ROOT = previousOmxStateRoot;
+      else delete process.env.OMX_STATE_ROOT;
+      if (typeof previousTeamStateRoot === "string") process.env.OMX_TEAM_STATE_ROOT = previousTeamStateRoot;
+      else delete process.env.OMX_TEAM_STATE_ROOT;
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -3517,6 +3930,78 @@ esac
       }
       process.env.PATH = originalPath;
       process.argv = originalArgv;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses an existing owner-tagged HUD pane when UserPromptSubmit revives with the canonical session id", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-reuse-"));
+    const originalTmux = process.env.TMUX;
+    const originalTmuxPane = process.env.TMUX_PANE;
+    const originalPath = process.env.PATH;
+    const originalHudOwner = process.env[OMX_TMUX_HUD_OWNER_ENV];
+    try {
+      process.env.TMUX = "1";
+      process.env.TMUX_PANE = "%1";
+      process.env[OMX_TMUX_HUD_OWNER_ENV] = "1";
+      const canonicalSessionId = "omx-canonical-hud-reuse";
+      const nativeSessionId = "codex-native-hud-reuse";
+      await mkdir(join(cwd, ".omx", "state", "sessions", canonicalSessionId), { recursive: true });
+      await writeSessionStart(cwd, canonicalSessionId);
+
+      const binDir = await mkdtemp(join(tmpdir(), "omx-native-hook-hud-reuse-bin-"));
+      const tmuxLog = join(cwd, "tmux.log");
+      await writeFile(
+        join(binDir, "tmux"),
+        `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> ${JSON.stringify(tmuxLog)}
+case "$1" in
+  list-panes)
+    printf '%%1\tcodex\tcodex\n'
+    printf '%%2\tnode\texec env OMX_TMUX_HUD_OWNER='"'"'1'"'"' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='"'"'%%1'"'"' /node /omx.js hud --watch\n'
+    ;;
+  display-message)
+    printf '80\t24\n'
+    ;;
+  resize-pane)
+    ;;
+  split-window)
+    printf '%%9\n'
+    ;;
+esac
+`,
+      );
+      await chmod(join(binDir, "tmux"), 0o755);
+      process.env.PATH = `${binDir}:${originalPath}`;
+
+      const result = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "UserPromptSubmit",
+          cwd,
+          session_id: nativeSessionId,
+          thread_id: "thread-hud-reuse",
+          turn_id: "turn-hud-reuse",
+          prompt: "$ralplan prepare plan",
+        },
+        { cwd },
+      );
+
+      assert.equal(result.omxEventName, "keyword-detector");
+      const tmuxCalls = await readFile(tmuxLog, "utf-8");
+      assert.match(tmuxCalls, /list-panes -t %1 -F/);
+      assert.match(tmuxCalls, /resize-pane -t %2 -y 3/);
+      assert.doesNotMatch(tmuxCalls, /split-window/);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", canonicalSessionId, "ralplan-state.json")), true);
+      assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", nativeSessionId, "ralplan-state.json")), false);
+    } finally {
+      if (originalTmux === undefined) delete process.env.TMUX;
+      else process.env.TMUX = originalTmux;
+      if (originalTmuxPane === undefined) delete process.env.TMUX_PANE;
+      else process.env.TMUX_PANE = originalTmuxPane;
+      if (originalHudOwner === undefined) delete process.env[OMX_TMUX_HUD_OWNER_ENV];
+      else process.env[OMX_TMUX_HUD_OWNER_ENV] = originalHudOwner;
+      process.env.PATH = originalPath;
       await rm(cwd, { recursive: true, force: true });
     }
   });
